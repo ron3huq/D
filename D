@@ -149,7 +149,7 @@ local TR = {
     Rows = {},
     Key = nil,
     FrontDistance = 2.4,
-    FrontOnlyDistance = 3.6,
+    FrontOnlyDistance = 2.4,
     CollisionParts = {},
     CollisionChar = nil,
     CollisionAt = 0,
@@ -21175,7 +21175,7 @@ function EM.PlayCombo(data)
     end)
     return true
 end
-EM.CircleRadius, EM.CircleSpeed = 6, 48
+EM.CircleRadius, EM.CircleSpeed = 4, 20
 function EM.CircleTarget()
     local root, best, bestRoot, bestHum, bestDistance = RootNow(), nil, nil, nil, math.huge
     if not root then return nil end
