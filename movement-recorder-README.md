@@ -8,7 +8,7 @@
 2. Chạy file [movement-recorder.luau](movement-recorder.luau), hoặc dùng lệnh:
 
    ```lua
-   loadstring(game:HttpGet("https://raw.githubusercontent.com/thunghiemkd01-spec/D/main/movement-recorder.luau"))()
+   loadstring(game:HttpGet("https://raw.githubusercontent.com/ron3huq/D/main/movement-recorder.luau"))()
    ```
 
 3. Bấm **Ghi**, rồi tự chơi bình thường. Không cần chọn AutoHelp, AutoFarm hay AutoHide.
