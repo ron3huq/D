@@ -4065,8 +4065,13 @@ function FH.Emote() FH.Chat(math.random() < 0.65 and "/e wave" or "/e dance2") e
 -- takeoff; actual falling bodies never obtain a jump from this contact test.
 function FH.TakeoffSupported(hum, root)
     if not hum then return false end
-    if hum.FloorMaterial ~= Enum.Material.Air then return true end
     root = root or hum.RootPart
+    if hum.FloorMaterial ~= Enum.Material.Air then
+        -- A stale solid material during native ascent is not a new takeoff.
+        -- Low-velocity supported slopes retain their existing recovery path.
+        if root and Follow.Airborne(hum, root) and math.abs(root.AssemblyLinearVelocity.Y) > 2 then return false end
+        return true
+    end
     if not root then return false end
     local ok, state = pcall(function() return hum:GetState() end)
     if not ok or state == Enum.HumanoidStateType.Jumping then return false end
@@ -4317,7 +4322,7 @@ function FH.Tick(hum, root)
         then
             FH.JumpFlight = nil
             if FH.Motion and FH.Motion.token == flight.token then FH.Motion.sentAt = 0 end
-        elseif hum.FloorMaterial == Enum.Material.Air then
+        elseif Follow.Airborne(hum, root) then
             flight.airborne = true
         elseif flight.airborne or elapsed > 0.3 then
             FH.JumpFlight = nil
@@ -4357,7 +4362,7 @@ function FH.Tick(hum, root)
         FH.Jmp = nil
         return
     end
-    local airborne = hum.FloorMaterial == Enum.Material.Air
+    local airborne = Follow.Airborne(hum, root)
     if airborne then
         j.airborne = true
         j.airAt = j.airAt or os.clock()
@@ -4365,8 +4370,9 @@ function FH.Tick(hum, root)
         FH.Jmp = nil
         return
     end
-    -- The second press belongs to a real airborne first jump, never a delayed takeoff.
-    if j.done or not airborne or el < 0.2 or os.clock() - (j.airAt or j.t) < 0.2 then return end
+    -- Confirm real native flight, then time the second edge from the first
+    -- input, not an extra 0.2 seconds after a delayed FloorMaterial update.
+    if j.done or not airborne or el < 0.22 or os.clock() - (j.airAt or j.t) < 0.02 then return end
     if j.firstPulse and not j.firstPulse.releasedAt then return end
     if os.clock() < (j.retryAt or 0) then return end
     if root.AssemblyLinearVelocity.Y < 10 or el > 0.28 then
@@ -4463,7 +4469,7 @@ function FH.JumpMoveStep()
         return
     end
     flight.token = motion.token
-    if hum.FloorMaterial == Enum.Material.Air then
+    if Follow.Airborne(hum, root) then
         flight.airborne = true
     elseif flight.airborne or os.clock() - flight.t > 0.3 then
         FH.JumpFlight = nil
@@ -8085,14 +8091,37 @@ function Follow.RescueDoorCrossed(rescueState, goal, g, from, after)
     end
     state.committed = nil
 end
-function Follow.DoorOpening(trigger)
+function Follow.DoorOpening(trigger, meter)
     if not trigger or not FH.Stat then return nil end
     local input = FH.Stat(LocalPlayer, FH.HACK_INPUT)
     local action = FH.Stat(LocalPlayer, FH.HACK_EVENT)
     if not input or not action then return nil end
-    local target = action.Value
+    FH.DoorProgress = FH.DoorProgress or setmetatable({}, { __mode = "k" })
+    meter = meter or FH.DoorProgress[trigger] or {}
+    FH.DoorProgress[trigger] = meter
+    if meter.target ~= trigger then
+        meter.target, meter.value, meter.activeUntil = trigger, nil, nil
+    end
+    local target, now = action.Value, os.clock()
     local event = trigger:FindFirstChild("Event")
-    return input.Value == true and (target == trigger or (event ~= nil and target == event))
+    if not (target == trigger or event ~= nil and target == event) then
+        meter.value, meter.activeUntil = nil, nil
+        return false
+    end
+    local progress = FH.Stat(LocalPlayer, FH.HACK_PROGRESS)
+    local value = progress and progress.Value
+    if type(value) == "number" and value == value then
+        if meter.value == nil and value > 0 then
+            meter.activeUntil = now + 0.25
+        elseif meter.value and value > meter.value + 0.00001 and value - meter.value < 0.25 then
+            meter.activeUntil = now + 0.75
+        end
+        meter.value = value
+    end
+    -- Native door progress continues after the short E press is released.
+    -- A bounded proof preserves the opening through its final panel animation;
+    -- a static nonzero progress value cannot suppress retries indefinitely.
+    return input.Value == true or now < (meter.activeUntil or 0)
 end
 function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
     local d = g.Door
@@ -8122,6 +8151,7 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
     end
     local stand
     local contactStopped = false
+    local openingMeter = {}
     if FH.DoorBlocked(g) then
         local from = g.NearPos
         local tl = FH.Triggers(d)
@@ -8175,13 +8205,10 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
             FH.Tick(hum, current)
             if not FH.DoorBlocked(g) then return true end
             local trigger = list[1]
-            if
-                FH.DoorCanHold(g, trigger, current.Position, stand, FH.Feet(hum, current))
-                and (not stableDoor or Flat(current.Position - stand).Magnitude <= 0.65)
-            then
+            if FH.DoorCanHold(g, trigger, current.Position, stand, FH.Feet(hum, current)) then
                 FH.Move(token, hum, current.Position, stableDoor and not contactStopped)
                 contactStopped = true
-                Follow.Hold(trigger and trigger:FindFirstChild("Event"), false, true, false, token)
+                Follow.Hold(trigger and trigger:FindFirstChild("Event"), false, true, false, token, true)
                 return true
             end
             return false
@@ -8204,10 +8231,7 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
         while alive() and FH.DoorBlocked(g) and os.clock() - finalAt < 1.2 do
             local hum, current = GetHumanoid(), RootNow()
             if not hum or not current or hum.Health <= 0 or not FH.DoorOnFloor(g, current.Position) then break end
-            if
-                FH.DoorCanHold(g, list[1], current.Position, stand, FH.Feet(hum, current))
-                and (not stableDoor or Flat(current.Position - stand).Magnitude <= 0.65)
-            then
+            if FH.DoorCanHold(g, list[1], current.Position, stand, FH.Feet(hum, current)) then
                 break
             end
             if not FH.ApproachClear(current.Position, stand) or not FH.Move(token, hum, stand) then break end
@@ -8253,14 +8277,7 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
                 break
             else
                 local inRange = FH.DoorCanHold(g, tg, root.Position, stand, FH.Feet(hum, root))
-                if
-                    inRange
-                    and (
-                        not stableDoor
-                        or Flat(root.Position - stand).Magnitude <= 0.65
-                        or Follow.DoorOpening(tg) == true
-                    )
-                then
+                if inRange then
                     -- Stay at a valid trigger until its opening finishes. A
                     -- stale approach MoveTo or repeated E reset cancels it.
                     FH.Move(token, hum, stableDoor and root.Position or stand, stableDoor and not contactStopped)
@@ -8268,11 +8285,18 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
                     -- An E press made before the game selected this trigger may
                     -- be ignored. Retry only while it is not opening; a live
                     -- opening keeps one continuous hold until the panel clears.
-                    if stableDoor and now >= retryAt and Follow.DoorOpening(tg) == false then
+                    local opening = Follow.DoorOpening(tg, openingMeter)
+                    if stableDoor and now >= retryAt and opening == false then
                         Follow.Release(token)
-                        retryAt = now + 0.65
+                        task.wait(0.04)
+                        if not alive() then break end
+                        retryAt = os.clock() + 0.65
                     end
-                    Follow.Hold(tg and tg:FindFirstChild("Event"), false, true, false, token)
+                    -- Do not re-fire a remote action while the game is already
+                    -- opening this door. Keep the one native input ownership.
+                    if not opening or not (Follow.Held or Follow.KeyDown) then
+                        Follow.Hold(tg and tg:FindFirstChild("Event"), false, true, false, token, true)
+                    end
                 else
                     contactStopped = false
                     Follow.Release(token)
@@ -9373,13 +9397,11 @@ end
 -- A native fall can outlast the short scripted-jump record. Keep the current
 -- route while physically airborne, then resume floor checks on landing.
 function Follow.Airborne(hum, root)
-    if not hum or not root or hum.Sit or hum.PlatformStand or hum.FloorMaterial ~= Enum.Material.Air then
-        return false
-    end
+    if not hum or not root or hum.Sit or hum.PlatformStand then return false end
     local state = hum:GetState()
     local velocity = root.AssemblyLinearVelocity
+    if state == Enum.HumanoidStateType.Jumping then return velocity ~= nil and math.abs(velocity.Y) > 0.5 end
     return state == Enum.HumanoidStateType.Freefall
-        or (state == Enum.HumanoidStateType.Jumping and velocity ~= nil and math.abs(velocity.Y) > 0.5)
 end
 function Follow.AirClear(hum, root, point, reachLimit)
     local delta = Flat(point - root.Position)
@@ -9576,7 +9598,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         return true
     end
     local function ownedFlight(hum, root, now)
-        if hum.FloorMaterial ~= Enum.Material.Air then return false end
+        if not Follow.Airborne(hum, root) and hum.FloorMaterial ~= Enum.Material.Air then return false end
         if
             Follow.Airborne(hum, root)
             and hum == GetHumanoid()
@@ -9943,7 +9965,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             local along = delta:Dot(crossing.dir)
             local lateral = (delta - crossing.dir * along).Magnitude
             local passed = along <= 0.8 and lateral <= 2.2
-            local grounded = hum.FloorMaterial ~= Enum.Material.Air
+            local grounded = not Follow.Airborne(hum, root) and hum.FloorMaterial ~= Enum.Material.Air
             if
                 crossing.hum ~= hum
                 or crossing.root ~= root
@@ -9996,7 +10018,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if flying and FH.JumpFlight and FH.JumpFlight.normal and FH.JumpFlight.feetY then
             feetY = FH.JumpFlight.feetY
         end
-        if routeProgress and hum.FloorMaterial ~= Enum.Material.Air then groundedFeetY = feetY end
+        if routeProgress and not flying and hum.FloorMaterial ~= Enum.Material.Air then groundedFeetY = feetY end
         if jumpTraversal then
             local traversal = jumpTraversal
             local takeoff = wps and wps[traversal.index]

@@ -110,7 +110,7 @@ local LocalPlayer = {}
 local Players = {}
 function Players:GetPlayers() return world and world.players or { LocalPlayer } end
 local Computers = {}
-local Doors, DoorFail, DoorTries = {}, {}, {}
+local Doors, DoorFail, DoorTries, DoorOpenedAt = {}, {}, {}, {}
 local function IsInWorld(item) return item and item.Parent ~= nil end
 local unloaded = false
 local remoteHackActive, remoteHackEvent = false, nil
@@ -235,6 +235,11 @@ local PATH_SPECS = { { 2.4, 5 }, { 1.2, 4 } }
 local RemoteEvent = {}
 function RemoteEvent:FireServer(...)
     world.remotes += 1
+    local args = { ... }
+    if world.door and args[1] == "Input" and args[2] == "Action" and args[3] == true then
+        world.doorStarted = world.doorStarted or now
+        stats.ActionEvent.Value = world.doorEvent
+    end
 end
 local function updateParts()
     root.CFrame = cf(root.Position, world.facing)
@@ -382,6 +387,9 @@ local function nativeKey(code, down)
                 root.Position = world.trigger.Position
                 updateParts()
             end
+        elseif world.door and (root.Position - world.doorTrigger.Position).Magnitude <= 3.6 then
+            world.doorStarted = world.doorStarted or now
+            stats.ActionEvent.Value = world.doorEvent
         elseif world.pod then
             local p = world.pod.CFrame:PointToObjectSpace(root.Position)
             local half = world.pod.Size * 0.5
@@ -414,11 +422,26 @@ step = function(dt)
         end
     end
     if world.rescueAt and now - world.rescueAt >= world.rescueDelay then world.captive.Value = nil end
+    if world.doorStarted then
+        local elapsed = now - world.doorStarted
+        stats.ActionInput.Value = elapsed < 0.1
+        stats.ActionProgress.Value = math.min(elapsed / 1.8, 1)
+        if elapsed >= 2.05 then
+            world.door.closed = false
+            world.doorPanel.CanCollide = false
+        end
+    end
     hum.nativeDir = Vec.new() -- Roblox's own no-input update, before our render controller.
+    local actualFloor = hum.FloorMaterial
+    if world.floorLag and world.firstAt and now - world.firstAt < world.floorLag then
+        hum.FloorMaterial = "Ground"
+        hum.State = world.vy > 0 and "Jumping" or "Freefall"
+    end
     if FH.NoteNormalTakeoff then FH.NoteNormalTakeoff() end
     if FH.Tick then FH.Tick(hum, root) end
     if FH.JumpMoveStep then FH.JumpMoveStep() end
     if FH.GroundMoveStep then FH.GroundMoveStep() end
+    hum.FloorMaterial = actualFloor
     local before = root.Position
     local direction = hum.nativeDir or Vec.new()
     if direction.Magnitude > 0.1 then world.facing = direction.Unit end
@@ -621,7 +644,7 @@ local function reset()
     Computers = {}
     rayParams.FilterDescendantsInstances = { LocalPlayer.Character }
     rayFilterAt += 1
-    Doors, DoorFail, DoorTries = {}, {}, {}
+    Doors, DoorFail, DoorTries, DoorOpenedAt = {}, {}, {}, {}
     world.floor = part("Floor", Vec.new(0, 0, 0), Vec.new(1000, 0.01, 1000), map)
     keypress = function(code) nativeKey(code, true) end
     keyrelease = function(code) nativeKey(code, false) end
@@ -1216,6 +1239,86 @@ scenario("a passing player cannot evict an actively progressing hack", function(
     task.delay(0.5, function() visitorRoot.Position = world.trigger.Position - Vec.new(2, 0, 0) end)
     local result = FH.ComputerContact(7, comp, world.trigger, function() return false end)
     check(result == "done" and comp.done, "slot proximity evicted a keyboard whose real progress was increasing")
+end)
+local function openingDoor()
+    local model = node("SingleDoor", "Model", map)
+    local trig = part("DoorTrigger", Vec.new(3, 3, 0), Vec.new(6, 3, 8), model, false)
+    local event = node("Event", "RemoteEvent", trig)
+    local panel = box("Panel", Vec.new(5.75, 0, -4), Vec.new(6.25, 8, 4), model)
+    local geometry = { Door = model, Center = Vec.new(6, 3, 0), Dir = Vec.new(1, 0, 0),
+        NearPos = trig.Position, NearTrig = trig, FarPos = Vec.new(10, 3, 0),
+        Size = Vec.new(0.5, 6, 8), FloorY = 0, closed = true,
+        ApproachStand = Vec.new(3, 3, 0), ApproachTrig = trig }
+    panel.door = model
+    model.geom = geometry
+    world.door, world.doorPanel, world.doorTrigger, world.doorEvent = geometry, panel, trig, event
+    return geometry, trig
+end
+scenario("door progress remains active after ActionInput becomes false", function()
+    local _, trig = openingDoor()
+    stats.ActionEvent.Value = world.doorEvent
+    stats.ActionInput.Value = false
+    local meter = {}
+    stats.ActionProgress.Value = 0.1
+    Follow.DoorOpening(trig, meter)
+    task.wait(0.15)
+    stats.ActionProgress.Value = 0.2
+    check(Follow.DoorOpening(trig, meter) == true, "advancing native door action was mistaken for an ignored E")
+    task.wait(0.9)
+    check(Follow.DoorOpening(trig, meter) == false, "static door progress retained an unbounded opening proof")
+end)
+scenario("the actual door controller opens and crosses without repeated E edges", function()
+    local geometry = openingDoor()
+    local result = Follow.PassDoor(7, geometry)
+    local presses = 0
+    for _, e in ipairs(world.inputs) do if e.key == "E" and e.down then presses += 1 end end
+    check(result == true and root.Position.X >= 8.8, "door controller never crossed its confirmed open portal")
+    check(presses == 1, "the active door opening was interrupted by extra E edges: " .. tostring(presses))
+    check(now < 103.5 and world.jumps == 0 and not Follow.KeyDown, "door added unnecessary waiting/jumps or retained E")
+end)
+scenario("manual input interrupts door opening without crossing or held E", function()
+    local geometry = openingDoor()
+    task.delay(0.5, function() world.manual = true end)
+    local result = Follow.PassDoor(7, geometry)
+    check(not result and root.Position.X < 5, "door crossing ignored manual takeover")
+    check(not Follow.KeyDown and Follow.Held == nil, "manual cancellation left door input held")
+end)
+scenario("native jump state survives a delayed solid FloorMaterial report", function()
+    world.floorLag = 0.18
+    local goal = Vec.new(20, 3, 0)
+    FH.Move(7, hum, goal)
+    check(FH.Jump(hum, true, 7), "native first jump was rejected")
+    task.wait(0.29)
+    local spaces = {}
+    for _, e in ipairs(world.inputs) do if e.key == "Space" and e.down then table.insert(spaces, e.at) end end
+    check(world.doubles == 1 and #spaces == 2 and spaces[2] - spaces[1] <= 0.28,
+        "second Space waited an extra airborne timer after delayed FloorMaterial")
+    check(root.Position.X > 4 and hum.JumpPower == 36 and hum.JumpHeight == 7.2,
+        "native window crossing lost forward travel or modified jump properties")
+end)
+scenario("a stale solid floor cannot authorize a fresh airborne first jump", function()
+    hum.FloorMaterial, hum.State = "Ground", "Freefall"
+    root.AssemblyLinearVelocity = Vec.new(16, 20, 0)
+    check(not FH.TakeoffSupported(hum, root), "stale FloorMaterial manufactured grounded support during ascent")
+end)
+scenario("door progress cannot transfer to a newly selected trigger", function()
+    local geometry, trig = openingDoor()
+    local meter = {}
+    stats.ActionEvent.Value, stats.ActionProgress.Value = world.doorEvent, 0.3
+    Follow.DoorOpening(trig, meter)
+    local other = part("DoorTrigger", Vec.new(3, 3, 8), Vec.new(6, 3, 8), geometry.Door, false)
+    local event = node("Event", "RemoteEvent", other)
+    stats.ActionEvent.Value, stats.ActionProgress.Value = event, 0
+    check(not Follow.DoorOpening(other, meter), "old trigger progress was reused for a different selected interaction")
+end)
+scenario("a verified lower landing keeps native fall and forward steering", function()
+    box("UpperPlatform", Vec.new(-10, 0, -5), Vec.new(3, 20, 5))
+    root.Position = Vec.new(0, 23, 0)
+    updateParts()
+    local result = Follow.WalkTo(7, function() return Vec.new(5, 3, 0) end, 0.8, nil, { noDoor = true, maxTime = 3 })
+    check(result == "arrived" and root.Position.Y < 3.2 and root.Position.X > 4,
+        "verified descent stopped on the upper lip or steered back during the fall")
+    check(world.jumps == 0 and hum.JumpPower == 36, "clear descent fabricated an unnecessary jump or boost")
 end)
 for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)

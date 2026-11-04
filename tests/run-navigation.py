@@ -46,6 +46,7 @@ Follow.OwnedLaneClear Follow.ActiveEscape Follow.PlanStep Follow.RescueJumpLane 
 Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalGround Follow.GoalOnFloor
 Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
 Follow.FindDoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
+Follow.DoorOpening Follow.PassDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold
 """.split()
 functions = "\n".join(function(n) for n in names)
 # Exercise the real Main wrapper too: no success-only stand-in for its terminal loop.

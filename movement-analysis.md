@@ -1,4 +1,73 @@
-# Navigation controller follow-up — 2026-11-04
+# Đọc kỹ bản ghi Workspace — 04/11/2026
+
+Đã lập chỉ mục toàn bộ 18 file / 48.755 frame / 19 đoạn / 13 map, sau đó đối chiếu sâu 15 đoạn tiêu biểu gồm 537 frame theo phím, trạng thái, cảm biến và mục tiêu tương tác. Không khẳng định đã xem video hay chơi lại Roblox.
+
+## Các đoạn đã đối chiếu
+
+| Đoạn | File, khoảng giây | Nhận xét và giới hạn |
+|---|---|---|
+| Cửa — Nuclear Power Plant | `ftf-movement-20261104-025752-7868.jsonl` — 96.8–100.9 | E xuống 97.537s, nhả 97.656s; tiến độ vẫn tăng tới 99.275s khi ActionInput=false. Đi tiếp sau khi panel mở. Không học việc dừng ở cửa thành lỗi đứng chờ. |
+| Cửa — Facility_0 | `ftf-movement-20261104-045547-1050.jsonl` — 10.4–13.5 | Một lần nhấn E ngắn khoảng 0,12s. Tiến độ tăng sau khi nhả phím; không có Space trong đoạn này. |
+| Cửa — Shopping Center | `ftf-movement-20261104-050455-4824.jsonl` — 31.4–34.2 | E nhấn 31.736s, nhả 31.859s. Phân biệt chờ thao tác mở cửa hợp lý với chờ tính đường vô lý. |
+| Cửa — Abandoned Facility | `ftf-movement-20261104-052034-5579.jsonl` — 184–187 | E nhấn 184.181s, nhả 184.329s. Kiểm tra chéo bằng chứng mở cửa với map khác, không học một tọa độ cụ thể. |
+| Dốc cạnh cửa — Homestead | `ftf-movement-20261104-080621-9846.jsonl` — 238.1–242.6 | GroundRamp báo phía trước chỉ 0,25 stud trong lúc thao tác cửa. Không có nhảy cho tới sau khi đã đi qua cửa; nhãn ramp_near tự nó không chứng minh cần nhảy. |
+| Nhảy gần cửa sổ — Homestead | `ftf-movement-20261104-080621-9846.jsonl` — 313.5–315.1 | Space 314.006s và 314.204s; trạng thái Jumping từ 314.019s nhưng frame 314.054s vẫn báo Grass. Có tăng vận tốc Y trên không sau lần Space thứ hai. Nhãn window_near không đủ để khẳng định mọi frame đều nằm trong khẩu độ cửa sổ. |
+| Bậc/cửa sổ rồi xuống tầng — Haunted Mansion | `ftf-movement-20261104-075210-6426.jsonl` — 108.1–110 | Giữ hướng tiến; có Landed rồi Jumping trở lại trước khi rơi xuống tầng dưới. Không được đếm mọi Space gần nhau là double jump: một lần có thể là nhảy mới từ bậu. |
+| Cầu thang và bậu — The Library | `ftf-movement-20261104-054153-5122.jsonl` — 484.5–489.1 | Đi lên trước, nhảy tại điểm vướng, có nhiều trạng thái Landed/Jumping. Hướng được điều chỉnh dần khi tiến, không đảo hướng qua lại. Cảm biến chạm mặt trước không đồng nghĩa toàn lối đi bị chặn. |
+| Vượt barrier rồi đi dốc — Arctic Station | `ftf-movement-20261104-130409-7611.jsonl` — 82.5–87.1 | Nhiều lần nhảy mới sau Landed ở đầu đoạn; sau đó đi lên mái/dốc mà không nhấn Space dù front_low vẫn chạm vật. Không áp dụng spam nhảy cho toàn đoạn. |
+| Lối xuống — Airport | `ftf-movement-20261104-130042-7165.jsonl` — 27.2–28.7 | Tiếp tục tiến trong khi rơi, hạ xuống Sand và đi tiếp. Có sức khỏe 100 trong đoạn quan sát; không suy rộng thành mọi độ cao đều an toàn. |
+| Tiếp cận PC — Arcade | `ftf-movement-20261104-123851-9631.jsonl` — 410.6–412.5 | Phía trước có ClearWall thuộc ComputerTable. Nhấn E khi sát bàn, dừng điều khiển tiến; game căn chỉnh tới trigger rồi tiến độ tăng. Không học việc đẩy liên tục vào bàn. |
+| Tiếp cận PC — Shopping Center | `ftf-movement-20261104-125056-4352.jsonl` — 327–329 | Đến bàn rồi game căn vị trí vào trigger. Các lần E ngắn ban đầu không có nghĩa phải nhấn E liên tục trong toàn bộ quá trình hack. |
+| Giữ PC — Spaceship | `ftf-movement-20261104-131707-2228.jsonl` — 330–351 | Đứng căn tại bàn; tiến độ có các khoảng tạm ngưng và tiếp tục. Đoạn minh họa không chứng minh máy đã hoàn tất; không lấy việc người chơi tự rời bàn làm quy tắc bỏ máy. |
+| Pod có người khác — chỉ tham khảo chuyển động | `ftf-movement-20261104-045547-1050.jsonl` — 69.1–70.2 | Có ba người khác trong context. Tới Pod, nhấn E, đổi hướng; không đủ dữ liệu để biết ai cứu hoặc tại sao rời. Không dùng để học quyết định bỏ cứu/thời gian cứu. |
+| Tương tác Pod ở xa — loại khỏi chuẩn native | `ftf-movement-20261104-125056-4352.jsonl` — 234.1–235.1 | ActionEvent trỏ Pod cách rất xa nhân vật. Không dùng tiến độ này để suy ra đã tiếp cận/cứu Pod theo cách người chơi tự nhiên. |
+
+## Kiểm tra phạm vi dữ liệu
+
+| File | Số frame | Map |
+|---|---:|---|
+| `ftf-movement-20261104-025752-7868.jsonl` | 2361 | Nuclear Power Plant by D4niel_Foxy, SonicUnkn0wn, and posyonose |
+| `ftf-movement-20261104-045547-1050.jsonl` | 3186 | Facility_0 by MrWindy |
+| `ftf-movement-20261104-050455-4824.jsonl` | 3974 | Shopping Center by D4niel_Foxy |
+| `ftf-movement-20261104-052034-5579.jsonl` | 1084 | Abandoned Facility Optimus by SonicUnkn0wn and D4niel_Foxy |
+| `ftf-movement-20261104-052849-5959.jsonl` | 2328 | Abandoned Prison by D4niel_Foxy |
+| `ftf-movement-20261104-053431-3252.jsonl` | 2291 | Shopping Center by D4niel_Foxy |
+| `ftf-movement-20261104-054153-5122.jsonl` | 4012 | The Library by Drainhp & CodedAbyss |
+| `ftf-movement-20261104-055526-2884.jsonl` | 2652 | Abandoned Facility Optimus by SonicUnkn0wn and D4niel_Foxy |
+| `ftf-movement-20261104-073435-1708.jsonl` | 2390 | Facility_0 by MrWindy |
+| `ftf-movement-20261104-074136-1518.jsonl` | 1928 | Ghost Town by D4niel_Foxy |
+| `ftf-movement-20261104-075210-6426.jsonl` | 2407 | Haunted Mansion by BreifAwesomeDude |
+| `ftf-movement-20261104-075816-2468.jsonl` | 3285 | Abandoned Facility Optimus by SonicUnkn0wn and D4niel_Foxy |
+| `ftf-movement-20261104-080621-9846.jsonl` | 2726 | Homestead by MrWindy |
+| `ftf-movement-20261104-123851-9631.jsonl` | 3128 | Arcade by D4niel_Foxy |
+| `ftf-movement-20261104-125056-4352.jsonl` | 3985 | Shopping Center by D4niel_Foxy, Airport by deadlybones28 |
+| `ftf-movement-20261104-130042-7165.jsonl` | 692 | Airport by deadlybones28 |
+| `ftf-movement-20261104-130409-7611.jsonl` | 2448 | Arctic Station by CodedAbyss |
+| `ftf-movement-20261104-131707-2228.jsonl` | 3878 | Spaceship by 7Siete_7 |
+
+## Kết luận dùng để sửa mã
+
+- Tiến độ cửa vẫn tăng sau khi nhả E. `ActionInput=false` không đủ để kết luận cửa ngừng mở. Mã mới theo dõi tiến độ có thời hạn, giữ thao tác và chỉ đi qua khi panel thực sự thông.
+- Trạng thái nhảy xuất hiện trước khi `FloorMaterial` thành Air. Lần Space thứ hai phải dựa trên chuyến nhảy đã xác nhận, không cộng thêm một bộ đếm 0,2s từ cảm biến sàn cập nhật muộn. Game vẫn quyết định chấp nhận double jump; không thay JumpPower, JumpHeight hoặc vận tốc.
+- Không dùng front_low, ramp_near hoặc window_near đơn lẻ làm lệnh nhảy. Đoạn dốc Homestead có chờ cửa thật; đoạn Arctic có các bước nhảy đã hạ chân trước, rồi đi lên mái không nhảy thêm.
+- PC có căn chỉnh vị trí bởi game; không suy ra phải tiếp tục đẩy W vào bàn. Hack ngắn hoặc người chơi tự bỏ bàn không phải bằng chứng hoàn thành PC.
+- Pod: có thể người khác cứu hoặc Beast làm người chơi đổi đường. Không học quyết định bỏ cứu, người thực hiện cứu hoặc thời gian cứu từ các đoạn không xác định được nguyên nhân.
+
+## Sàng lọc kỹ hơn so với thống kê ban đầu
+
+Con số 10.450 cặp có tiến độ tăng trước đây là gộp nhiều loại tương tác, không phải chỉ hack PC. Ghép đúng target/entity, yêu cầu cùng mục tiêu, liên tục theo thời gian, gần tương tác và loại trạng thái/crawl/đứt quãng cho 7.511 cặp tiến độ PC tại chỗ; 859 cặp có ActionInput=true. Cửa tại chỗ: 1.757 cặp, trong đó 153 có ActionInput=true. 184 cặp tiến độ có target Pod lại ở rất xa nhân vật, nên bị loại khỏi bằng chứng cứu tự nhiên. Các số này vẫn là phép lọc quan sát, không chứng minh nguồn gốc mọi trạng thái của executor.
+
+Chỉ mục tự động có 2.841 đoạn ứng viên chồng lấn; đó không phải 2.841 lần vượt vật cản/cứu đã được xác nhận. Những nhãn gần cửa sổ/dốc được dùng để tìm đoạn cần đọc, không dùng như ground truth.
+
+## Kiểm chứng mã và phần còn thiếu
+
+58 tình huống / 99 kiểm tra qua; D biên dịch thành công. Bộ kiểm tra mở rộng phát hiện 4 lỗi trên commit trước: nhận biết tiến độ cửa, nhấn E lặp giữa thao tác cửa, Space thứ hai bị trễ khi cảm biến sàn chậm, và coi sàn cũ là điểm nhảy mới trên không. Kiểm tra cửa nay chạy chính `PassDoor` và `Push`, nhưng animation/collision/input vẫn là mô phỏng.
+
+Chưa chạy trong Roblox Player/Studio. Chưa biết đầy đủ streaming, rig, executor và mọi map. Không khẳng định các sửa đổi đã loại hết đứng khựng hoặc luôn cho đường ngắn nhất. Các timer dự phòng của Pod là giới hạn kỹ thuật cần thử thực tế, không phải thời gian cứu được học từ bản ghi. Recorder vẫn là file riêng; lần sửa này không thay recorder. Các file JSONL và timeline thô được giữ trong thư mục làm việc cục bộ, không commit; bảng trên chỉ là nhận xét và mốc đối chiếu, không chứa tọa độ map hoặc tuyến đường để phát lại.
+
+---
+
+# Earlier controller follow-up — 2026-11-04
 
 Read `main` before editing: `dada887eabc5dd6d6dbe56b49317d9901e7b65e6` remained the head. The newly attached archive contains **18 JSONL files, 48,755 frames, 19 segments and 13 maps**, rather than the previous 15-file set. Recordings were extracted and analyzed locally; no raw recordings, recorded positions or recorder changes are committed. Synthetic test coordinates describe invented scenes only.
 
