@@ -34,7 +34,7 @@ FH.RecoveryAim FH.Move FH.CarryMotion FH.ReleaseMotion FH.BodyRadius FH.Collisio
 FH.ContactDistance FH.ContactGoal FH.SelectedTrigger FH.InteractionAck FH.SetContactApproach
 FH.ContactApproachValid FH.ComputerSlotTaken FH.ComputerContactClear FH.ComputerContact FH.PodContactReady
 FH.LaneRevision FH.RejectLane FH.LaneRejected FH.PathLaneRejected FH.AddBad FH.IsBad FH.PathBad
-FH.CompTriggers FH.CanHold FH.Feet FH.Space FH.TakeoffSupported FH.NormalJump
+FH.JumpReady FH.RecordTakeoff FH.CompTriggers FH.CanHold FH.Feet FH.Space FH.TakeoffSupported FH.NormalJump
 FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.MotionProfile FH.JumpMoveStep
 FH.GroundMoveStep FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
 FH.NativeJumpLimits FH.SupportVelocityY FH.TraversalOwned FH.TraversalSweep FH.TraversalStairs
@@ -47,8 +47,11 @@ Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalG
 Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
 Follow.FindDoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 Follow.DoorOpening Follow.PassDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold
+FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing
 """.split()
 functions = "\n".join(function(n) for n in names)
+functions += "\n" + function("AH.Eval").replace("function AH.Eval(", "function AH.TestEval(", 1)
+functions += "\n" + function("FH.ExitOpen").replace("function FH.ExitOpen(", "function FH.TestExitOpen(", 1)
 # Exercise the real Main wrapper too: no success-only stand-in for its terminal loop.
 main = source.index("function Follow.Main(token, player)\n")
 last = source.index("    local function farmWatch()\n", main)
@@ -56,6 +59,8 @@ prefix = source[main:last].replace("function Follow.Main(", "function Follow.Tes
 functions += "\n" + prefix + "\n    return function(comp) hackComputer(comp, nil, nil, true) end\nend\n"
 fixture = (root / "tests/navigation.spec.luau").read_text()
 fixture = fixture.replace("-- SOURCE_FUNCTIONS", functions)
+exit_range = re.search(r"^Follow\.ExitTeamRange = ([0-9.]+)", source, re.M)
+fixture = fixture.replace("-- EXIT_TEAM_RANGE", "Follow.ExitTeamRange = " + exit_range.group(1))
 with tempfile.TemporaryDirectory(prefix="ftf-navigation-") as folder:
     path = Path(folder) / "fixture.luau"
     path.write_text(fixture)

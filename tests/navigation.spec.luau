@@ -77,6 +77,10 @@ function Node:IsDescendantOf(p)
     return false
 end
 function Node:GetChildren() return self.children end
+function Node:FindFirstChildOfClass(class)
+    if class == "Humanoid" and self.hum then return self.hum end
+    for _, child in ipairs(self.children) do if child:IsA(class) then return child end end
+end
 function Node:GetDescendants()
     local a = {}
     for _, c in ipairs(self.children) do
@@ -110,7 +114,7 @@ local LocalPlayer = {}
 local Players = {}
 function Players:GetPlayers() return world and world.players or { LocalPlayer } end
 local Computers = {}
-local Doors, DoorFail, DoorTries, DoorOpenedAt = {}, {}, {}, {}
+local Doors, DoorFail, DoorTries, DoorOpenedAt, ExitDoors = {}, {}, {}, {}, {}
 local function IsInWorld(item) return item and item.Parent ~= nil end
 local unloaded = false
 local remoteHackActive, remoteHackEvent = false, nil
@@ -188,8 +192,17 @@ function FH.Prio() return false end
 function FH.RefreshFilter() end
 function FH.NavigationFilter() return rayParams end
 function FH.Done(c) return c.done == true end
-function FH.ExitOpen() return false end
-function FH.MatchOn() return true end
+function FH.ExitOpen() return world.exitsEnabled == true end
+function FH.InMatchPlayer(player) return player.Parent == Players and player.inRound ~= false end
+function FH.ExitDoorOpen(door) return door.open == true end
+function FH.ExitArea(door) return door.center, door.areaSize, door.area end
+function FH.ExitLoiter() return false end
+function AH.RescueContext() return world.rescueContext == true end
+function AH.ThreatRange(value) return world.rescueContext and value / 3 or value end
+function AH.SetState(value) AH.State = value end
+function FH.MatchOn() return world.roundOn ~= false end
+function FH.GameInfo() return world.gameInfo or {} end
+function FH.ExitScreensDone() return false end
 function FH.Grid() return nil, true end
 function FH.DoorOf(part) return part.door end
 function FH.DoorInfo(item) return item.geom end
@@ -354,7 +367,13 @@ function PathfindingService:CreatePath(spec)
             self.wps = {}
         end
     end
-    function p:GetWaypoints() return self.wps end
+    function p:GetWaypoints()
+        if world.pathYOffset and not self.offsetApplied then
+            self.offsetApplied = true
+            for _, waypoint in ipairs(self.wps) do waypoint.Position += Vec.new(0, world.pathYOffset, 0) end
+        end
+        return self.wps
+    end
     function p:Destroy() end
     return p
 end
@@ -523,6 +542,11 @@ step = function(dt)
     end
     updateParts()
     if world.cancelAt and now >= world.cancelAt then world.manual = true end
+    if world.exitsEnabled then
+        for _, exit in ipairs(ExitDoors) do
+            if exit.open and (root.Position - exit.center).Magnitude < 1 then stats.Escaped.Value = true end
+        end
+    end
 end
 local function reset()
     now = 100
@@ -579,7 +603,8 @@ local function reset()
         assert(self.FloorMaterial ~= "Air", "script forced an airborne jump state")
         if state == "Jumping" then world.launch = true end
     end
-    stats = { ActionInput = { Value = false }, ActionEvent = {}, ActionProgress = { Value = 0 } }
+    LocalPlayer.Character.hum = hum
+    stats = { Health = { Value = 100 }, Escaped = { Value = false }, ActionInput = { Value = false }, ActionEvent = {}, ActionProgress = { Value = 0 } }
     local keep = {}
     for k, v in pairs(FH) do
         if type(v) == "function" then keep[k] = v end
@@ -594,6 +619,7 @@ local function reset()
     FH.BanDirect = 0
     FH.GridBan = 0
     FH.HackFail = 0
+    FH.Endgame, FH.EndAt = { on = false }, 0
     FH.CompTrigCache = {}
     FH.PodRayCache = {}
     FH.CAP = { "Captured" }
@@ -621,11 +647,14 @@ local function reset()
     Follow.HackMax = 5
     Follow.HackSendResult = true
     Follow.HelpDist = 3.6
+    -- EXIT_TEAM_RANGE
     Follow.InAt = 0
     Follow.Beat = now
     Follow.Debug = false
     AH.BusyFlag = false
     AH.Active = false
+    AH.ExitState, AH.ThreatMap, AH.ThreatRound, AH.BeastMotion = nil, nil, nil, nil
+    AH.EvalAt, AH.AfkCheckAt, AH.NearRange, AH.SeeRange = 0, math.huge, 32, 75
     AH.JukeRange = 26
     AH.ScanSegs = 5
     AH.SegLen = 3
@@ -644,7 +673,7 @@ local function reset()
     Computers = {}
     rayParams.FilterDescendantsInstances = { LocalPlayer.Character }
     rayFilterAt += 1
-    Doors, DoorFail, DoorTries, DoorOpenedAt = {}, {}, {}, {}
+    Doors, DoorFail, DoorTries, DoorOpenedAt, ExitDoors = {}, {}, {}, {}, {}
     world.floor = part("Floor", Vec.new(0, 0, 0), Vec.new(1000, 0.01, 1000), map)
     keypress = function(code) nativeKey(code, true) end
     keyrelease = function(code) nativeKey(code, false) end
@@ -1319,6 +1348,166 @@ scenario("a verified lower landing keeps native fall and forward steering", func
     check(result == "arrived" and root.Position.Y < 3.2 and root.Position.X > 4,
         "verified descent stopped on the upper lip or steered back during the fall")
     check(world.jumps == 0 and hum.JumpPower == 36, "clear descent fabricated an unnecessary jump or boost")
+end)
+local function actor(name, position, beast, look, velocity)
+    local player = { Parent = Players, Character = node(name, "Model", map.Parent),
+        stats = { Health = { Value = 100 }, IsBeast = { Value = beast == true }, Escaped = { Value = false } } }
+    player.Character.hum = { Health = 100 }
+    local r = part("HumanoidRootPart", position, Vec.new(2, 2, 1), player.Character, false)
+    r.CFrame, r.AssemblyLinearVelocity = cf(position, look or Vec.new(1, 0, 0)), velocity or Vec.new()
+    return player, r
+end
+local function openExit(x)
+    local exit = node("ExitDoor", "Model", map)
+    exit.open, exit.center = true, Vec.new(x, 3, 0)
+    local sign = x >= 0 and -1 or 1
+    local trigger = part("ExitDoorTrigger", exit.center + Vec.new(sign * 3, 0, 0), Vec.new(3, 3, 3), exit, false)
+    node("Event", "RemoteEvent", trigger)
+    ExitDoors[#ExitDoors + 1] = exit
+    world.exitsEnabled = true
+    return exit
+end
+local function exitPlayers()
+    local a = actor("TeammateA", Vec.new(80, 3, 0))
+    local b = actor("TeammateB", Vec.new(100, 3, 0))
+    local beast, br = actor("Beast", Vec.new(150, 3, 0), true, Vec.new(-1, 0, 0), Vec.new(-16, 0, 0))
+    world.players = { LocalPlayer, a, b, beast }
+    return a, b, beast, br
+end
+scenario("rescue adopts the forward segment after passing an old waypoint", function()
+    root.Position = Vec.new(11, 3, 0); updateParts()
+    local path = { { Position = Vec.new(0, 0, 0), Action = "Walk" },
+        { Position = Vec.new(10, 0, 0), Action = "Walk" }, { Position = Vec.new(20, 0, 0), Action = "Walk" } }
+    check(Follow.PathIndex(path, root.Position, 0, true) == 3, "delayed rescue plan pulled avatar back to its nearer old vertex")
+end)
+scenario("native stair route uses the floor rather than root-height waypoint Y", function()
+    world.pathYOffset = 3
+    for i = 1, 24 do box("Step", Vec.new(i * 0.5, 0, -3), Vec.new(i * 0.5 + 0.5, i * 0.35, 3)) end
+    box("Landing", Vec.new(12.5, 0, -3), Vec.new(30, 8.4, 3))
+    world.route = function(from, goal)
+        local result = { { Position = Vec.new(0, 0, 0), Action = "Walk" } }
+        for i = 4, 24, 4 do table.insert(result, { Position = Vec.new(i * 0.5, i * 0.35, 0), Action = "Walk" }) end
+        table.insert(result, { Position = Vec.new(26, 8.4, 0), Action = "Walk" })
+        return result
+    end
+    local result = Follow.WalkTo(7, function() return Vec.new(26, 11.4, 0) end, 0.8, nil, { noDoor = true, maxTime = 6 })
+    check(result == "arrived" and root.Position.X > 25, "stair controller waited at a waypoint above the walking surface")
+    check(world.jumps <= 3, "stair waypoint height mismatch caused repeated jumps")
+end)
+scenario("landing on a higher tread rearms a real next hop without a fixed pause", function()
+    FH.Move(7, hum, Vec.new(16, 4.2, 0))
+    box("RaisedTread", Vec.new(1, 0, -4), Vec.new(20, 1.2, 4))
+    check(FH.NormalJump(hum), "first hop was refused")
+    task.wait(0.4)
+    check(hum.FloorMaterial ~= "Air" and FH.Feet(hum, root) > 1,
+        "fixture did not land on higher support")
+    check(FH.NormalJump(hum), "fixed cooldown stranded a progressed avatar on the next raised tread")
+end)
+scenario("two open exits still produce approach and stable waiting", function()
+    local exit = openExit(30); openExit(-70)
+    exitPlayers()
+    local state = {}
+    check(FH.ExitPriority(), "two open doors failed to activate exit controller")
+    local result = FH.ExitRoute(7, state)
+    check(result == "waiting" and root.Position.X > 17 and not stats.Escaped.Value,
+        "bot froze in the room or escaped before the wait policy")
+    local anchor = root.Position
+    FH.ExitRoute(7, state); task.wait(0.1)
+    check(state.door == exit and Flat(root.Position - anchor).Magnitude < 0.5, "waiting switched doors or retained a movement destination")
+end)
+scenario("exit waits for multiple far teammates then leaves when only one remains", function()
+    openExit(20); openExit(-40)
+    local a, b = exitPlayers()
+    local state = {}
+    check(FH.ExitRoute(7, state) == "waiting", "did not establish open-exit waiting state")
+    b.stats.Escaped.Value = true
+    local started = now
+    local result = FH.ExitRoute(7, state)
+    if result == "redirect" then task.wait(0.03); result = FH.ExitRoute(7, state) end
+    check(result == "escaped" and stats.Escaped.Value and now - started < 1.5,
+        "one remaining teammate did not trigger immediate native exit traversal")
+end)
+scenario("all surviving teammates within 15 studs authorize leaving", function()
+    openExit(20)
+    local a, b = exitPlayers()
+    a.Character:FindFirstChild("HumanoidRootPart").Position = Vec.new(15, 3, 0)
+    b.Character:FindFirstChild("HumanoidRootPart").Position = Vec.new(6, 3, 0)
+    check(FH.ExitPolicy(Vec.new(20, 3, 0), Vec.new(11, 3, 0)), "nearby 14-stud teammate was rejected")
+    b.Character:FindFirstChild("HumanoidRootPart").Position = Vec.new(4, 3, 0)
+    check(not FH.ExitPolicy(Vec.new(20, 3, 0), Vec.new(11, 3, 0)), "16-stud teammate was counted as assembled")
+end)
+scenario("Beast near an open waiting exit triggers escape instead of repicking", function()
+    local exit = openExit(20); openExit(-60)
+    local _, _, _, br = exitPlayers()
+    local state = {}
+    check(FH.ExitRoute(7, state) == "waiting", "could not reach exit wait")
+    br.Position = root.Position + Vec.new(-12, 0, 0)
+    local result = FH.ExitRoute(7, state)
+    if result == "redirect" then task.wait(0.03); result = FH.ExitRoute(7, state) end
+    check(result == "escaped" and state.door == exit and stats.Escaped.Value,
+        "threat cancelled the already-open selected exit instead of escaping")
+end)
+scenario("AutoHide alarms only on a facing, visible closing Beast", function()
+    local beast, br = actor("Beast", Vec.new(20, 3, 0), true, Vec.new(-1, 0, 0), Vec.new(-16, 0, 0))
+    world.players = { LocalPlayer, beast }
+    check(AH.TestEval().danger, "facing and approaching Beast did not raise alarm")
+    br.CFrame, br.AssemblyLinearVelocity = cf(br.Position, Vec.new(1, 0, 0)), Vec.new(16, 0, 0)
+    task.wait(0.06)
+    check(not AH.TestEval().danger, "retreating Beast kept the alarm active")
+    br.CFrame, br.AssemblyLinearVelocity = cf(br.Position, Vec.new(0, 0, 1)), Vec.new(0, 0, 16)
+    task.wait(0.06)
+    check(not AH.TestEval().danger, "lateral passing Beast raised alarm")
+    br.CFrame, br.AssemblyLinearVelocity = cf(br.Position, Vec.new(-1, 0, 0)), Vec.new()
+    task.wait(0.06)
+    check(not AH.TestEval().danger, "stationary facing Beast raised a movement alarm")
+end)
+scenario("wall and different floor suppress directional AutoHide alarm", function()
+    local beast, br = actor("Beast", Vec.new(20, 3, 0), true, Vec.new(-1, 0, 0), Vec.new(-16, 0, 0))
+    world.players = { LocalPlayer, beast }
+    local wall = box("Wall", Vec.new(8, 0, -5), Vec.new(9, 10, 5))
+    check(not AH.TestEval().danger, "directional alarm reached through wall")
+    wall.CanCollide = false; br.Position += Vec.new(0, 12, 0); task.wait(0.06)
+    check(not AH.TestEval().danger, "directional alarm confused floors")
+end)
+scenario("half of remaining survivors at one exit includes 2/3 and 2/4", function()
+    local exit = openExit(20); openExit(-40)
+    root.Position = Vec.new(11, 3, 0); updateParts()
+    local a, b = exitPlayers()
+    local ar = a.Character:FindFirstChild("HumanoidRootPart")
+    ar.Position = Vec.new(19, 3, 0)
+    check(FH.ExitPolicy(exit.center, Vec.new(11, 3, 0)), "two of three survivors at the same exit did not authorize leaving")
+    local c = actor("TeammateC", Vec.new(120, 3, 0)); table.insert(world.players, c)
+    check(FH.ExitPolicy(exit.center, Vec.new(11, 3, 0)), "two of four survivors at the same exit did not authorize leaving")
+    ar.Position = Vec.new(-39, 3, 0)
+    check(not FH.ExitPolicy(exit.center, Vec.new(11, 3, 0)), "survivors split across different exits were merged into one assembled group")
+end)
+scenario("confirmed exit unlock survives disappearing UI but resets for a new round", function()
+    world.gameInfo = { computersLeft = 0 }
+    check(FH.TestExitOpen(), "explicit unlock was ignored")
+    world.gameInfo = {}; task.wait(0.6)
+    check(FH.TestExitOpen(), "both-open stage lost unlock when UI no longer contained the message")
+    world.gameInfo = { computersLeft = 2 }
+    check(not FH.TestExitOpen(), "new-round computers inherited old unlock")
+end)
+scenario("directional threat uses observed motion if replicated velocity is zero", function()
+    local beast, br = actor("Beast", Vec.new(20, 3, 0), true, Vec.new(-1, 0, 0), Vec.new())
+    world.players = { LocalPlayer, beast }
+    check(not AH.TestEval().danger, "stationary first observation raised movement alarm")
+    task.wait(0.1); br.Position -= Vec.new(1.6, 0, 0)
+    check(AH.TestEval().danger, "physically approaching Beast with missing velocity was ignored")
+end)
+scenario("all three modes hand movement to exit when waiting policy becomes ready", function()
+    if not FH.ExitEscapePending then return end -- New helper absent from baseline.
+    openExit(20)
+    root.Position = Vec.new(11, 3, 0); updateParts()
+    local a, b = exitPlayers()
+    AR.Active, AR.BusyFlag, AH.Active, world.pending = true, true, true, true
+    local rescue = rescueToken()
+    check(FH.MotionValid(rescue), "ordinary rescue was cancelled before an exit condition existed")
+    b.stats.Escaped.Value = true; task.wait(0.04)
+    check(FH.ExitEscapePending(), "open-exit readiness did not request an immediate handoff")
+    check(not FH.MotionValid(rescue) and not AH.PodsPending(), "rescue kept ownership over ready exit")
+    check(FH.MotionValid(7) and FH.Move(7, hum, Vec.new(20, 3, 0)), "farm exit owner stayed blocked by stale rescue busy flag")
 end)
 for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)

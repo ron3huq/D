@@ -1,3 +1,39 @@
+# Navigation follow-up — 2026-11-05
+
+Base: `7b2f96445b2fc3a03c0bf7bd5b324640829a681a`, fetched from `main` before editing. This revision addresses new live reports of stair pauses, rescue reversals and idle behavior after both exits open. The runtime reports remain authoritative; passing the previous fixtures did not establish smooth Roblox gameplay.
+
+## Current exit policy
+
+Only living, in-round Survivors count. Beast, lobby players, dead players and escaped players do not count; captured/ragdolled Survivors remain in the remaining-player denominator but do not count as assembled at a door.
+
+The bot approaches a selected open exit and intentionally waits outside its escape volume. It leaves when **any** of these is true:
+
+- At most one other Survivor remains.
+- At least half the remaining Survivors, including our avatar when nearby, are within **15 studs of this same exit**, at a compatible elevation and with a clear approach. This includes 2/3, 1/2, 2/4 and everyone-near cases. People at different exits are not combined.
+- Beast is within **22 studs of our avatar**, on the same elevation with a clear approach. This emergency exit check is independent of the directional AutoHide alarm.
+
+An open selected door is retained when Beast approaches; it is not discarded and repicked. Confirmed endgame eligibility remains latched if its UI message disappears after opening the doors, but resets for round end, a new map, a positive computer count or explicit blocked state. Waiting renews a stationary command instead of inheriting a stale loiter destination. A ready/unsafe wait can redirect to escaping on the next controller iteration without finishing a trip to the old wait point.
+
+Automatic rescue yields only near an open exit (within 18 studs of the exit center) when this escape policy is ready or the emergency check fires. It does not yield simply because a distant exit opened. Rescue tokens, pending rescue checks and the follow busy gate share this handoff; manual input and explicit user-requested commands retain precedence.
+
+## Stair and rescue changes
+
+- A native hop no longer waits out the full fixed 0.5-second cooldown after **observed landing on a higher tread with horizontal progress**. Re-admission requires the same root/owner, at least 0.2 seconds since the first input, at least 0.7 stud horizontal progress, a support rise above 0.25 stud, no current airborne state and native support. The existing cooldown remains for same-height stationary attempts. No jump properties or velocities are changed, and this does not permit an airborne first jump.
+- Delayed plans are adopted at the forward end of a verified segment containing the avatar. Previously choosing the nearest vertex could pick the waypoint just passed, reversing rescue movement. Lanes still require real clearance and do not skip a pending jump action. A necessary, verified detour may still initially lead away from the Pod; this change does not claim a globally shortest route on unseen maps.
+- An elevated native-waypoint fixture was inspected as a possible stair cause; it already passes against the baseline. No speculative waypoint-height rewrite is included. The confirmed fixed-cooldown failure and backward adoption failure are the targeted changes.
+
+## Directional AutoHide
+
+The ordinary alarm now requires Beast to be facing our avatar and physically closing toward it, on a compatible elevation with line of sight. Facing/velocity projections use a broad forward cone rather than exact angular equality. Lateral travel, retreat and stationary facing do not independently raise the alarm. Brief observed displacement can provide velocity when replication reports zero, with a short expiry and rejection of implausibly large jumps. Map/round/character changes reset the existing movement tracking. Walls and other floors do not produce a proximity-only alarm. Existing flee safe-time hysteresis remains to prevent frame-to-frame mode oscillation.
+
+## Checks and remaining uncertainty
+
+`python3 tests/run-navigation.py /path/to/luau` passes **71 scenarios / 132 assertions**. The expanded suite exercises the actual exit policy, priority, route, traversal and directional threat evaluator, including both-open waiting, release after one teammate leaves, assembly ratios at one door, emergency escape retaining the same door, delayed UI signals, and shared movement handoff. The same harness exposes **nine failures** against `7b2f964`; the new handoff-helper-only scenario is skipped on that baseline. The elevated-waypoint fixture passing on both versions is not counted as a discovered defect. D compiles with Luau 0.741 and `git diff --check` passes.
+
+These are deterministic simulations with modeled pathfinding, collisions and game acknowledgement, not Roblox Player/Studio execution. They do not fully reproduce production coroutine timing, streaming or rig-specific stair collision. Actual live stair behavior still requires gameplay validation. No raw recordings, player coordinates or recorder modifications are included.
+
+---
+
 # Đọc kỹ bản ghi Workspace — 04/11/2026
 
 Đã lập chỉ mục toàn bộ 18 file / 48.755 frame / 19 đoạn / 13 map, sau đó đối chiếu sâu 15 đoạn tiêu biểu gồm 537 frame theo phím, trạng thái, cảm biến và mục tiêu tương tác. Không khẳng định đã xem video hay chơi lại Roblox.
