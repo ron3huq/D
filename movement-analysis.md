@@ -1,4 +1,30 @@
-# Movement reference analysis — 2026-11-03
+# Navigation controller follow-up — 2026-11-04
+
+Read `main` before editing: `dada887eabc5dd6d6dbe56b49317d9901e7b65e6` remained the head. The newly attached archive contains **18 JSONL files, 48,755 frames, 19 segments and 13 maps**, rather than the previous 15-file set. Recordings were extracted and analyzed locally; no raw recordings, recorded positions or recorder changes are committed. Synthetic test coordinates describe invented scenes only.
+
+## What the new demonstrations support
+
+With observed Shift/crawl, capture, ragdoll, escape and Beast frames excluded, the median moving velocity is approximately 16 studs/s. Of 10,450 contiguous observed progress-increase pairs, only 1,087 have ActionInput=true. These are observations, not proof of a specific control mode. Front/side proximity hits often coexist with movement, so a ray hit or a stationary timer cannot by itself justify a stop or jump. Hidden executor toggles and unrecorded states cannot be fully excluded. The examples cover more maps, but do not establish a universal shortest route or complete map coverage.
+
+## Controller causes addressed
+
+- **Replanning threw away an existing safe route.** A `replanToken` used `reset()`, clearing both waypoints and traversal state before the asynchronous replacement existed. An upstairs target then made provisional steering wait beneath it. Replanning now requests a replacement while the old route keeps its live collision checks; genuinely blocked lanes still invalidate immediately. Requests during native flight remain pending.
+- **Intent was mistaken for work.** A retained RemoteHack target near the avatar suppressed render steering without game acknowledgement. Stale farm typing could also suppress a new rescue owner. Target retention no longer proves hacking, and rescue movement does not inherit the released farm's typing state. Existing movement lease priorities remain authoritative.
+- **PC admission was mistaken for progress.** Static ActionInput refreshed the hold timer indefinitely; a separate wall-clock limit abandoned hacks that were actually progressing. Recent increases in the selected interaction's ActionProgress now renew work. Missing progress triggers bounded input retries and a tighter supported approach; a progressing unfinished PC stays selected. The old 3.1-stud stalled-contact fallback was removed.
+- **PC slot availability was only checked before travel.** All three real ComputerTrigger positions are rechecked during approach/contact. A player occupies their nearest slot or nearby selected slot; stale remote selections far from the computer do not reserve it. Failed/occupied slots lead to another keyboard on the same PC; a visitor does not evict an already progressing hack.
+- **Pod route goals inherited the avatar's floor.** The final-contact helper intentionally preserves current Y, but was also used to plan distant rescues. New route goals sample the Pod's elevation and an outside interaction boundary. An overhanging nearest side switches to a supported side at that elevation. Alternative sides scale with the actual trigger volume instead of fixed compass radii.
+- **Rescue could wait 75 seconds and report done without a release.** CapturedTorso clearing is the completion evidence. Silent contact is retried, then returned as unconfirmed after 4.5 seconds without observed progress. The next attempt remembers that contact and tries a different supported side; recapture, respawn and map changes invalidate that memory. Failed approach positions also have a short local backoff.
+- **A generic stall timer issued an unverified jump.** It now uses the existing geometry/native-height jump admission with the explicit movement owner. Door/full-height wall failures route around instead. No JumpPower, JumpHeight or velocity boost was added; existing native double-jump admission remains.
+
+## Verification and limits
+
+`python3 tests/run-navigation.py /path/to/luau` now runs **51 scenarios / 85 assertions**, including the real Main computer wrapper, WalkTo, RescuePod and Pod route selector. All pass with Luau 0.741. The same expanded harness against the original `dada887` source exposes **nine state/behavior failures**; the helper-only slot test is skipped for that baseline because its function did not exist. The upstairs rescue executes the entire synthetic route, native interaction and confirmed release in approximately 3.08 simulated seconds; the baseline first plans underneath the Pod. Route ranking also checks a farther Pod with a shorter feasible route against a nearby Pod behind a long detour. D compiles and `git diff --check` passes.
+
+This is not Roblox Player or Studio execution. The native path service, input admission, collisions and game acknowledgement are modeled. Full door animation and the actual AutoFarm/AutoHelp/AutoHide coroutine schedules are not reproduced by the fixture; priority/takeover behavior is exercised at the shared controller boundary. Live latency, streaming, executor input differences, avatar rigs and unexplored geometry still need in-game testing. The pre-existing synthetic corner-detour case still records collision attempts: passing these checks does **not** establish smooth movement or elimination of every live-game stall. No globally shortest-path or all-map claim is made.
+
+---
+
+# Previous analysis — 2026-11-03
 
 The supplied archive contains 15 JSONL recordings: 38,608 frames, 17 segments and 10 maps. These are behavioral references, not routes to replay. Raw recordings and player positions are not included in this repository.
 

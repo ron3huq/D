@@ -108,12 +108,14 @@ local Workspace = { Gravity = 196.2 }
 local PathfindingService = {}
 local LocalPlayer = {}
 local Players = {}
-function Players:GetPlayers() return { LocalPlayer } end
+function Players:GetPlayers() return world and world.players or { LocalPlayer } end
 local Computers = {}
 local Doors, DoorFail, DoorTries = {}, {}, {}
 local function IsInWorld(item) return item and item.Parent ~= nil end
 local unloaded = false
 local remoteHackActive, remoteHackEvent = false, nil
+local REMOTE_HACK_RANGE = 20
+local function IsComputerDone(comp) return comp.done == true end
 local rayParams = { FilterDescendantsInstances = {}, RespectCanCollide = true }
 local rayFilterAt = 1
 local RaycastParams = { new = function() return { FilterDescendantsInstances = {}, RespectCanCollide = true } end }
@@ -172,7 +174,8 @@ local function IsRealComputer(c, m)
     return c ~= nil and c.Name == "ComputerTable" and c.Parent ~= nil and c:IsDescendantOf(m)
 end
 local function TokOK(t) return FH.MotionValid(t) and FH.MotionAvailable(t) end
-function FH.Stat(_, names)
+function FH.Stat(player, names)
+    if player ~= LocalPlayer then return player.stats and player.stats[names[1]] end
     for _, n in ipairs(names) do
         if stats[n] then return stats[n] end
     end
@@ -212,6 +215,7 @@ function AH.Eval()
     }
 end
 function AR.Pending() return world.pending == true end
+function AR.Pods() return world.pods or {} end
 function AR.Release()
     AR.Held, AR.KeyDown = false, false
 end
@@ -402,7 +406,7 @@ step = function(dt)
         world.vy = hum.JumpPower
         world.doubles += 1
     end
-    if world.engaged then
+    if world.engaged and not world.freezeProgress then
         stats.ActionProgress.Value += dt * 0.02
         if stats.ActionProgress.Value >= world.completeAt then
             world.pc.done = true
@@ -500,6 +504,7 @@ end
 local function reset()
     now = 100
     scheduled = {}
+    remoteHackActive, remoteHackEvent = false, nil
     world = {
         boxes = {},
         keys = {},
@@ -1040,8 +1045,178 @@ scenario("nearby pod contact never reaches through a different room wall", funct
     box("RoomWall", Vec.new(1.3, 0, -3), Vec.new(1.5, 8, 3))
     check(not FH.PodContactReady(info.trig, hum, root), "pod contact bypassed room boundary")
 end)
-for _, problem in ipairs(failures) do
-    print(problem)
-end
+scenario("static ActionInput cannot keep a non-progressing keyboard forever", function()
+    local comp = computer(4)
+    world.freezeProgress = true
+    stats.ActionInput.Value = true
+    local result = FH.ComputerContact(7, comp, world.trigger, function() return false end)
+    check(result == "unconfirmed", "static input accepted as endless work: " .. tostring(result))
+    check(not comp.done and not FH.IsWorking(7) and not Follow.KeyDown, "failed keyboard retained input/work")
+end)
+scenario("real PC progress outlives the inactivity limit", function()
+    local comp = computer(4)
+    world.completeAt = 0.14 -- seven seconds of real work; fixture HackMax is five.
+    local result = FH.ComputerContact(7, comp, world.trigger, function() return false end)
+    check(result == "done" and comp.done and now > 107, "active hack was abandoned by elapsed wall time")
+end)
+scenario("retained remote target does not freeze a walking farm", function()
+    computer(4)
+    remoteHackActive, remoteHackEvent = true, world.event
+    FH.Move(7, hum, Vec.new(2, 3, 0))
+    task.wait(0.08)
+    check(root.Position.X > 0.8, "remote target proximity suppressed actual steering")
+end)
+scenario("released farm typing cannot freeze the new rescue owner", function()
+    computer(4)
+    stats.ActionInput.Value, stats.ActionEvent.Value = true, world.event
+    stats.IsTyping = { Value = true }
+    world.pending = true
+    AH.Active, AR.Active, AH.BusyFlag = true, true, false
+    local rescue = rescueToken()
+    check(FH.MotionPriority(rescue) > FH.MotionPriority({ owner = "evade", priority = 80 }), "rescue lost arbitration")
+    check(FH.Move(rescue, hum, Vec.new(-4, 3, 0)), "rescue could not claim movement")
+    task.wait(0.1)
+    check(root.Position.X < -1, "old farm acknowledgement froze rescue render input")
+    check(not FH.Move(7, hum, Vec.new(4, 3, 0)), "farm overwrote rescue movement")
+end)
+scenario("three PC slots are checked independently and update during travel", function()
+    if not FH.ComputerSlotTaken then return end -- Helper was introduced after the baseline.
+    local comp, middle = computer(8)
+    local left = part("ComputerTrigger2", Vec.new(8, 3, -3), Vec.new(1, 1, 0.6), comp, false)
+    local right = part("ComputerTrigger3", Vec.new(8, 3, 3), Vec.new(1, 1, 0.6), comp, false)
+    node("Event", "RemoteEvent", left)
+    node("Event", "RemoteEvent", right)
+    local other = { Character = node("Other", "Model", map.Parent), stats = {} }
+    local r = part("HumanoidRootPart", Vec.new(6, 3, 0), Vec.new(2, 2, 1), other.Character, false)
+    world.players = { LocalPlayer, other }
+    check(FH.ComputerSlotTaken(comp, middle), "standing two studs from occupied keyboard was missed")
+    check(not FH.ComputerSlotTaken(comp, left) and not FH.ComputerSlotTaken(comp, right), "one player occupied all three slots")
+    other.stats.ActionEvent = { Value = left:FindFirstChild("Event") }
+    r.Position = Vec.new(8, 3, -3)
+    check(FH.ComputerSlotTaken(comp, left) and not FH.ComputerSlotTaken(comp, middle), "slot occupancy was cached after a player switched")
+    r.Position = Vec.new(50, 3, 0)
+    check(not FH.ComputerSlotTaken(comp, left), "freed keyboard stayed occupied")
+end)
+scenario("replanning keeps the verified leg toward an upstairs connector", function()
+    box("UpperWalkway", Vec.new(-2, 8.2, -2), Vec.new(22, 8.4, 2))
+    world.route = function(from, to)
+        return {
+            { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, 30), Action = "Walk" },
+            { Position = Vec.new(30, 0, 30), Action = "Walk" },
+            { Position = to, Action = "Walk" },
+        }
+    end
+    local before, after
+    task.delay(0.2, function()
+        before = root.Position
+        world.planDelay = 1
+        FH.Motion.replanToken = 7
+        task.delay(0.6, function() after = root.Position end)
+    end)
+    Follow.WalkTo(7, function() return Vec.new(0, 11.4, 0) end, 0.8, nil, { noDoor = true, maxTime = 0.9 })
+    check(before and after and Flat(after - before).Magnitude > 6, "replan discarded safe connector leg and stopped below the target")
+end)
+scenario("stationary intent against a solid wall never fabricates a jump", function()
+    box("TallWall", Vec.new(1.5, 0, -10), Vec.new(2, 20, 10))
+    FH.Move(7, hum, Vec.new(8, 3, 0))
+    FH.StallIntent = { token = 7, hum = hum, root = root, anchor = root.Position, at = now - 1, seen = now, goal = Vec.new(8, 3, 0) }
+    FH.StallJumpStep()
+    task.wait(0.02)
+    check(world.jumps == 0, "generic stall timer jumped at a proven full-height wall")
+end)
+scenario("unreleased pod stops retrying a silent contact and never claims completion", function()
+    local info = pod(7)
+    world.rescueDelay = 1000
+    local tok = rescueToken()
+    local result = FH.RescuePod(tok, tok.ok, info, nil,
+        function() AR.KeyDown = true end,
+        function() AR.KeyDown = false end, nil, 5.2)
+    check(result == "unconfirmed" and world.captive.Value ~= nil, "pod timer was accepted as actual release")
+    check(now < 106 and not AR.KeyDown, "silent rescue contact kept the player standing indefinitely")
+end)
+scenario("AutoHelp reaches an upstairs pod through the real stair connector", function()
+    local info = pod(0)
+    info.trig.Position += Vec.new(0, 8.4, 0)
+    info.trig.CFrame = cf(info.trig.Position)
+    for _, b in ipairs(world.boxes) do
+        if b.part.Name == "Capsule" then
+            b.lo += Vec.new(0, 8.4, 0)
+            b.hi += Vec.new(0, 8.4, 0)
+            b.part.Position += Vec.new(0, 8.4, 0)
+        end
+    end
+    box("UpperWalkway", Vec.new(-2, 8.2, -2), Vec.new(22, 8.4, 2))
+    for i = 1, 24 do
+        box("Stair", Vec.new(8 + (i - 1) * 0.5, 0, 6), Vec.new(8 + i * 0.5, i * 0.35, 10))
+    end
+    box("UpperLanding", Vec.new(20, 8.2, -2), Vec.new(23, 8.4, 10))
+    if FH.PodRouteGoal then
+        local routeGoal = FH.PodRouteGoal(info.trig, root.Position)
+        check(routeGoal.Y > 8, "pod route goal was projected onto the avatar's lower floor")
+        check(FH.ContactDistance(info.trig, routeGoal) > 0.1, "route aimed inside the capsule footprint")
+    end
+    world.route = function(from, to)
+        local points = { Vec.new(from.X, 0, from.Z), Vec.new(4, 0, 8), Vec.new(8, 0, 8) }
+        for i = 4, 24, 4 do table.insert(points, Vec.new(8 + i * 0.5, i * 0.35, 8)) end
+        table.insert(points, Vec.new(21, 8.4, 0))
+        table.insert(points, to)
+        local result = {}
+        for _, p in ipairs(points) do table.insert(result, { Position = p, Action = "Walk" }) end
+        return result
+    end
+    local tok = rescueToken()
+    local realWalkTo, firstGoal = Follow.WalkTo, nil
+    Follow.WalkTo = function(token, getGoal, ...)
+        firstGoal = firstGoal or getGoal()
+        return realWalkTo(token, getGoal, ...)
+    end
+    local result = FH.RescuePod(tok, tok.ok, info, nil,
+        function() AR.KeyDown = true; nativeKey(0x45, true) end,
+        function() AR.KeyDown = false; nativeKey(0x45, false) end, nil, 5.2)
+    Follow.WalkTo = realWalkTo
+    check(firstGoal and firstGoal.Y > 8, "first rescue route led underneath the upstairs pod")
+    check(result == "done" and world.captive.Value == nil and root.Position.Y > 11,
+        "rescue failed on actual upper floor: " .. tostring(result))
+    check(now < 108, "rescue wasted time underneath the upper pod")
+end)
+scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
+    local nearPod = pod(8)
+    local farPod = pod(-18)
+    world.pods = { nearPod, farPod }
+    box("Partition", Vec.new(4, 0, -10), Vec.new(5, 8, 10))
+    AR.PodRoutes = {
+        [nearPod.trig] = { from = root.Position, at = now, length = 60, occupant = nearPod.occupant, map = map },
+    }
+    local pick = AR.Nearest()
+    check(pick == farPod, "nearby pod behind long detour beat the shorter reachable rescue")
+    check(AR.Nearest() == farPod, "rescue changed targets without new route evidence")
+end)
+scenario("AutoHelp changes contact side after an unconfirmed rescue attempt", function()
+    local info = pod(7)
+    world.rescueDelay = 1000
+    local tok = rescueToken()
+    local first = FH.RescuePod(tok, tok.ok, info, nil,
+        function() AR.KeyDown = true end, function() AR.KeyDown = false end, nil, 5.2)
+    check(first == "unconfirmed", "fixture did not produce failed rescue contact")
+    local failedPosition = root.Position
+    world.rescueDelay = 0.08
+    local result = FH.RescuePod(tok, tok.ok, info, nil,
+        function() AR.KeyDown = true; nativeKey(0x45, true) end,
+        function() AR.KeyDown = false; nativeKey(0x45, false) end, nil, 5.2)
+    check(result == "done" and world.captive.Value == nil, "rescue did not recover from failed contact")
+    check(Flat(root.Position - failedPosition).Magnitude > 1.5, "retried the exact same failed pod contact")
+end)
+scenario("a passing player cannot evict an actively progressing hack", function()
+    local comp = computer(4)
+    world.completeAt = 0.06
+    local other = { Character = node("Visitor", "Model", map.Parent), stats = {} }
+    local visitorRoot = part("HumanoidRootPart", Vec.new(40, 3, 0), Vec.new(2, 2, 1), other.Character, false)
+    world.players = { LocalPlayer, other }
+    task.delay(0.5, function() visitorRoot.Position = world.trigger.Position - Vec.new(2, 0, 0) end)
+    local result = FH.ComputerContact(7, comp, world.trigger, function() return false end)
+    check(result == "done" and comp.done, "slot proximity evicted a keyboard whose real progress was increasing")
+end)
+for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)
 assert(#failures == 0, "navigation/native interaction regression")

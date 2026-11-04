@@ -2466,7 +2466,7 @@ Follow.BodyH = 4.4
 Follow.MaxDrop = 12
 Follow.DoubleFrom = 0.9
 Follow.HackSendResult = true
-Follow.HackMax = 45 -- giữ E hack 1 máy tối đa bấy nhiêu giây
+Follow.HackMax = 45 -- giới hạn không có tiến độ; hack đang tăng tiến độ được tiếp tục
 Follow.StandMax = 3 -- không tiến bộ khi farm: thử thoát kẹt, trừ lúc thực sự hack/mở exit
 Follow.ExitTeamRange = 18 -- cùng cửa, cùng tầng; không tự thoát chỉ vì hết giờ chờ
 Follow.HelpDist = 3.6
@@ -2618,33 +2618,12 @@ end
 -- Feature toggles do not imply hacking: check the live interaction or game state.
 function FH.IsHacking(token)
     if FH.IsWorking(token) and FH.Work.kind == "hack" then return true end
-    -- A retained remote target is not proof that this movement owner is
-    -- hacking. It may be on another floor, already finished, or belong to
-    -- Follow while rescue/evasion has taken over the avatar.
-    if
-        remoteHackActive
-        and remoteHackEvent
-        and remoteHackEvent.Parent
-        and (type(token) ~= "table" or token.owner == "follow")
-    then
-        local trigger, root = remoteHackEvent.Parent, RootNow()
-        local computer = trigger.Parent
-        while computer and computer ~= Workspace and computer.Name ~= "ComputerTable" do
-            computer = computer.Parent
-        end
-        if
-            root
-            and trigger:IsA("BasePart")
-            and trigger.Name:sub(1, 15) == "ComputerTrigger"
-            and computer
-            and IsRealComputer(computer, GetCurrentMap())
-            and not IsComputerDone(computer)
-            and (trigger.Position - root.Position).Magnitude <= REMOTE_HACK_RANGE
-            and math.abs(trigger.Position.Y - root.Position.Y) <= Follow.MaxDY
-        then
-            return true
-        end
-    end
+    -- Rescue owns a different action; stale typing from the released farm
+    -- interaction must not suppress its render steering.
+    if type(token) == "table" and token.owner == "rescue" then return false end
+    local contact = FH.ContactApproach
+    if contact and contact.token == token and contact.kind == "computer"
+        and os.clock() < contact.untilAt and Follow.InputOwner ~= token then return false end
     if FH.True(LocalPlayer, FH.HACK_TYPING) then return true end
     local input, event = FH.Stat(LocalPlayer, FH.HACK_INPUT), FH.Stat(LocalPlayer, FH.HACK_EVENT)
     local target = event and event.Value
@@ -2748,8 +2727,9 @@ function FH.StallJumpStep()
         return false
     end
     if state.jumped or now - state.at < 0.8 then return false end
-    if not FH.NormalJump(hum) then return false end
-    FH.ConfirmNormalTakeoff(hum, root, token)
+    -- Lack of progress alone is not evidence that a jump can clear the lane.
+    -- TryJump verifies native-height geometry; walls/doors go to recovery.
+    if not FH.TryJump(hum, root, state.progressGoal or state.goal, FH.Feet(hum, root), nil, nil, token) then return false end
     state.jumped = true
     return true
 end
@@ -3418,6 +3398,27 @@ function FH.ContactApproachValid(token, hum, root, goal)
     end
     return proof.clear == true
 end
+function FH.ComputerSlotTaken(comp, trig)
+    local all = FH.CompTriggers(comp)
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            local action = FH.Stat(player, FH.HACK_EVENT)
+            local target = action and action.Value
+            if root and math.abs(root.Position.Y - trig.Position.Y) < 4.5 then
+                if (target == trig or target and target.Parent == trig)
+                    and Flat(root.Position - trig.Position).Magnitude <= 3.6 then return true end
+                local nearest, distance
+                for _, slot in ipairs(all) do
+                    local d = Flat(slot.Position - root.Position).Magnitude
+                    if not distance or d < distance then nearest, distance = slot, d end
+                end
+                if nearest == trig and distance <= 2.2 then return true end
+            end
+        end
+    end
+    return false
+end
 function FH.ComputerContactClear(token, comp, trig)
     local hum, root = GetHumanoid(), RootNow()
     if not hum or not root or not trig.Parent then return false end
@@ -3455,17 +3456,22 @@ function FH.ComputerContact(token, comp, trig, stopped)
             anchor, progressAt = root.Position, now
         end
         local acknowledged = FH.InteractionAck(trig, meter)
-        if acknowledged then heldAt = now end
-        if holding and not acknowledged and now - heldAt >= 1.2 then
+        local progressing = meter.advancedAt ~= nil and now - meter.advancedAt < 1.2
+        if not progressing and FH.ComputerSlotTaken(comp, trig) then return finish("occupied") end
+        if progressing then
+            -- HackMax bounds inactivity, never a legitimate unfinished hack.
+            started, heldAt = now, now
+        end
+        if holding and not progressing and now - heldAt >= 1.5 then
             Follow.Release(token)
             holding, attempts = false, attempts + 1
             progressAt = now - 0.25
-            if distance > 1.4 then advanceUntil = now + 0.3 end
+            if distance > 1.1 then advanceUntil = now + 0.3 end
         end
-        local ready = distance <= 1.8
-            or (distance <= 2.05 and FH.SelectedTrigger(trig))
-            or (distance <= 3.1 and now - progressAt >= 0.25)
-        if acknowledged or (ready and now >= advanceUntil) then
+        local ready = distance <= (attempts > 0 and 1.2 or 1.4)
+            or (attempts == 0 and distance <= 2.05 and FH.SelectedTrigger(trig))
+        local admitted = acknowledged and (progressing or holding and now - heldAt < 1.5)
+        if admitted or (ready and now >= advanceUntil) then
             FH.SetContactApproach(token, hum, root, trig, comp, root.Position, "computer")
             FH.Move(token, hum, root.Position, not holding)
             Follow.Hold(trig:FindFirstChild("Event"), Follow.HackSendResult, true, false, token, true)
@@ -3473,16 +3479,16 @@ function FH.ComputerContact(token, comp, trig, stopped)
                 heldAt, inputAt = now, inputAt or now
             end
             holding = true
-            if FH.InteractionAck(trig, meter) then FH.MarkWork(token, "hack") end
+            if progressing then FH.MarkWork(token, "hack") end
         else
             Follow.Release(token)
             holding = false
-            local goal = FH.ContactGoal(trig, root.Position, 0.6)
+            local goal = FH.ContactGoal(trig, root.Position, 0.2)
             FH.SetContactApproach(token, hum, root, trig, comp, goal, "computer")
             if not FH.Move(token, hum, goal) then return finish("lost") end
             if now - progressAt > 1.4 then return finish("blocked") end
         end
-        if inputAt and not acknowledged and now - inputAt >= 4 and attempts >= 2 then return finish("unconfirmed") end
+        if inputAt and not progressing and now - inputAt >= 4 and attempts >= 2 then return finish("unconfirmed") end
         Follow.Beat = now
         task.wait(0.04)
     end
@@ -9897,10 +9903,12 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if maxTime and os.clock() - startT > maxTime then return finish("timeout", true) end
         Follow.Beat = os.clock()
         if Ctl.Gate() then reset() end
+        local requestedReplan = false
         if FH.Motion.replanToken == token then
             if not job then
                 FH.Motion.replanToken = nil
-                reset()
+                requestedReplan = true
+                planAt, nextPlan = -math.huge, 0
             elseif job.done then
                 -- Stall recovery requested this plan; adopt its completed result below.
                 FH.Motion.replanToken = nil
@@ -9925,6 +9933,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         FH.RefreshFilter()
         FH.Tick(hum, root)
         local flying = ownedFlight(hum, root, now)
+        if requestedReplan and flying then FH.Motion.replanToken = token end
         if not crossingTraversal and Follow.ActiveCrossing(token, hum, root) then
             crossingTraversal = Follow.CrossingTraversal
         end
@@ -10101,7 +10110,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         local need = false
-        if mode == nil then
+        if requestedReplan then
+            need = job == nil and not flying
+        elseif mode == nil then
             need = (job == nil) and now >= nextPlan
         elseif not flying and now - planAt > 0.3 and not job then
             local moved = (goal - planGoal).Magnitude
@@ -10523,6 +10534,28 @@ function FH.PodRay(trig)
     FH.PodRayCache[trig] = { at = now, p = p }
     return p
 end
+-- ContactGoal deliberately keeps the avatar's height for the last step.
+-- Route planning must instead sample the POD floor, including when directly
+-- below it. An X/Z point inside the trigger needs an outside interaction side.
+function FH.PodRouteGoal(trig, position)
+    local point = FH.ContactGoal(trig, position, 0.55)
+    if FH.ContactDistance(trig, position) <= 0.05 then
+        local p, half = trig.CFrame:PointToObjectSpace(position), trig.Size * 0.5
+        local x, z = math.clamp(p.X, -half.X, half.X), math.clamp(p.Z, -half.Z, half.Z)
+        if half.X - math.abs(x) < half.Z - math.abs(z) then
+            x = (x >= 0 and 1 or -1) * (half.X + 0.55)
+        else
+            z = (z >= 0 and 1 or -1) * (half.Z + 0.55)
+        end
+        point = trig.CFrame:PointToWorldSpace(Vector3.new(x, 0, z))
+    end
+    local ground, floor = FH.Ground(Vector3.new(point.X, trig.Position.Y, point.Z), FH.PodRay(trig))
+    if floor and floor.Normal.Y > 0.6 and math.abs(ground.Y - trig.Position.Y) <= 4.5 then return ground end
+    -- A nearest face can overhang a lower floor. Choose a supported face at
+    -- the target elevation instead of quietly routing underneath the capsule.
+    local candidates = FH.PodApproach(trig, position)
+    return candidates[1] and candidates[1].p or Vector3.new(point.X, trig.Position.Y, point.Z)
+end
 function FH.PodApproach(trig, rp)
     local params = FH.PodRay(trig)
     local cands = {}
@@ -10530,11 +10563,12 @@ function FH.PodApproach(trig, rp)
     local bearing = offset.Magnitude > 0.1 and math.atan2(offset.Z, offset.X) or 0
     -- Begin on the player's side of the pod. A fixed compass ring can first
     -- send the player behind it even when the straight approach is open.
-    for _, rad in ipairs({ 4.4, 3.0, 5.0 }) do
+    for _, margin in ipairs({ 0.55, 1.05 }) do
         for i = 0, 7 do
             local a = bearing + i * math.pi / 4
-            local p = trig.Position + Vector3.new(math.cos(a) * rad, 0, math.sin(a) * rad)
-            local gp, floor = FH.Ground(p, params)
+            local outside = trig.Position + Vector3.new(math.cos(a), 0, math.sin(a)) * (trig.Size.Magnitude + 4)
+            local p = FH.ContactGoal(trig, outside, margin)
+            local gp, floor = FH.Ground(Vector3.new(p.X, trig.Position.Y, p.Z), params)
             if floor and floor.Normal.Y > 0.6 and math.abs(gp.Y - trig.Position.Y) < 6 then
                 local o = Vector3.new(gp.X, gp.Y + 2, gp.Z)
                 local blocked = Workspace:Raycast(o, trig.Position - o, params)
@@ -10665,7 +10699,25 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
     local holdRange = HR + 0.3
     local contactHeight = 4.5
     local routeState = { rescueTarget = trig }
+    FH.PodContactFailures = FH.PodContactFailures or setmetatable({}, { __mode = "k" })
+    local failure = FH.PodContactFailures[trig]
+    local retrySide = failure ~= nil
+        and failure.occupant == info.occupant
+        and failure.root == RootNow()
+        and failure.map == GetCurrentMap()
+        and os.clock() < failure.untilAt
     local meter = {}
+    local failedApproaches = {}
+    local function approachFailed(point)
+        for _, entry in ipairs(failedApproaches) do
+            if os.clock() < entry.untilAt and (entry.point - point).Magnitude < 2 then return true end
+        end
+        return false
+    end
+    local function rejectApproach(point)
+        failedApproaches[#failedApproaches + 1] = { point = point, untilAt = os.clock() + 8 }
+        if #failedApproaches > 16 then table.remove(failedApproaches, 1) end
+    end
     local function holds()
         local t = trig:FindFirstChild("CapturedTorso")
         return t ~= nil
@@ -10683,6 +10735,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
         return Workspace:Raycast(r.Position, trig.Position - r.Position, FH.PodRay(trig)) == nil
     end
     local function near()
+        if retrySide then return false end
         local r = RootNow()
         return FH.PodContactReady(trig, GetHumanoid(), r, HR)
     end
@@ -10776,9 +10829,23 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
 
         if not near() then
             local root = RootNow()
-            local cands = {}
-            local approach = root and FH.Ground(FH.ContactGoal(trig, root.Position, 0.55), FH.PodRay(trig))
-                or (cands[1] and cands[1].p or trig.Position)
+            local cands = root and FH.PodApproach(trig, root.Position) or {}
+            local approach = root and FH.PodRouteGoal(trig, root.Position) or trig.Position
+            if retrySide or approachFailed(approach) then
+                local alternative
+                for _, candidate in ipairs(cands) do
+                    if not approachFailed(candidate.p)
+                        and (not retrySide or Flat(candidate.p - failure.point).Magnitude > 2.2) then
+                        alternative = candidate.p
+                        break
+                    end
+                end
+                if alternative then
+                    approach = alternative
+                else
+                    retrySide = false
+                end
+            end
             moving(true)
             Follow.WalkTo(tok, function() return approach end, 0.8, function() return stop() or near() end, {
                 maxTime = math.clamp(
@@ -10792,12 +10859,14 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                 rescueJuke = trig.Position,
                 rescueSteer = routeState,
             })
+            retrySide = false
             contactAdvance()
             moving(false)
             if stop() then
                 release()
                 return "stop"
             end
+            if not near() then rejectApproach(approach) end
             if not near() and flatDist() < 22 then
                 attempts = attempts + 1
                 local r = RootNow()
@@ -10813,7 +10882,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                             break
                         end
                     end
-                    if repeated then continue end
+                    if repeated or approachFailed(c.p) then continue end
                     triedPoints[#triedPoints + 1] = c.p
                     tried = tried + 1
                     -- WalkTo plans in the background while steering; do not wait for
@@ -10833,6 +10902,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                         reached = true
                         break
                     end
+                    rejectApproach(c.p)
                 end
                 if not reached and not stop() and attempts >= 3 then
                     release()
@@ -10842,6 +10912,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
         end
         if near() and not stop() then
             local retryAt, lost, contactStopped = os.clock() + 1.2, nil, false
+            local contactProgressAt = os.clock()
             while not stop() and os.clock() - t0 < 75 do
                 Follow.Beat = os.clock()
                 if Ctl.Gate() then break end
@@ -10856,9 +10927,21 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                     if hum and FH.Move(tok, hum, r.Position, not contactStopped) then
                         contactStopped = true
                         local now = os.clock()
+                        local ack = acknowledged()
+                        if meter.advancedAt then contactProgressAt = math.max(contactProgressAt, meter.advancedAt) end
+                        -- Input admission is not a release. Bound a silent/stale
+                        -- contact and let navigation retry another usable side.
+                        if now - contactProgressAt >= 4.5 then
+                            FH.PodContactFailures[trig] = {
+                                occupant = info.occupant, root = r, map = GetCurrentMap(),
+                                point = r.Position, untilAt = now + 10,
+                            }
+                            release()
+                            return "unconfirmed"
+                        end
                         -- Refresh a missed E at the same contact point. The
                         -- game-selected trigger keeps one uninterrupted hold.
-                        if now >= retryAt and acknowledged() ~= true then
+                        if now >= retryAt and ack ~= true then
                             release()
                             -- Give InputEnded a frame before the next E press.
                             -- Keep an acknowledged rescue held without pulses.
@@ -10887,7 +10970,13 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
         end
     end
     release()
-    return "done"
+    local captive = trig.Parent and trig:FindFirstChild("CapturedTorso")
+    if captive and captive.Value == nil then
+        FH.PodContactFailures[trig] = nil
+        return "done"
+    end
+    if captive and info.occupant and captive.Value ~= info.occupant then return "changed" end
+    return stop() and "stop" or "timeout"
 end
 -- ================= FOLLOW: ĐIỀU HƯỚNG KIỂU AUTOHIDE =================
 -- Quét 12 hướng + hướng thẳng tới mục tiêu bằng FH.Seg (raycast), chấm điểm,
@@ -11831,7 +11920,7 @@ function Follow.Main(token, player)
                     end
                 end
             end
-            if best and bd <= 1.4 then taken[best] = true end
+            if best and bd <= 2.2 then taken[best] = true end
         end
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer then
@@ -11875,12 +11964,13 @@ function Follow.Main(token, player)
         end
         for _, trig in ipairs(trigs) do
             if stop() then return end
+            if FH.ComputerSlotTaken(comp, trig) then continue end
             if not FH.ComputerContactClear(token, comp, trig) then
                 local result = Follow.WalkTo(
                     token,
                     function() return trig.Position end,
                     0.8,
-                    function() return stop() or FH.ComputerContactClear(token, comp, trig) end,
+                    function() return stop() or FH.ComputerSlotTaken(comp, trig) or FH.ComputerContactClear(token, comp, trig) end,
                     { maxTime = 30, nearOk = 1.0, approachModel = comp }
                 )
                 if stop() then
@@ -11973,7 +12063,7 @@ function Follow.Main(token, player)
         )
         Follow.Rescuing = false
         if not ok then error(res, 0) end
-        if res == "far" then podSkip[info.trig] = { occupant = info.occupant, untilAt = os.clock() + 2 } end
+        if res == "far" or res == "timeout" or res == "unconfirmed" then podSkip[info.trig] = { occupant = info.occupant, untilAt = os.clock() + 2 } end
     end
 
     local function exitRun(extraAbort)
@@ -14058,7 +14148,7 @@ function AR.Nearest()
                         local wps, len, path, routeAux
                         local nav, map = FH.Nav, GetCurrentMap()
                         local cands = FH.PodApproach(e.info.trig, from)
-                        local goal = cands[1] and cands[1].p or e.info.trig.Position
+                        local goal = FH.PodRouteGoal(e.info.trig, from)
                         if nav and nav.Map == map and nav.Route then
                             local start = FH.Ground(from)
                             local meta
@@ -14135,7 +14225,7 @@ function AR.Rescue(tok, info, alive)
         Follow.HelpDist + 1.6 -- Reach the pod's interaction side, outside its collision shell.
     )
     FH.ReleaseMotion(tok, false)
-    if res == "far" then
+    if res == "far" or res == "timeout" or res == "unconfirmed" then
         -- Briefly try another pod/side; a later capture in this pod is never skipped.
         AR.Skip[info.trig] = { occupant = info.occupant, untilAt = os.clock() + 2 }
         AR.Pick = nil

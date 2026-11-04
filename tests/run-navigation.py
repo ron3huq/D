@@ -32,7 +32,7 @@ FH.MotionPriority FH.MotionValid FH.MotionActive FH.MotionAvailable FH.MarkWork 
 FH.NoteStallIntent FH.IsHacking FH.AwaitingFloorRoute FH.CommittedTraversal FH.StallJumpStep
 FH.RecoveryAim FH.Move FH.CarryMotion FH.ReleaseMotion FH.BodyRadius FH.CollisionBody
 FH.ContactDistance FH.ContactGoal FH.SelectedTrigger FH.InteractionAck FH.SetContactApproach
-FH.ContactApproachValid FH.ComputerContactClear FH.ComputerContact FH.PodContactReady
+FH.ContactApproachValid FH.ComputerSlotTaken FH.ComputerContactClear FH.ComputerContact FH.PodContactReady
 FH.LaneRevision FH.RejectLane FH.LaneRejected FH.PathLaneRejected FH.AddBad FH.IsBad FH.PathBad
 FH.CompTriggers FH.CanHold FH.Feet FH.Space FH.TakeoffSupported FH.NormalJump
 FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.MotionProfile FH.JumpMoveStep
@@ -44,8 +44,8 @@ Follow.DropLane Follow.ActiveDrop Follow.DropClear Follow.StartDrop FH.BindNativ
 Follow.ActiveCrossing Follow.CrossingPlan Follow.CommitCrossing Follow.RouteProfile
 Follow.OwnedLaneClear Follow.ActiveEscape Follow.PlanStep Follow.RescueJumpLane Follow.RescueShortcut
 Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalGround Follow.GoalOnFloor
-Follow.WalkTo FH.PodRay FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
-Follow.FindDoorRoute Follow.PlanDoor Follow.Pick AH.Scan
+Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
+Follow.FindDoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 """.split()
 functions = "\n".join(function(n) for n in names)
 # Exercise the real Main wrapper too: no success-only stand-in for its terminal loop.
