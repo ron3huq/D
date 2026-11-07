@@ -1,3 +1,43 @@
+# Rescue stairs, doorway handoff and first-route latency — 2026-11-07 follow-up
+
+Base: `a1d6d84dfdcedbc2e69456ad387f47ff036f50d5`, fetched from `main` before this follow-up. The user still reports live stalls on stair ascents/descents, after landing on objects and through doors. Those reports override the previous simulation results. This change also removes Fly levels 2/3, keeping the original level-1 speed of 20 and an on/off J toggle.
+
+## Controller causes addressed
+
+1. **A flight of diagonal stairs was tested as one jump obstacle.** The existing side-support test could reject different tread heights under the two shoulders, and the fallback classified the whole rise as a window requiring repeated double jumps. Rescue now traces consecutive supporting treads at 0.25-stud spacing, in either direction, with bounded per-tread rise/drop, body/head clearance and the Humanoid's slope limit. A missing support, closed door, tall wall or ceiling still rejects the lane. The proof is cached briefly and scoped to rescue, including a Follow-owned rescue; PC and AutoHide keep their existing admission rules. Stair walking still uses the native controller, and a blocked tread can request an ordinary native takeoff.
+2. **A descending waypoint could remain below the actual tread.** Horizontal proximity then stopped movement while the 3D arrival check refused to advance. Rescue corrects waypoint height only to a nearby visible supporting floor, retaining waypoint order/actions. Live path entry checks use the current surface. If a higher tread already carried the body past an old takeoff, its proved next surface can advance the route immediately. A stranded takeoff underneath an object instead hands back to checked surface/drop exploration, rather than continually aiming at the avatar's feet. An independent grounded progress guard also invalidates a route after 0.9 seconds without real horizontal progress; successful API calls or vertical bouncing do not rearm it.
+3. **The first usable native route stayed private until optional comparisons finished.** `PathAny` can now publish a best-so-far waypoint candidate to its owning WalkTo job. The same movement controller adopts it at the current position while a second profile/atlas comparison continues. Optional shorter-door comparison also runs in that planner job while the usable native leg remains available. Before adopting a delayed door result, its entry and remaining cost are checked again from the live position; a saving measured at the old start cannot force a longer reverse leg. Publication transfers no native Path ownership; cancellation tests check that outstanding candidates are destroyed.
+4. **A native pass-through door leg was discarded before reaching its stand.** If its first waypoint was beyond a closed panel more than 3.4 studs away, entry validation could reject the whole leg. Provisional steering then wandered beside the wall before rediscovering the door. Rescue can retain that leg when the actual portal is on the intended route, on the correct floor and its interaction stand is reachable. Opening still precedes traversal of the panel.
+5. **The opening/push/replan boundary lacked a door continuation.** Rescue now retains a short, body-checked crossing until the character has cleared the chosen doorway. The movement lease, manual control and owner cancellation still govern it. A newly obstructed lane cancels it; a stale reverse provisional destination cannot immediately pull the avatar back over the threshold. E is released before continuation.
+6. **Local window shortcuts still carried a jump penalty.** The previous revision removed that penalty from native/atlas ranking but left it in `RescueShortcut`. A physically verified shorter window shortcut now competes by distance, including small savings. It need not move closer to the Pod in a straight line on every individual leg.
+
+No JumpPower, JumpHeight, velocity boost or teleport was added. The PC interaction functions, Follow.Main, native jump-input functions and every AutoHide function compare unchanged against the base.
+
+## Recording cross-check
+
+Re-read the local JSONL around Library 485.65–487.1 seconds, Abandoned Facility 67.1–69.85 seconds and Arctic Station 82.65–84.4 seconds. These include changing headings across support, brief landings between native takeoffs and continued horizontal input; the controller must not require a fixed horizontal plane across the whole staircase. Library 458.4–460.8 seconds was also re-read for descent: the player retains forward travel across downward support and a native jump transition. Abandoned Facility 123.65–125.75 and Homestead 23.1–25.2 include falls/landings near stairs/ramps; those tags alone are not proof of a particular stair mesh or an optimal route.
+
+The recordings guide continuity and input behavior, not fixed coordinates or route playback. Pod departures still do not establish who rescued or why the player left. Raw samples, coordinates and inspection output remain local under untracked `work/`.
+
+## Verification and limits
+
+The expanded harness runs the **complete production MotionStep dispatcher**, including stair/stall recovery, in addition to the actual navigation and interaction functions. Earlier fixtures called only takeoff/Tick and the final steering helpers, which missed interactions between recovery helpers. Terrain, collision response, input delivery and PathfindingService are still simulated; map geometry is synthetic rather than a reconstruction of the supplied maps.
+
+**96 scenarios / 193 assertions pass** with Luau 0.741. The expanded harness exposes **10 failures** against the fetched base. D compiles and `git diff --check` passes. Examples in the same synthetic model:
+
+| Scenario | Base | Revised |
+| --- | --- | --- |
+| Diagonal stair ascent | 4.47 simulated seconds; 8 first jumps / 5 second jumps | 1.98 seconds; 1 first jump / 0 second jumps |
+| Descending waypoints 0.6 stud below the supporting treads | Stationary until the 5-second test timeout | Arrived in 1.86 seconds; no jumps |
+| Closed door through confirmed Pod release | 8.25 seconds, with provisional wandering before opening | 3.93 seconds; no backtracking or >0.2-second stationary interval between doorway clearance and Pod contact |
+| Second native profile delayed | First usable leg remained unadopted at the 0.4-second snapshot | Movement follows that leg before the delayed comparison completes |
+
+Additional checks cover supported descent, low-step collision requiring native takeoffs, a blocked/covered stair, small-saving window shortcuts, door continuation/cancellation, landing on a wide prop and disposal after asynchronous cancellation. The low-step fixture explicitly holds the body at its old height when a step is refused; it does not lift the character through a blocked riser.
+
+**No Roblox Player/Studio execution was possible here.** Live collision rigs, streaming, door animation/bounds, executor input and production scheduling across every map remain unverified. The measurements above demonstrate specific modeled regressions, not elimination of the user's live stalls or globally shortest routes on an incomplete map. The separate recorder is unchanged.
+
+---
+
 # AutoHelp recovery and route distance — 2026-11-07
 
 Base: `51db610da4982d96d1aa0d1f1e44d75201227b00`, fetched before editing. The user reports continued live stalls and reversals. PC hacking is reported stable and its interaction functions are preserved. AutoHide steering is reported stable; its only changed function is `AH.Eval`, adding the requested exposed six-stud emergency, including a stationary/AFK Beast inside that range.

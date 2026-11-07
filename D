@@ -1953,7 +1953,7 @@ TrackConnection(Players.PlayerAdded:Connect(function() RefreshPlayerList() end))
 TrackConnection(Players.PlayerRemoving:Connect(function(player) RefreshPlayerList(player) end))
 RefreshPlayerList()
 -- ================= FLY [J] =================
-Fly.Speeds = { 20, 40, 60 }
+Fly.Speeds = { 20 }
 Fly.Level = 0
 function Fly.UpdateButton()
     local b = Btn.Fly
@@ -2034,10 +2034,6 @@ end
 function Fly.Toggle()
     if not Fly.Active then
         Fly.Start()
-    elseif Fly.Level < #Fly.Speeds then
-        Fly.Level = Fly.Level + 1
-        Fly.Speed = Fly.Speeds[Fly.Level]
-        Fly.UpdateButton()
     else
         Fly.Stop()
     end
@@ -2648,6 +2644,8 @@ end
 function FH.CommittedTraversal(token, hum, root, point)
     if not (hum and root and point) then return false end
     if FH.ExitTraversalClear and FH.ExitTraversalClear(token, hum, root, point) then return true end
+    if Follow.ActiveDoor and Follow.ActiveDoor(token, hum, root)
+        and Flat(point - Follow.DoorTraversal.aim).Magnitude < 0.2 then return true end
     local crossing = Follow.CrossingTraversal
     if
         Follow.ActiveCrossing
@@ -3127,6 +3125,7 @@ function FH.ReleaseMotion(token, stop)
     if FH.VerticalRouteWait and FH.VerticalRouteWait.token == token then FH.VerticalRouteWait = nil end
     if Follow.CrossingTraversal and Follow.CrossingTraversal.token == token then Follow.CrossingTraversal = nil end
     if Follow.DropTraversal and Follow.DropTraversal.token == token then Follow.DropTraversal = nil end
+    if Follow.DoorTraversal and Follow.DoorTraversal.token == token then Follow.DoorTraversal = nil end
     if AH.DropTraversal and AH.DropTraversal.token == token then AH.DropTraversal = nil end
     if FH.BlockedIntent and FH.BlockedIntent.token == token then FH.BlockedIntent = nil end
     if FH.StallIntent and FH.StallIntent.token == token then FH.StallIntent = nil end
@@ -3157,6 +3156,7 @@ function FH.CancelMotion(owner)
         { FH, "BlockedIntent" },
         { Follow, "CrossingTraversal" },
         { Follow, "DropTraversal" },
+        { Follow, "DoorTraversal" },
         { AH, "DropTraversal" },
     }) do
         local state = entry[1][entry[2]]
@@ -3178,7 +3178,8 @@ end
 local function TokOK(token) return FH.MotionValid(token) and FH.MotionAvailable(token) end
 function FH.ResetCaches(keep)
     FH.ExitTraversal = nil
-    FH.VerticalRouteWait, Follow.CrossingTraversal, Follow.DropTraversal = nil, nil, nil
+    FH.VerticalRouteWait, Follow.CrossingTraversal, Follow.DropTraversal, Follow.DoorTraversal = nil, nil, nil, nil
+    FH.RescueSurfaceProbe = nil
     if FH.ForwardPulse then FH.ReleaseForward() end
     FH.Jmp = nil
     FH.JumpFlight = nil
@@ -5200,6 +5201,10 @@ function FH.TraversalLane(token, hum, root, point, feetY, reachLimit, wantWalk, 
     if shapeOK and not hit and wantWalk == false then return finish(nil) end
     if hit and FH.DoorOf(hit.Instance) then return finish(false) end
     if hit or not shapeOK then
+        if Follow.RescueSurfaceLane then
+            local safe, kind, floorY = Follow.RescueSurfaceLane(token, hum, root, point, feetY, reach)
+            if safe then return finish(true, kind == "stairs" and kind or nil, floorY - feetY) end
+        end
         local stair = FH.TraversalStairs(root, dir, feetY, reach, radius, height)
         if stair then return finish(true, "stairs", stair - feetY) end
     end
@@ -5274,7 +5279,13 @@ function FH.TraversalLane(token, hum, root, point, feetY, reachLimit, wantWalk, 
         end
         local walk, floorY = walkable()
         if walk then return finish(true, floorY > feetY + 0.1 and "stairs" or nil, floorY - feetY) end
-        if not hit then return finish(false) end
+        if not hit then
+            if Follow.RescueSurfaceLane then
+                local safe, kind, floorY = Follow.RescueSurfaceLane(token, hum, root, point, feetY, reach)
+                if safe then return finish(true, kind == "stairs" and kind or nil, floorY - feetY) end
+            end
+            return finish(false)
+        end
     end
     local chosen
     for _, lift in ipairs({ 0.35, 0.7, 1.1, 1.6, 2.2, 3.1, single, 4.2, double }) do
@@ -6086,7 +6097,7 @@ function FH.RouteCost(wps, length, rescue)
     end
     return cost
 end
-function FH.PathAny(rp, goal, startIdx, alts, alive, firstValid, liveLanes, rescue)
+function FH.PathAny(rp, goal, startIdx, alts, alive, firstValid, liveLanes, rescue, offer)
     local gp = FH.Ground(goal)
     local partial, best, bestLength, bestCost, bestPath
     local directLength = rescue and Flat(gp - rp).Magnitude or (gp - rp).Magnitude
@@ -6106,6 +6117,9 @@ function FH.PathAny(rp, goal, startIdx, alts, alive, firstValid, liveLanes, resc
             if not bestCost or cost < bestCost then
                 if bestPath then bestPath:Destroy() end
                 best, bestLength, bestCost, bestPath = w, length, cost, path
+                -- Publish waypoints without transferring native Path ownership.
+                -- Rescue can walk this candidate while alternatives still yield.
+                if rescue and offer then offer(w, length) end
             elseif path then
                 path:Destroy()
             end
@@ -7976,6 +7990,24 @@ function Follow.Release(owner)
     end
     return true
 end
+function Follow.ActiveDoor(token, hum, root)
+    local door = Follow.DoorTraversal
+    if not door or door.token ~= token or door.hum ~= hum or door.root ~= root then return false end
+    local delta = Flat(door.aim - root.Position)
+    local along = delta:Dot(door.dir)
+    if not TokOK(token) or Ctl.On() or Fly.Active or os.clock() >= door.untilAt
+        or along <= 0.6 or (delta - door.dir * along).Magnitude > 2.2 then
+        Follow.DoorTraversal = nil
+        return false
+    end
+    if not door.checkAt or os.clock() >= door.checkAt or (root.Position - door.checkedPos).Magnitude > 0.3 then
+        door.checkAt, door.checkedPos = os.clock() + 0.1, root.Position
+        local safe = Follow.RescueSurfaceLane(token, hum, root, door.aim, FH.Feet(hum, root), math.min(delta.Magnitude, 6))
+        door.clear = safe == true and Follow.RescueBodyClear(hum, root, door.aim, FH.Feet(hum, root), 6)
+    end
+    if not door.clear then Follow.DoorTraversal = nil; return false end
+    return true
+end
 function Follow.Push(token, point, secs, abort, stopD, door)
     local t0 = os.clock()
     local lastPos, lastChk, stuckAt = nil, t0, nil
@@ -8350,8 +8382,16 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
         end
     end
     DoorOpenedAt[d] = os.clock()
+    if type(token) == "table" and token.owner == "rescue" or type(token) == "number" and Follow.Rescuing then
+        local hum, root = GetHumanoid(), RootNow()
+        if hum and root then
+            Follow.DoorTraversal = { token = token, hum = hum, root = root, aim = crossPoint,
+                dir = g.Dir, untilAt = os.clock() + 3 }
+        end
+    end
     local crossed = Follow.Push(token, crossPoint, 3, function() return not alive() end, 1.8, g)
     if not crossed then
+        if Follow.DoorTraversal and Follow.DoorTraversal.token == token then Follow.DoorTraversal = nil end
         DoorOpenedAt[d] = nil
         if alive() then DoorFail[d] = os.clock() + 8 end
         Follow.Release(token)
@@ -8600,8 +8640,120 @@ function Follow.RouteProfile(token, hum, root, point, feetY, reach, owned)
         if safe == true and (crossing == "stairs" or crossing == "jump" or crossing == "jump2") then
             return crossing, rise, inst, door
         end
+        if safe == true and (type(token) == "table" and token.owner == "rescue" or type(token) == "number" and Follow.Rescuing) then
+            return crossing, rise, inst, door
+        end
     end
     return kind, sill, inst, door
+end
+-- Follow support continuously instead of requiring the entire flight of
+-- stairs to fit in one horizontal jump envelope. Descending treads use the
+-- same proof; a missing tread/drop, closed door or head obstruction rejects it.
+function Follow.RescueSurfaceLane(token, hum, root, point, feetY, reachLimit)
+    if not (type(token) == "table" and token.owner == "rescue" or type(token) == "number" and Follow.Rescuing) then return nil end
+    local delta = Flat(point - root.Position)
+    local reach = math.min(delta.Magnitude, reachLimit or 6)
+    if reach <= 0.15 or reach > 6.1 then return nil end
+    local dir, now = delta.Unit, os.clock()
+    local cache = FH.RescueSurfaceProbe
+    if cache and cache.token == token and cache.root == root and cache.hum == hum
+        and cache.filterAt == rayFilterAt and now - cache.at < 0.12
+        and (root.Position - cache.pos).Magnitude < 0.15 and math.abs(feetY - cache.feetY) < 0.15
+        and math.abs(reach - cache.reach) < 0.15 and dir:Dot(cache.dir) > 0.995 then
+        return cache.safe, cache.kind, cache.floorY
+    end
+    local function finish(safe, kind, floorY)
+        FH.RescueSurfaceProbe = { token = token, root = root, hum = hum, filterAt = rayFilterAt,
+            at = now, pos = root.Position, feetY = feetY, reach = reach, dir = dir,
+            safe = safe, kind = kind, floorY = floorY }
+        return safe, kind, floorY
+    end
+    local radius, height, bottom = FH.CollisionBody(hum, root, feetY)
+    local across = Vector3.new(-dir.Z, 0, dir.X)
+    local count, floorY = math.max(1, math.ceil(reach / 0.25)), feetY
+    local length = reach / count
+    local slope = math.max(0.25, math.cos(math.rad(math.min(hum.MaxSlopeAngle or 45, 75))))
+    for i = 1, count do
+        local nextPoint = root.Position + dir * (length * i)
+        local floor = Workspace:Raycast(Vector3.new(nextPoint.X, floorY + 1.2, nextPoint.Z),
+            Vector3.new(0, -2.5, 0), rayParams)
+        if not floor or floor.Normal.Y < slope or FH.DoorOf(floor.Instance) then return finish(false) end
+        local nextY = floor.Position.Y
+        if nextY - floorY > 1.05 or floorY - nextY > 1.05 then return finish(false) end
+        local highest = math.max(floorY, nextY)
+        for _, offset in ipairs({ radius, -radius }) do
+            local side = nextPoint + across * offset
+            local support = Workspace:Raycast(Vector3.new(side.X, nextY + 2.3, side.Z),
+                Vector3.new(0, -4.6, 0), rayParams)
+            if support then
+                -- Across a diagonal stair the shoulders can straddle several
+                -- treads. They need body clearance, not identical foot heights.
+                if FH.DoorOf(support.Instance) or support.Position.Y - nextY > 2.2 then return finish(false) end
+                highest = math.max(highest, support.Position.Y)
+            end
+        end
+        local previous = root.Position + dir * (length * (i - 1))
+        local origin = Vector3.new(previous.X, highest + bottom + 0.03, previous.Z)
+        local ok, blocked = FH.TraversalSweep(root, origin, dir, length, height - 0.04, radius, 0.05)
+        if ok and blocked then return finish(false) end
+        for _, offset in ipairs({ 0, radius, -radius }) do
+            local body = Vector3.new(nextPoint.X, nextY + bottom + 0.03, nextPoint.Z) + across * offset
+            if Workspace:Raycast(body, Vector3.new(0, height - 0.04, 0), rayParams) then return finish(false) end
+            if not ok and Workspace:Raycast(origin + across * offset, dir * length, rayParams) then return finish(false) end
+        end
+        floorY = nextY
+    end
+    return finish(true, floorY > feetY + 0.1 and "stairs" or "walk", floorY)
+end
+-- Navmesh samples can sit slightly above/below a tread. Keep the action and
+-- waypoint order, correcting only a nearby visible supporting surface.
+function Follow.RescueWaypoints(wps)
+    local result = {}
+    for i, waypoint in ipairs(wps) do
+        local point = waypoint.Position
+        local ground, hit = FH.Ground(point)
+        if hit and hit.Normal.Y > 0.25 and math.abs(ground.Y - 0.5 - point.Y) <= 1.25 then
+            point = Vector3.new(point.X, ground.Y - 0.5, point.Z)
+        end
+        if type(waypoint) == "table" then
+            result[i] = table.clone(waypoint) -- Retain atlas portal metadata.
+            result[i].Position = point
+        else
+            result[i] = { Position = point, Action = waypoint.Action, Label = waypoint.Label }
+        end
+    end
+    return result
+end
+function Follow.RescuePathIndex(token, hum, root, wps)
+    local rp, feetY = root.Position, FH.Feet(hum, root)
+    local index, closest, forward, lateralBest
+    local function clear(point)
+        local distance = Flat(point - rp).Magnitude
+        if distance < 0.15 then return math.abs(point.Y - feetY) <= 1.25 end
+        if distance > 6 then return false end
+        local surface, _, floorY = Follow.RescueSurfaceLane(token, hum, root, point, feetY, distance)
+        if surface and math.abs(floorY - point.Y) <= 1.25
+            and not FH.LaneRejected(rp, point, feetY) then return true end
+        return math.abs(point.Y - feetY) <= 1.5
+            and Follow.OwnedLaneClear(token, hum, root, rp, point, feetY, distance, true)
+            or point.Y < feetY - 1.5 and Follow.DropLane(hum, root, point, feetY) ~= nil
+    end
+    for i = 2, #wps do
+        local point, previous = wps[i].Position, wps[i - 1].Position
+        local incoming, offset = Flat(point - previous), Flat(rp - previous)
+        local distance = (Vector3.new(rp.X, feetY, rp.Z) - point).Magnitude
+        if incoming.Magnitude > 0.1 and wps[i].Action ~= Enum.PathWaypointAction.Jump then
+            local fraction = offset:Dot(incoming) / incoming:Dot(incoming)
+            local lateral = (offset - incoming * fraction).Magnitude
+            local y = previous.Y + (point.Y - previous.Y) * math.clamp(fraction, 0, 1)
+            if fraction >= 0 and fraction < 1 and lateral <= 2.2 and math.abs(y - feetY) <= 1.5
+                and (not lateralBest or lateral <= lateralBest + 0.05) and clear(point) then
+                forward, lateralBest = i, lateral
+            end
+        end
+        if (not closest or distance < closest) and clear(point) then index, closest = i, distance end
+    end
+    return forward or index or Follow.PathIndex(wps, rp, feetY, true)
 end
 function Follow.RescueBodyClear(hum, root, point, feetY, reach)
     if not Workspace.Blockcast then return true end
@@ -8776,6 +8928,7 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
         end
         return false
     end
+    if rescueGoal and Follow.ActiveDoor(token, hum, root) then return FH.Move(token, hum, Follow.DoorTraversal.aim) end
     if Follow.ActiveCrossing(token, hum, root) then return FH.Move(token, hum, Follow.CrossingTraversal.aim) end
     if Follow.ActiveDrop(token, hum, root) then return FH.Move(token, hum, Follow.DropTraversal.aim) end
     local verticalBlocked = false
@@ -9242,7 +9395,7 @@ function Follow.FindDoorRoute(
     local pick, fallback, bestCost, fallbackCost, fallbackRank, steering
     for i = 1, math.min(doors and 12 or 4, #cands) do
         if not valid() then return nil end
-        if pick and os.clock() - now >= (doors and 3 or 2) then break end
+        if pick and os.clock() - now >= (doors and (costLimit and 0.2 or 0.35) or 2) then break end
         local g = cands[i].g
         local approach = cands[i].approach
         local nearDist = Flat(approach - rp).Magnitude
@@ -9310,6 +9463,8 @@ function Follow.FindDoorRoute(
                     pick, bestCost = cands[i], cost
                     if doors then
                         g.RescueRank, g.RescueCost = 0, cost
+                        g.RescueFrom = rp
+                        g.RescueTailCost = cost - FH.RouteCost(w1, l1 or 0, true)
                     end
                     if offer then offer(g) end
                 end
@@ -9538,7 +9693,6 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
     if not (wps and wps[index] and goal) then return nil end
     local routeLength = (wps[index].Position - Vector3.new(rp.X, feetY, rp.Z)).Magnitude
     local candidates = {}
-    local goalDistance = Flat(goal - rp).Magnitude
     local last = math.min(#wps, index + 10, blockedAt and blockedAt - 1 or #wps)
     for i = index + 1, last do
         local point = wps[i].Position
@@ -9548,22 +9702,19 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
         if
             distance >= 3
             and distance <= 18
-            and saved > 2
+            and saved > 0.05
             and math.abs(point.Y - feetY) <= 2.5
             and wps[i].Action ~= Enum.PathWaypointAction.Jump
-            and Flat(goal - point).Magnitude < goalDistance - 1
         then
             candidates[#candidates + 1] = { index = i, point = point, saved = saved }
         end
     end
     table.sort(candidates, function(a, b) return a.saved > b.saved end)
-    local hum = GetHumanoid()
-    local speed = hum and math.max(hum.WalkSpeed, 1) or 16
     -- Bound ray work even if a native path contains many small detour points.
     for i = 1, math.min(2, #candidates) do
         local candidate = candidates[i]
-        local jumps, big = Follow.RescueJumpLane(rp, candidate.point, feetY)
-        if jumps and candidate.saved > 2 + speed * (jumps * 0.16 + big * 0.18) then return candidate.index end
+        local jumps = Follow.RescueJumpLane(rp, candidate.point, feetY)
+        if jumps then return candidate.index end
     end
     return nil
 end
@@ -9697,13 +9848,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         local crossing, drop = Follow.CrossingTraversal, Follow.DropTraversal
         if crossing and crossing.token == token then Follow.CrossingTraversal = nil end
         if drop and drop.token == token then Follow.DropTraversal = nil end
+        if Follow.DoorTraversal and Follow.DoorTraversal.token == token then Follow.DoorTraversal = nil end
         FH.ReleaseMotion(token, stop)
         return result
     end
     local function setPath(w, full, path)
         local hum, root = GetHumanoid(), RootNow()
         local index = 2
-        if hum and root then index = Follow.PathIndex(w, root.Position, FH.Feet(hum, root), physicalRoute) end
+        if hum and root then
+            if opts.rescueJuke then
+                w = Follow.RescueWaypoints(w)
+                index = Follow.RescuePathIndex(token, hum, root, w)
+            else
+                index = Follow.PathIndex(w, root.Position, FH.Feet(hum, root), physicalRoute)
+            end
+        end
         if physicalRoute and index == nil and not noDoor and hum and root and w[2] then
             local delta = Flat(w[2].Position - root.Position)
             if delta.Magnitude > 0.1 and math.abs(w[2].Position.Y - FH.Feet(hum, root)) < Follow.MaxDY then
@@ -9712,15 +9871,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     root.Position.Z,
                     delta.Unit,
                     FH.Feet(hum, root),
-                    math.min(delta.Magnitude, 3.4)
+                    math.min(delta.Magnitude, opts.rescueJuke and 18 or 3.4)
                 )
                 local geom = kind == "door" and door and FH.DoorGeom(door, root.Position)
-                if
-                    geom
-                    and not FH.LaneRejected(root.Position, w[2].Position, FH.Feet(hum, root))
-                    and FH.DoorOnFloor(geom, root.Position, FH.Feet(hum, root))
-                then
-                    index = 2 -- The interaction branch opens this portal before issuing movement.
+                if geom and FH.DoorOnFloor(geom, root.Position, FH.Feet(hum, root))
+                    and not FH.LaneRejected(root.Position, w[2].Position, FH.Feet(hum, root)) then
+                    local approach = opts.rescueJuke and FH.RescueDoorStand(geom, root.Position)
+                    local towardPortal = not opts.rescueJuke or geom.Dir:Dot(Flat(w[2].Position - geom.Center)) > 0
+                    local reachable = not opts.rescueJuke or approach
+                        and Follow.OwnedLaneClear(token, hum, root, root.Position, approach, FH.Feet(hum, root), nil, true)
+                    if towardPortal and reachable then
+                        -- A native pass-through door leg is usable up to its
+                        -- reachable stand. Do not discard it because its first
+                        -- waypoint lies beyond the currently closed panel.
+                        index = 2
+                    end
                 end
             end
         end
@@ -9906,9 +10071,16 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         local hum = GetHumanoid()
         local rescue = opts.rescueJuke ~= nil
         local atlas, native
+        local function offer(w, length)
+            if dead() or not job or job.gen ~= myGen or FH.PathBad(w) then return end
+            local preview = job.preview
+            if not preview or length < preview.length then
+                job.preview = { wps = w, length = length }
+            end
+        end
         if rescue then
             local w, length, partial, path = FH.PathAny(rp, goal, radIdx, fails > 0,
-                function() return not dead() end, false, true, true)
+                function() return not dead() end, false, true, true, offer)
             if dead() then if path then path:Destroy() end; return nil end
             native = { w = w, length = length, partial = partial, path = path }
             if w and not FH.PathBad(w) and FH.RouteCost(w, length, true) <= straight + 0.01 then
@@ -10006,6 +10178,17 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 and os.clock() - detourAt > (rescue and 1.5 or 8)
             then
                 detourAt = os.clock()
+                if rescue then
+                    local chosen = Follow.FindDoorRoute(token, rp, goal, nil,
+                        function() return not dead() end, nil, nil, opts.rescueJuke,
+                        pendingSteer, nil, FH.RouteCost(w, len, true) - 0.01)
+                    if dead() then if path then path:Destroy() end; return nil end
+                    if chosen and chosen.Door then
+                        return { mode = "portal", door = chosen,
+                            fallback = { mode = "path", wps = w, full = true, path = path } }
+                    end
+                    return { mode = "path", wps = w, full = true, path = path }
+                end
                 return {
                     mode = "door",
                     limit = not rescue and len * 0.7 or nil,
@@ -10093,6 +10276,30 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 }
             end
             return accepted and "path" or nil
+        elseif res.mode == "portal" then
+            local current, hum, portal = RootNow(), GetHumanoid(), res.door
+            if mode == "path" and wps and wps[wpi] and current and hum and portal.RescueFrom
+                and portal.RescueTailCost and Flat(current.Position - portal.RescueFrom).Magnitude > 0.75 then
+                local stand = portal.RescueStand or portal.NearPos
+                local feet = FH.Feet(hum, current)
+                local direct = FH.Line(current.Position, stand, feet, Follow.GoalGround(stand).Y - 0.5, 1.5)
+                    and Follow.OwnedLaneClear(token, hum, current, current.Position, stand, feet, nil, true)
+                local remaining = (wps[wpi].Position - Vector3.new(current.Position.X, feet, current.Position.Z)).Magnitude
+                for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
+                if not direct or (stand - current.Position).Magnitude + portal.RescueTailCost >= remaining - 0.01 then
+                    -- A shortcut measured at the old start can become a
+                    -- backward detour while its search yields. Keep the live
+                    -- route unless the new entry still proves a saving now.
+                    dispose(res)
+                    return "path"
+                end
+            end
+            local state = Follow.RescueDoorState(pendingSteer, opts.rescueJuke)
+            if state then state.committed = res.door end
+            local passed = Follow.PassDoor(token, res.door, abort, nil, opts.rescueJuke, pendingSteer)
+            if passed then dispose(res); return "door" end
+            if state then state.committed = nil end
+            return applyRes(res.fallback, RootNow() and RootNow().Position or rp, goal)
         elseif res.mode == "door" then
             local ok
             if res.escape then
@@ -10126,6 +10333,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 pendingSteer.doors, pendingSteer.suspended, pendingSteer.retreatOrigin = nil, nil, nil
                 pendingSteer.verticalLane, pendingSteer.verticalSince, pendingSteer.verticalRetryAt = nil, nil, 0
                 pendingSteer.dir, pendingSteer.token = nil, nil
+                if Follow.DoorTraversal and Follow.DoorTraversal.token == token then Follow.DoorTraversal = nil end
                 FH.ReleaseMotion(token, false)
                 if FH.LiveLanes then
                     for i = #FH.LiveLanes.lanes, 1, -1 do
@@ -10190,6 +10398,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         else
             pendingSteer.suspended = nil
+        end
+        if opts.rescueJuke and Follow.ActiveDoor(token, hum, root) then
+            FH.Move(token, hum, Follow.DoorTraversal.aim)
+            task.wait(0.03)
+            continue
         end
         if not crossingTraversal and Follow.ActiveCrossing(token, hum, root) then
             crossingTraversal = Follow.CrossingTraversal
@@ -10331,10 +10544,31 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             progressPosition, progressAt = rp, now
         end
         if job and not job.done and now - progressAt > 8 then return finish("timeout", true) end
+        if opts.rescueJuke and mode and not flying and now - progressAt > 0.9
+            and not FH.IsWorking(token) and not Follow.KeyDown and not AR.KeyDown
+            and not Follow.Held and not AR.Held and not Follow.ActiveEscape(token, hum, root) then
+            local attempted = FH.Motion.token == token and FH.Motion.aim
+            if attempted and Flat(attempted - rp).Magnitude > 1.2 then FH.RejectLane(token, hum, attempted, 3) end
+            reset()
+            nextPlan = 0
+            progressPosition, progressAt = rp, now
+        end
         if Follow.ActiveEscape(token, hum, root) then
             FH.Move(token, hum, goal)
             task.wait(0.03)
             continue
+        end
+        if opts.rescueJuke and job and not job.done and job.preview and not flying then
+            local preview = job.preview
+            job.preview = nil
+            local remaining = mode == "path" and wps and wps[wpi]
+                and (wps[wpi].Position - Vector3.new(rp.X, feetY, rp.Z)).Magnitude or math.huge
+            if remaining < math.huge then
+                for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
+            end
+            if mode ~= "path" or preview.length < remaining - 0.05 then
+                setPath(preview.wps, true, nil)
+            end
         end
         if job and job.done and not flying then
             local j = job
@@ -10592,6 +10826,31 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 continue
             end
             local wp = wps[wpi]
+            if opts.rescueJuke and not flying and Flat(wp.Position - rp).Magnitude <= 1.2
+                and math.abs(wp.Position.Y - feetY) > 1.5 then
+                local nextPoint = wps[wpi + 1] and wps[wpi + 1].Position or goal
+                local surface, _, floorY = Follow.RescueSurfaceLane(token, hum, root, nextPoint, feetY)
+                if wps[wpi + 1] and Flat(nextPoint - rp).Magnitude <= 6 and surface
+                    and math.abs(floorY - nextPoint.Y) <= 1.25 and not FH.LaneRejected(rp, nextPoint, feetY) then
+                    -- A higher tread has already carried us past the old
+                    -- takeoff. Continue on its proved next surface immediately.
+                    wpi, laIdx = wpi + 1, nil
+                    wp = wps[wpi]
+                else
+                    local point, landing, hop = Follow.RescueLocalLane(token, hum, root, nextPoint, feetY, pendingSteer)
+                    reset()
+                    if point then
+                        local direction = Flat(point - rp)
+                        pendingSteer.aim, pendingSteer.dir, pendingSteer.goal = point, direction.Unit, goal
+                        pendingSteer.verticalLane = { aim = point, at = now, anchor = rp, progressAt = now,
+                            checkAt = now + 0.12, clear = true }
+                        if landing then dropTraversal = Follow.StartDrop(token, hum, root, landing, hop) end
+                        FH.Move(token, hum, point)
+                    end
+                    task.wait(0.03)
+                    continue
+                end
+            end
             aim = wp.Position
             if wp.Action == Enum.PathWaypointAction.Jump then
                 if Flat(wp.Position - rp).Magnitude < 4.5 then waypointJump(wpi, hum, root, now) end

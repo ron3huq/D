@@ -364,9 +364,11 @@ end
 function PathfindingService:CreatePath(spec)
     table.insert(world.pathSpecs, spec)
     local p = { Status = Enum.PathStatus.Success, Blocked = signal() }
+    world.pathObjects = world.pathObjects or {}
+    table.insert(world.pathObjects, p)
     function p:ComputeAsync(from, to)
         world.firstComputeAt = world.firstComputeAt or now
-        task.wait(world.planDelay)
+        task.wait(type(world.planDelay) == "function" and world.planDelay(#world.pathSpecs) or world.planDelay)
         if world.noNativePath then self.Status = Enum.PathStatus.NoPath; self.wps = {}; return end
         self.wps = world.route and world.route(from, to, spec)
             or { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" }, { Position = to, Action = "Walk" } }
@@ -382,7 +384,7 @@ function PathfindingService:CreatePath(spec)
         end
         return self.wps
     end
-    function p:Destroy() end
+    function p:Destroy() self.destroyed = true end
     return p
 end
 local function nativeKey(code, down)
@@ -464,10 +466,7 @@ step = function(dt)
         hum.FloorMaterial = "Ground"
         hum.State = world.vy > 0 and "Jumping" or "Freefall"
     end
-    if FH.NoteNormalTakeoff then FH.NoteNormalTakeoff() end
-    if FH.Tick then FH.Tick(hum, root) end
-    if FH.JumpMoveStep then FH.JumpMoveStep() end
-    if FH.GroundMoveStep then FH.GroundMoveStep() end
+    FH.MotionStep()
     hum.FloorMaterial = actualFloor
     local before = root.Position
     local direction = hum.nativeDir or Vec.new()
@@ -498,7 +497,8 @@ step = function(dt)
         world.vy = 0
         hum.FloorMaterial = "Ground"
     end
-    local blocked = false
+    local stepBlocked = hum.FloorMaterial ~= "Air" and world.stepHeight ~= nil and floor > feet + world.stepHeight
+    local blocked = stepBlocked
     for _, b in ipairs(world.boxes) do
         if
             b.part.CanCollide
@@ -517,6 +517,7 @@ step = function(dt)
         -- Side contact blocks horizontal motion, not the native jump's rise.
         -- Resolve the vertical axis separately (e.g. a real ceiling).
         candidate = before
+        if stepBlocked then nextFeet = feet end
         world.blocked += 1
         for _, b in ipairs(world.boxes) do
             if
@@ -549,6 +550,7 @@ step = function(dt)
             or nil
     end
     updateParts()
+    if world.frameSample then world.frameSample(dt) end
     if world.cancelAt and now >= world.cancelAt then world.manual = true end
     if world.exitsEnabled then
         for _, exit in ipairs(ExitDoors) do
@@ -1679,6 +1681,203 @@ scenario("window continuation retains ownership while its next native hop is coo
     Follow.WalkTo(token, function() return goal end, 0.8, nil,
         { noDoor = true, maxTime = 0.15, rescueJuke = goal })
     check(retained, "native hop cooldown was mistaken for failed traversal and cancelled the window commitment")
+end)
+-- These fixtures drive the full production render dispatcher, including
+-- stair/stall recovery, instead of only Tick + Move. Terrain remains synthetic.
+local function stairRescue(down, offset, diagonal, lowStep)
+    local run, rise = 0.5, lowStep and 0.35 or 1
+    local width = diagonal and 60 or 6
+    for i = 1, 24 do
+        box("Tread", Vec.new(2 + (i - 1) * run, 0, -width / 2), Vec.new(2 + i * run, i * rise, width / 2))
+    end
+    box("Landing", Vec.new(14, 0, -width / 2), Vec.new(24, 24 * rise, width / 2))
+    if down then root.Position = Vec.new(18, 3 + 24 * rise, 0); updateParts() end
+    world.stepHeight = lowStep and 0.2 or nil
+    world.pathYOffset = offset
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        local w = { { Position = Vec.new(from.X, from.Y - 3, from.Z), Action = "Walk" } }
+        if down then
+            for i = 24, 2, -4 do
+                table.insert(w, { Position = Vec.new(2 + (i - 0.5) * run, i * rise,
+                    diagonal and (24 - i) * run or 0), Action = "Walk" })
+            end
+        else
+            for i = 4, 24, 4 do
+                table.insert(w, { Position = Vec.new(2 + (i - 0.5) * run, i * rise,
+                    diagonal and i * run or 0), Action = "Walk" })
+            end
+        end
+        table.insert(w, { Position = to, Action = "Walk" })
+        return w
+    end
+    local z = diagonal and 12 or 0
+    local goal = down and Vec.new(-4, 3, z) or Vec.new(22, 3 + 24 * rise, z)
+    local result = Follow.WalkTo(rescueToken(), function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 5, rescueJuke = goal })
+    check(result == "arrived", "stair rescue stalled: " .. tostring(result))
+    check(world.doubles == 0 and world.jumps <= (down and 0 or lowStep and 4 or 2), "supported stairs became repeated window/double jumps")
+    check(now < 103, "stair rescue spent most of its time recalculating or returning to old treads")
+    check(not FH.MotionStepRetry, "the full render dispatcher hid a movement-helper error")
+end
+scenario("rescue climbs diagonal treads without repeated double jumps", function() stairRescue(false, nil, true, false) end)
+scenario("rescue descends diagonal treads without jumping or pausing", function() stairRescue(true, nil, true, false) end)
+scenario("rescue descends when navmesh waypoints lie below tread surfaces", function() stairRescue(true, -0.6, false, false) end)
+scenario("rescue uses native takeoffs when simulated treads cannot be walked", function() stairRescue(false, nil, true, true) end)
+scenario("rescue does not treat a wall or covered stairs as a supported ascent", function()
+    local token = rescueToken()
+    box("SolidWall", Vec.new(2, 0, -4), Vec.new(3, 20, 4))
+    local goal = Vec.new(5, 12, 0)
+    check(not Follow.RescueSurfaceLane or not Follow.RescueSurfaceLane(token, hum, root, goal, 0, 5),
+        "a tall wall became an incline by looking at its top")
+    world.boxes = {}
+    for i = 1, 8 do box("Tread", Vec.new(i * 0.5, 0, -3), Vec.new((i + 1) * 0.5, i * 0.35, 3)) end
+    box("LowCeiling", Vec.new(0, 3.8, -3), Vec.new(6, 4.1, 3))
+    FH.RescueSurfaceProbe = nil
+    check(not Follow.RescueSurfaceLane or not Follow.RescueSurfaceLane(token, hum, root, goal, 0, 5),
+        "stair proof ignored actual body headroom")
+end)
+scenario("a slightly shorter window shortcut wins without a jump penalty", function()
+    box("Sill", Vec.new(4.5, 0, -3), Vec.new(5.5, 1.8, 3))
+    local points = { Vec.new(0, 0, 0), Vec.new(0, 0, 2), Vec.new(10, 0, 2), Vec.new(10, 0, 0) }
+    local wps = {}
+    for _, point in ipairs(points) do table.insert(wps, { Position = point, Action = "Walk" }) end
+    local shortcut = Follow.RescueShortcut(root.Position, 0, wps, 2, nil, Vec.new(30, 3, 0))
+    check(shortcut == 4 or shortcut == 3, "a verified shorter jump lost to the empty walking detour")
+end)
+scenario("rescue adopts the first native leg while the narrow profile still computes", function()
+    box("Partition", Vec.new(2, 0, -10), Vec.new(3, 20, 10))
+    FH.BanDirect = now + 20
+    world.planDelay = function(index) return index == 1 and 0.05 or 1.5 end
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, -12), Action = "Walk" },
+            { Position = Vec.new(8, 0, -12), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local token, goal = rescueToken(), Vec.new(30, 3, 0)
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 0.4, rescueJuke = goal })
+    check(root.Position.Z < -3, "usable native leg waited for the second ComputeAsync/atlas comparison")
+    task.wait(1.7)
+    for _, path in ipairs(world.pathObjects) do check(path.destroyed, "cancelled preview leaked a native Path") end
+end)
+scenario("rescue keeps walking its native leg during a slow optional door comparison", function()
+    box("Partition", Vec.new(2, 0, -10), Vec.new(3, 20, 10))
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, -12), Action = "Walk" },
+            { Position = Vec.new(8, 0, -12), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local original, searchAt = Follow.FindDoorRoute, nil
+    Follow.FindDoorRoute = function() searchAt = now; task.wait(1.5); return nil end
+    local token, goal = rescueToken(), Vec.new(30, 3, 0)
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { maxTime = 0.5, rescueJuke = goal })
+    Follow.FindDoorRoute = original
+    check(searchAt and root.Position.Z < -4, "optional door search replaced the usable route with stopped/local steering")
+    task.wait(1.7)
+    for _, path in ipairs(world.pathObjects) do check(path.destroyed, "cancelled door comparison leaked its fallback Path") end
+end)
+scenario("rescue finishes the doorway crossing before accepting a reverse provisional goal", function()
+    local g = openingDoor()
+    local token, goal = rescueToken(), Vec.new(30, 3, 0)
+    local steering = { rescueTarget = {} }
+    check(Follow.PassDoor(token, g, nil, nil, goal, steering), "rescue never opened/crossed the doorway")
+    local exitX = root.Position.X
+    local reverse = Vec.new(0, 3, 0)
+    world.planDelay = 1.5
+    Follow.WalkTo(token, function() return reverse end, 0.8, nil,
+        { noDoor = true, maxTime = 0.06, rescueJuke = goal, rescueSteer = steering })
+    check(root.Position.X > exitX + 0.5, "opening-to-route handoff returned to the old side before clearing the door")
+    check(not Follow.KeyDown and not AR.KeyDown, "door continuation retained the interaction key")
+end)
+scenario("door continuation cancels on a new obstruction or movement owner", function()
+    local token = rescueToken()
+    root.Position = Vec.new(8.9, 3, 0); updateParts()
+    Follow.DoorTraversal = { token = token, hum = hum, root = root, aim = Vec.new(11, 3, 0),
+        dir = Vec.new(1, 0, 0), untilAt = now + 2 }
+    box("NewObstruction", Vec.new(10, 0, -3), Vec.new(10.5, 12, 3))
+    check(not Follow.ActiveDoor or not Follow.ActiveDoor(token, hum, root), "door commitment continued into a new wall")
+    Follow.DoorTraversal = { token = token, hum = hum, root = root, aim = Vec.new(11, 3, 0),
+        dir = Vec.new(1, 0, 0), untilAt = now + 2 }
+    FH.ReleaseMotion(token, false)
+    check(Follow.DoorTraversal == nil, "released rescue retained door ownership")
+end)
+scenario("landing above an old takeoff exits the prop instead of aiming at its own feet", function()
+    box("WideProp", Vec.new(4, 0, -4), Vec.new(14, 3, 4))
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(5, 0, 0), Action = "Jump" },
+            { Position = Vec.new(15, 0, 0), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local landed, moved = false, false
+    task.delay(0.24, function()
+        root.Position = Vec.new(5, 6, 0); updateParts()
+        hum.FloorMaterial, hum.State, world.vy = "Ground", "Running", 0
+        FH.JumpFlight, FH.Jmp = nil, nil
+        landed = true
+        task.delay(0.7, function() moved = Flat(root.Position - Vec.new(5, 6, 0)).Magnitude > 4 end)
+    end)
+    local goal, token = Vec.new(30, 3, 0), rescueToken()
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 4, rescueJuke = goal })
+    check(landed and moved and result == "arrived", "old takeoff below the prop stranded the rescue after landing")
+    check(world.jumps <= 3 and world.doubles == 0, "prop escape depended on repeated jumps")
+end)
+scenario("AutoHelp opens a closed doorway and continues all the way to a confirmed pod release", function()
+    local info = pod(30)
+    local g = openingDoor()
+    Doors = { g.Door }
+    box("LeftDoorWall", Vec.new(5.75, 0, -30), Vec.new(6.25, 15, -4))
+    box("RightDoorWall", Vec.new(5.75, 0, 4), Vec.new(6.25, 15, 30))
+    local idle, longest, reversed, exited, previousX = 0, 0, false, false, 0
+    world.frameSample = function(dt)
+        if root.Position.X >= 8.8 then exited = true end
+        if exited and root.Position.X < 23 then
+            if root.Position.X < previousX - 0.02 then reversed = true end
+            idle = Flat(root.AssemblyLinearVelocity).Magnitude < 0.1 and idle + dt or 0
+            longest = math.max(longest, idle)
+        end
+        previousX = root.Position.X
+    end
+    local token = rescueToken()
+    local result = FH.RescuePod(token, token.ok, info, nil,
+        function() AR.KeyDown = true; nativeKey(0x45, true) end,
+        function() AR.KeyDown = false; nativeKey(0x45, false) end, nil, 5.2)
+    check(result == "done" and world.captive.Value == nil, "door-to-pod controller stopped before a real release")
+    check(exited and not reversed and longest < 0.2, "rescue paused or returned through the door after crossing it")
+    check(now < 106 and not Follow.KeyDown and not AR.KeyDown, "door-to-pod rescue exhausted its travel time or kept E")
+end)
+scenario("Follow-owned rescue uses the same supported stair proof", function()
+    Follow.Rescuing = true
+    for i = 1, 12 do box("Tread", Vec.new((i - 1) * 0.5, 0, -20), Vec.new(i * 0.5, i, 20)) end
+    local safe, kind = FH.TraversalLane(7, hum, root, Vec.new(4, 8, 3), 0, 5, true)
+    check(safe and kind == "stairs", "numeric Follow rescue owner lost the continuous stair admission")
+end)
+scenario("a delayed optional door cannot reverse a route after its saving has disappeared", function()
+    box("Partition", Vec.new(2, 0, -10), Vec.new(3, 20, 10))
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, -12), Action = "Walk" },
+            { Position = Vec.new(8, 0, -12), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local originalSearch, originalPass = Follow.FindDoorRoute, Follow.PassDoor
+    local passed, searched = false, false
+    Follow.FindDoorRoute = function(_, from)
+        searched = true
+        task.wait(0.4)
+        return { Door = node("OptionalDoor", "Model", map), NearPos = Vec.new(0, 3, 3),
+            RescueStand = Vec.new(0, 3, 3), RescueFrom = from, RescueTailCost = 32 }
+    end
+    Follow.PassDoor = function() passed = true; return false end
+    local goal, token = Vec.new(30, 3, 0), rescueToken()
+    Follow.WalkTo(token, function() return goal end, 0.8, nil, { maxTime = 0.65, rescueJuke = goal })
+    Follow.FindDoorRoute, Follow.PassDoor = originalSearch, originalPass
+    check(searched and not passed and root.Position.Z < -8,
+        "an old-start door comparison replaced forward progress with a longer reverse leg")
 end)
 for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)
