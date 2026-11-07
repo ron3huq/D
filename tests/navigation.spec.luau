@@ -213,7 +213,13 @@ function FH.RescueDoorStand(g) return g.NearPos, g.NearTrig end
 function FH.Unstick() end
 function FH.AmBeast() return false end
 function Ctl.On() return world.manual == true end
-function Ctl.Gate() return world.manual == true end
+function Ctl.Gate()
+    if world.blockingManualGate and world.manual then
+        while world.manual do task.wait(0.03) end
+        return true
+    end
+    return world.manual == true
+end
 local UserInputService = {}
 function UserInputService:GetFocusedTextBox() return world.focus and {} or nil end
 function UserInputService:IsKeyDown(k) return world.keys[k] == true end
@@ -359,7 +365,9 @@ function PathfindingService:CreatePath(spec)
     table.insert(world.pathSpecs, spec)
     local p = { Status = Enum.PathStatus.Success, Blocked = signal() }
     function p:ComputeAsync(from, to)
+        world.firstComputeAt = world.firstComputeAt or now
         task.wait(world.planDelay)
+        if world.noNativePath then self.Status = Enum.PathStatus.NoPath; self.wps = {}; return end
         self.wps = world.route and world.route(from, to, spec)
             or { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" }, { Position = to, Action = "Walk" } }
         if not self.wps then
@@ -1508,6 +1516,169 @@ scenario("all three modes hand movement to exit when waiting policy becomes read
     check(FH.ExitEscapePending(), "open-exit readiness did not request an immediate handoff")
     check(not FH.MotionValid(rescue) and not AH.PodsPending(), "rescue kept ownership over ready exit")
     check(FH.MotionValid(7) and FH.Move(7, hum, Vec.new(20, 3, 0)), "farm exit owner stayed blocked by stale rescue busy flag")
+end)
+scenario("rescue leaves a concave wall pocket while the native route is pending", function()
+    box("FrontWall", Vec.new(2, 0, -3), Vec.new(3, 14, 3))
+    box("LeftWall", Vec.new(-5, 0, -3), Vec.new(3, 14, -2))
+    box("RightWall", Vec.new(-5, 0, 2), Vec.new(3, 14, 3))
+    world.planDelay = 3
+    local goal = Vec.new(20, 3, 0)
+    local token, steering = rescueToken(), {}
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 0.65, rescueJuke = goal, rescueSteer = steering })
+    check(root.Position.X < -5, "rescue waited/pressed into the wall instead of taking its only backward exit")
+    check(world.jumps == 0, "solid wall pocket was treated as a jump obstacle")
+end)
+scenario("rescue steps down from a high object when its forward descent is walled", function()
+    box("TallObject", Vec.new(-2, 0, -2), Vec.new(2, 10, 2))
+    box("ForwardWall", Vec.new(2.2, 0, -3), Vec.new(2.5, 22, 3))
+    root.Position = Vec.new(0, 13, 0); updateParts()
+    world.planDelay = 2
+    local goal = Vec.new(20, 3, 0)
+    local token = rescueToken()
+    local leftObject = false
+    task.delay(0.7, function() leftObject = root.Position.Y < 5 and math.abs(root.Position.Z) > 2 end)
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 3, rescueJuke = goal })
+    check(leftObject and result == "arrived" and root.Position.Y < 4,
+        "rescue remained on the object because the direct down lane was blocked")
+    check(world.blocked < 10, "object escape walked into the wall corner after dropping")
+    check(world.jumps == 0 and hum.JumpPower == 36, "object escape used an unnecessary jump or boost")
+end)
+scenario("rescue keeps a verified window crossing through a short sill landing", function()
+    local token = rescueToken()
+    root.Position = Vec.new(3, 3, 0); updateParts()
+    Follow.CrossingTraversal = { token = token, hum = hum, root = root,
+        aim = Vec.new(8, 0, 0), origin = Vec.new(0, 3, 0), dir = Vec.new(1, 0, 0),
+        t = now - 0.4, untilAt = now + 1.5, airborne = true, feetY = 0 }
+    world.planDelay = 2
+    local goal = Vec.new(-10, 3, 0)
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 0.24, rescueJuke = goal })
+    check(root.Position.X > 5.5, "landing cancelled the forward crossing and pulled the avatar back across the window")
+end)
+scenario("manual reposition starts a fresh rescue route without consuming its timeout", function()
+    local token, steering = { owner = "rescue", priority = 90, ok = function() return true end }, {}
+    local goal = Vec.new(20, 3, 0)
+    world.blockingManualGate = true
+    task.delay(0.2, function()
+        FH.RejectLane(token, hum, goal)
+        world.manual = true
+        steering.failedLanes = { { origin = root.Position, dir = Vec.new(1, 0, 0), untilAt = now + 20 } }
+        steering.doors = { obsolete = true }
+        task.delay(1, function()
+            root.Position = Vec.new(6, 3, 0); updateParts()
+            world.manual = false
+        end)
+    end)
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 1.5, rescueJuke = goal, rescueSteer = steering })
+    check(result == "arrived", "manual input expired the old timeout or retained the stale blocked route")
+    check(not steering.doors or not steering.doors.obsolete, "manual room change retained the old door-crossing history")
+    local stale = false
+    for _, lane in ipairs(FH.LiveLanes and FH.LiveLanes.lanes or {}) do if lane.token == token then stale = true end end
+    check(not stale, "manual reposition retained the rescue owner's stale rejected corridors")
+end)
+scenario("native rescue route starts before a slow atlas scan", function()
+    local atlasCalls = 0
+    FH.Nav = { Map = map, QueueArea = function() end,
+        Route = function() atlasCalls += 1; task.wait(1.5); return nil end }
+    FH.BanDirect = now + 20
+    local goal = Vec.new(30, 3, 0)
+    local token = rescueToken()
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 2.5, rescueJuke = goal })
+    check(world.firstComputeAt and world.firstComputeAt - 100 < 0.1,
+        "rescue waited for the atlas before requesting native pathfinding")
+    check(atlasCalls == 0, "geometrically minimum native route was delayed by unnecessary graph comparison")
+end)
+scenario("rescue chooses the shorter window route over a slightly longer open route", function()
+    box("LowWindow", Vec.new(8.5, 0, -0.5), Vec.new(9.5, 1.6, 0.5))
+    world.route = function(from, to, spec)
+        if spec.AgentRadius > 1.01 then
+            return { { Position = Vec.new(0, 0, 0), Action = "Walk" },
+                { Position = Vec.new(8, 0, 1.6), Action = "Walk" },
+                { Position = Vec.new(10, 0, 1.6), Action = "Walk" },
+                { Position = Vec.new(18, 0, 0), Action = "Walk" } }
+        end
+        return { { Position = Vec.new(0, 0, 0), Action = "Walk" },
+            { Position = Vec.new(9, 0, 0), Action = "Jump" },
+            { Position = Vec.new(18, 0, 0), Action = "Walk" } }
+    end
+    local path, length, _, native = FH.PathAny(root.Position, Vec.new(18, 3, 0), 1, false, function() return true end, false, true, true)
+    check(path and path[2].Action == "Jump" and length < 18.1,
+        "rescue accepted the open detour without checking the shorter admissible window")
+    check(FH.RouteCost(path, length, true) < 18.3, "jump penalty made the shorter window lose distance ranking")
+    if native then native:Destroy() end
+end)
+scenario("six-stud AutoHide emergency does not require Beast to face toward us", function()
+    local beast, br = actor("Beast", Vec.new(5.5, 3, 0), true, Vec.new(1, 0, 0), Vec.new(16, 0, 0))
+    world.players = { LocalPlayer, beast }
+    check(AH.TestEval().danger, "exposed Beast inside six studs did not trigger emergency")
+    br.Position = Vec.new(6.5, 3, 0); task.wait(0.06)
+    check(not AH.TestEval().danger, "six-stud exception broadened normal directional detection")
+    br.Position = Vec.new(5.5, 3, 0)
+    AH.BeastMotion[beast].anchor = br.Position
+    AH.BeastMotion[beast].movedAt = now - 41
+    task.wait(0.06)
+    check(AH.TestEval().danger, "AFK exemption suppressed the six-stud emergency")
+    box("SeparatingWall", Vec.new(2, 0, -5), Vec.new(3, 10, 5)); task.wait(0.06)
+    check(not AH.TestEval().danger, "close-range emergency reached through a solid room wall")
+end)
+scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()
+    box("ThinShelfEdge", Vec.new(0.99, 8.2, -3), Vec.new(1.4, 8.4, 3))
+    root.Position = Vec.new(0, 9.4, 0); updateParts()
+    hum.FloorMaterial, hum.State = "Air", "Freefall"
+    world.vy, world.planDelay = 0, 3
+    local escapedShelf = false
+    task.delay(0.85, function() escapedShelf = root.Position.Y < 4 and root.Position.X < -1 end)
+    local goal, token = Vec.new(20, 3, 0), rescueToken()
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 1.3, rescueJuke = goal })
+    check(escapedShelf, "Freefall with zero velocity against a shelf was treated as endless normal flight")
+    check(world.jumps == 0 and hum.JumpPower == 36, "suspended escape forced an airborne first jump or boost")
+end)
+scenario("rescue juke cannot cancel a committed window or react to an idle nearby Beast", function()
+    local beast = actor("Beast", Vec.new(0, 3, -10), true)
+    world.players, world.threat = { LocalPlayer, beast }, Vec.new(0, 3, -10)
+    local token, aim = rescueToken(), Vec.new(8, 3, 0)
+    Follow.CrossingTraversal = { token = token, hum = hum, root = root, aim = aim, untilAt = now + 1 }
+    check(FH.RescueJuke(token, root, aim, Vec.new(30, 3, 0), 0) == aim,
+        "rescue dodge changed the committed window direction")
+    Follow.CrossingTraversal, world.threat = nil, nil
+    check(FH.RescueJuke(token, root, aim, Vec.new(30, 3, 0), 0) == aim,
+        "a nearby Beast without a real threat caused unnecessary zigzags")
+end)
+scenario("an unreachable far pod returns a bounded route failure instead of waiting 75 seconds", function()
+    local info = pod(60)
+    box("FrontWall", Vec.new(2, 0, -3), Vec.new(3, 20, 3))
+    box("BackWall", Vec.new(-3, 0, -3), Vec.new(-2, 20, 3))
+    box("LeftWall", Vec.new(-3, 0, -3), Vec.new(3, 20, -2))
+    box("RightWall", Vec.new(-3, 0, 2), Vec.new(3, 20, 3))
+    world.noNativePath = true
+    local token = rescueToken()
+    local result = FH.RescuePod(token, token.ok, info, nil,
+        function() AR.KeyDown = true end, function() AR.KeyDown = false end, nil, 5.2)
+    check(result == "far" and now < 106, "failed far-pod route was retried stationary until the overall 75-second limit")
+    check(world.captive.Value ~= nil and world.jumps == 0 and not AR.KeyDown,
+        "unreachable route claimed rescue or jumped repeatedly into the room walls")
+end)
+scenario("window continuation retains ownership while its next native hop is cooling down", function()
+    box("Sill", Vec.new(2, 0, -3), Vec.new(4, 3, 3))
+    box("SecondLip", Vec.new(4.5, 0, -3), Vec.new(4.8, 4.4, 3))
+    root.Position = Vec.new(3, 6, 0); updateParts()
+    FH.LastJump = now - 0.1
+    local token = rescueToken()
+    local crossing = { token = token, hum = hum, root = root, aim = Vec.new(8, 0, 0),
+        origin = Vec.new(0, 3, 0), dir = Vec.new(1, 0, 0), t = now - 0.4,
+        untilAt = now + 1.5, airborne = true, feetY = 0 }
+    Follow.CrossingTraversal = crossing
+    local retained = false
+    task.delay(0.1, function() retained = Follow.CrossingTraversal == crossing end)
+    local goal = Vec.new(-10, 3, 0)
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 0.15, rescueJuke = goal })
+    check(retained, "native hop cooldown was mistaken for failed traversal and cancelled the window commitment")
 end)
 for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)

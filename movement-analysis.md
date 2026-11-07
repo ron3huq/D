@@ -1,3 +1,37 @@
+# AutoHelp recovery and route distance — 2026-11-07
+
+Base: `51db610da4982d96d1aa0d1f1e44d75201227b00`, fetched before editing. The user reports continued live stalls and reversals. PC hacking is reported stable and its interaction functions are preserved. AutoHide steering is reported stable; its only changed function is `AH.Eval`, adding the requested exposed six-stud emergency, including a stationary/AFK Beast inside that range.
+
+## Current routing objective
+
+AutoHelp compares **distance along physically usable routes**, including native jumps, windows, fences and doors. A longer open corridor must not win merely because the short route needs a jump. Rescue-specific jump and door-opening penalties were removed from route ranking; ordinary follow/flee costs remain unchanged. Narrow-profile alternatives are compared when a native result contains a detour, and door alternatives are considered for even small measured savings. A native route can skip graph comparison only when it is already at the horizontal geometric lower bound within 0.01 stud. This is distance ranking, not a promise of lowest elapsed time or globally optimal routing across an incomplete map.
+
+Native rescue pathfinding now starts before atlas comparison. Its single result is retained rather than recomputed after scanning. A longer result may still be compared against the atlas/doors; the rescue atlas budget is bounded at 0.12 seconds / 1,536 nodes. While a plan is pending, safe owned motion continues. A vertical-goal startup allows the native planner 0.15 seconds to establish a connector before local exploration; it does not wait indefinitely beneath the target.
+
+## Stalls and reversals addressed
+
+- **Different-level goals stopped provisional steering.** An early return rejected the direct ascent/descent and then waited, without considering safe local exits on the current surface. Rescue can now choose a supported local lane or a fully checked gravity landing in other directions. It retains that lane until reached, blocked or genuinely stalled rather than rescoring it every frame.
+- **Concave corners excluded their only exit.** The old useful-direction filter disallowed backward rescue lanes. A verified retreat is now allowed when forward choices fail, with enough commitment to leave the pocket. A short entrance memory prevents provisional steering from immediately returning to the same dead end; a newly verified full plan can supersede it.
+- **Corner probes were thinner than the whole body.** Rescue flat-lane admission now additionally sweeps a complete body footprint instead of relying solely on the thin forward plane. This catches a wall end that the earlier plane accepted but the simulated body then hit. Jump/stair admission keeps its existing geometry path. This additional check is scoped to rescue; PC interaction and AutoHide steering are unchanged.
+- **Suspended wall contact was treated as endless free fall.** A stationary root in an airborne state with near-zero vertical velocity must remain unchanged for 0.45 seconds before recovery. The controller then tries a fully checked retreat/drop away from the stalled heading. Ordinary falling and a short jump apex do not trigger this. No airborne first-jump state, velocity edit or teleport is used.
+- **Landing on a sill cancelled a crossing.** Rescue keeps the committed direction through a short supported landing and verifies a continuation/drop. Completed drops advance their path index rather than steering back toward the old window waypoint. Rescue dodges cannot replace an active crossing/drop and do not run just because an otherwise non-threatening Beast is nearby.
+- **Manual reposition reused the old attempt.** After manual control, rescue clears its local directions, failed corridors, door history, suspended recovery and owned movement lease. Rejected corridors are now tagged by owner so only this rescue's stale marks are removed. The manual pause is excluded from the WalkTo travel timeout. Other movement owners' marks are retained.
+- **Unreachable far targets could consume the entire 75-second rescue loop.** Three no-progress `nopath`/timeout route failures now return a bounded failure to target selection instead of silently retrying the same stationary route. This never declares a rescue complete. A physically sealed room still requires a valid exit; the script does not bypass collision.
+
+## Recording cross-check
+
+The previously supplied archive is still local (18 recordings / 48,755 frames). The Haunted Mansion interval at 108.4–109.55 seconds includes a `Landed`/`Running` transition between jumps while the player retains forward travel. The Library interval at 486.15–487.7 seconds likewise includes several short landings near stairs and a window without reversing to the takeoff. These support preserving an unfinished traversal through a sill contact; they do not establish a fixed route to replay. Pod departures and releases involving other players/Beast remain excluded as demonstrations of who rescued, when to abandon rescue or the duration of a valid rescue.
+
+## Verification
+
+**82 scenarios / 156 assertions pass** with Luau 0.741; D compiles and `git diff --check` passes. The expanded harness exposes eleven failures against `51db610`, including the concave pocket, high-object escape, sill crossing, manual timeout, atlas-before-native delay, shorter window vs open detour, six-stud emergency, suspended shelf contact, unwanted rescue juke, unreachable far target and retaining window ownership during native-hop cooldown. PC contact, slot occupancy, full hacking, all exit policies and previous directional AutoHide cases continue to pass. Source comparisons confirm the PC interaction/Main functions are unchanged and no AutoHide helper other than Eval changed.
+
+Measured synthetic cases include: leaving the concave pocket while its native planner is still delayed; dropping off a blocked high object and reaching the goal in 2.52 simulated seconds with one collision attempt; a suspended contact beginning recovery after the 0.45-second guard rather than persisting throughout the test; and returning an unreachable far-Pod route failure in 1.8 simulated seconds rather than 75.6 on the baseline. Collision-attempt counters are model measurements, not live Roblox frame timing.
+
+There is no Roblox Player/Studio run in this environment. Streaming, game rig collisions, executor input and all production coroutine schedules remain unverified. Passing these cases does not establish that every real-map stall has been eliminated. No raw recording, map coordinate table, route playback or recorder integration is committed.
+
+---
+
 # Navigation follow-up — 2026-11-05
 
 Base: `7b2f96445b2fc3a03c0bf7bd5b324640829a681a`, fetched from `main` before editing. This revision addresses new live reports of stair pauses, rescue reversals and idle behavior after both exits open. The runtime reports remain authoritative; passing the previous fixtures did not establish smooth Roblox gameplay.

@@ -42,10 +42,10 @@ FH.TraversalLane FH.TryJump FH.ApproachClear FH.StairLane FH.Profile FH.Seg FH.L
 FH.Ground FH.Path FH.Len FH.RouteCost FH.PathAny Follow.Hold Follow.Release Follow.PlanClear
 Follow.DropLane Follow.ActiveDrop Follow.DropClear Follow.StartDrop FH.BindNativeFlight
 Follow.ActiveCrossing Follow.CrossingPlan Follow.CommitCrossing Follow.RouteProfile
-Follow.OwnedLaneClear Follow.ActiveEscape Follow.PlanStep Follow.RescueJumpLane Follow.RescueShortcut
+Follow.RescueBodyClear Follow.OwnedLaneClear Follow.ActiveEscape Follow.RescueLocalLane Follow.PlanStep Follow.RescueJumpLane Follow.RescueShortcut
 Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalGround Follow.GoalOnFloor
 Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
-Follow.FindDoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
+Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 Follow.DoorOpening Follow.PassDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold
 FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing
 """.split()
