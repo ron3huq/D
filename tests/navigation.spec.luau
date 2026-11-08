@@ -314,6 +314,39 @@ local function intersect(p, d, lo, hi, ignoreInside)
     if enter < 0 or enter > 1 then return nil end
     return enter, normal
 end
+-- Convex wedge geometry: clip rays/swept boxes against six half-spaces.
+-- This is a different support model from the axis-aligned tread fixtures.
+local function wedge(x0, x1, z0, z1, height)
+    local a = height / (x1 - x0)
+    local item = { x0 = x0, x1 = x1, z0 = z0, z1 = z1, height = height, slope = a,
+        part = part("RampWedge", Vec.new((x0+x1)/2, height/2, (z0+z1)/2), Vec.new(x1-x0,height,z1-z0), map) }
+    item.planes = { {Vec.new(-1,0,0),-x0}, {Vec.new(1,0,0),x1}, {Vec.new(0,0,-1),-z0},
+        {Vec.new(0,0,1),z1}, {Vec.new(0,-1,0),0.1}, {Vec.new(-a,1,0),-a*x0} }
+    world.wedges = world.wedges or {}
+    table.insert(world.wedges, item)
+    return item
+end
+local function clipWedge(p, d, item, extent)
+    extent = extent or Vec.new()
+    local enter, leave, normal, inside = 0, 1, Vec.new(), true
+    for _, plane in ipairs(item.planes) do
+        local n = plane[1]
+        local bound = plane[2] + math.abs(n.X)*extent.X + math.abs(n.Y)*extent.Y + math.abs(n.Z)*extent.Z
+        local distance, speed = n:Dot(p)-bound, n:Dot(d)
+        if distance >= -1e-7 then inside = false end
+        if math.abs(speed) < 1e-9 then
+            if distance > 0 then return nil end
+        else
+            local t = -distance/speed
+            if speed < 0 then
+                if t >= enter then enter, normal = t, n.Unit end
+            else leave = math.min(leave, t) end
+            if enter > leave then return nil end
+        end
+    end
+    if inside or enter < 0 or enter > 1 then return nil end
+    return enter, normal
+end
 function Workspace:Raycast(p, d, params)
     world.rays += 1
     local best, normal, instance
@@ -330,6 +363,12 @@ function Workspace:Raycast(p, d, params)
             if t and (not best or t < best) then
                 best, normal, instance = t, n, b.part
             end
+        end
+    end
+    for _, item in ipairs(world.wedges or {}) do
+        if item.part.CanCollide and not excluded(item.part, params) then
+            local t, n = clipWedge(p, d, item)
+            if t and (not best or t < best) then best, normal, instance = t, n, item.part end
         end
     end
     if best then
@@ -350,6 +389,12 @@ function Workspace:Blockcast(frame, size, movement, params)
             if t and (not best or t < best) then
                 best, normal, instance = t, n, b.part
             end
+        end
+    end
+    for _, item in ipairs(world.wedges or {}) do
+        if item.part.CanCollide and not excluded(item.part, params) then
+            local t, n = clipWedge(frame.Position, movement, item, extent)
+            if t and (not best or t < best) then best, normal, instance = t, n, item.part end
         end
     end
     if best then
@@ -394,7 +439,11 @@ local function nativeKey(code, down)
     table.insert(world.inputs, { key = key, down = down, at = now, p = root.Position })
     if not down then return end
     if key == "Space" then
-        if hum.FloorMaterial ~= "Air" then
+        if world.ignoreSpaceAfterX and root.Position.X >= world.ignoreSpaceAfterX and not world.ignoredSpace then
+            world.ignoredSpace = true
+            return -- Executor reports admission; the native controller sees no edge.
+        end
+        if (world.airReport and world.physicalMaterial or hum.FloorMaterial) ~= "Air" then
             world.launch = true
         elseif world.firstAt and now - world.firstAt >= 0.195 and not world.doubleUsed and world.allowDouble then
             world.second = true
@@ -429,7 +478,10 @@ local function nativeKey(code, down)
 end
 step = function(dt)
     now += dt
-    runReady()
+    runReady() -- Client callbacks see reported state; physics retains its own state.
+    if world.airReport and world.physicalMaterial then
+        hum.FloorMaterial, hum.State = world.physicalMaterial, world.physicalState
+    end
     if world.launch then
         world.launch = false
         world.firstAt = now
@@ -461,13 +513,18 @@ step = function(dt)
         end
     end
     hum.nativeDir = Vec.new() -- Roblox's own no-input update, before our render controller.
-    local actualFloor = hum.FloorMaterial
+    local actualFloor, actualState = hum.FloorMaterial, hum.State
+    world.physicalMaterial, world.physicalState = actualFloor, actualState
+    if world.airReport and root.Position.X >= (world.airReportX or -math.huge) then
+        hum.FloorMaterial, hum.State = "Air", "Freefall"
+    end
     if world.floorLag and world.firstAt and now - world.firstAt < world.floorLag then
         hum.FloorMaterial = "Ground"
         hum.State = world.vy > 0 and "Jumping" or "Freefall"
     end
     FH.MotionStep()
     hum.FloorMaterial = actualFloor
+    if world.airReport then hum.State = actualState end
     local before = root.Position
     local direction = hum.nativeDir or Vec.new()
     if direction.Magnitude > 0.1 then world.facing = direction.Unit end
@@ -490,6 +547,11 @@ step = function(dt)
         then
             floor = math.max(floor, b.hi.Y)
         end
+    end
+    for _, item in ipairs(world.wedges or {}) do
+        local y = (candidate.X-item.x0)*item.slope
+        if candidate.X >= item.x0 and candidate.X <= item.x1 and candidate.Z >= item.z0 and candidate.Z <= item.z1
+            and y <= math.max(feet,nextFeet)+1.05 then floor = math.max(floor,y) end
     end
     if hum.FloorMaterial ~= "Air" then nextFeet = floor end
     if hum.FloorMaterial == "Air" and world.vy <= 0 and nextFeet <= floor then
@@ -541,8 +603,10 @@ step = function(dt)
         nextFeet = feet
     end
     root.Position = Vec.new(candidate.X, nextFeet + 3, candidate.Z)
+    local observedY = world.vy
+    if hum.FloorMaterial ~= "Air" and world.wedges and #world.wedges > 0 then observedY = (root.Position.Y-before.Y)/dt end
     root.AssemblyLinearVelocity =
-        Vec.new((root.Position.X - before.X) / dt, world.vy, (root.Position.Z - before.Z) / dt)
+        Vec.new((root.Position.X - before.X) / dt, observedY, (root.Position.Z - before.Z) / dt)
     hum.State = hum.FloorMaterial == "Air" and (world.vy > 0 and "Jumping" or "Freefall") or "Running"
     if world.trigger and not world.engaged then
         stats.ActionEvent.Value = Flat(root.Position - world.trigger.Position).Magnitude <= world.selectRange
@@ -550,6 +614,10 @@ step = function(dt)
             or nil
     end
     updateParts()
+    world.physicalMaterial, world.physicalState = hum.FloorMaterial, hum.State
+    if world.airReport and root.Position.X >= (world.airReportX or -math.huge) then
+        hum.FloorMaterial, hum.State = "Air", "Freefall"
+    end
     if world.frameSample then world.frameSample(dt) end
     if world.cancelAt and now >= world.cancelAt then world.manual = true end
     if world.exitsEnabled then
@@ -610,8 +678,8 @@ local function reset()
     function hum:Move(d) self.nativeDir = d end
     function hum:MoveTo(goal) self.destination = goal end
     function hum:ChangeState(state)
-        assert(self.FloorMaterial ~= "Air", "script forced an airborne jump state")
-        if state == "Jumping" then world.launch = true end
+        assert((world.airReport and world.physicalMaterial or self.FloorMaterial) ~= "Air", "script forced an airborne jump state")
+        if state == "Jumping" then world.launch = true; world.engineJumps = (world.engineJumps or 0) + 1 end
     end
     LocalPlayer.Character.hum = hum
     stats = { Health = { Value = 100 }, Escaped = { Value = false }, ActionInput = { Value = false }, ActionEvent = {}, ActionProgress = { Value = 0 } }
@@ -1878,6 +1946,234 @@ scenario("a delayed optional door cannot reverse a route after its saving has di
     Follow.FindDoorRoute, Follow.PassDoor = originalSearch, originalPass
     check(searched and not passed and root.Position.Z < -8,
         "an old-start door comparison replaced forward progress with a longer reverse leg")
+end)
+scenario("rescue continues when Freefall and Air stay reported on supported treads", function()
+    for i = 1, 24 do box("Tread", Vec.new(2 + (i - 1) * 0.5, 0, -4), Vec.new(2 + i * 0.5, i * 0.35, 4)) end
+    box("Landing", Vec.new(14, 0, -4), Vec.new(24, 8.4, 4))
+    world.stepHeight, world.airReport, world.airReportX = 0.2, true, 6
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        local w = { { Position = Vec.new(from.X, from.Y - 3, from.Z), Action = "Walk" } }
+        for i = 4, 24, 4 do table.insert(w, { Position = Vec.new(2 + (i - 0.5) * 0.5, i * 0.35, 0), Action = "Walk" }) end
+        table.insert(w, { Position = to, Action = "Walk" }); return w
+    end
+    local goal, token = Vec.new(22, 11.4, 0), rescueToken()
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 4.5, rescueJuke = goal })
+    check(result == "arrived" and now < 103.8, "reported airborne state stranded rescue on actual stair support")
+    check(hum.JumpPower == 36 and hum.JumpHeight == 7.2, "support recovery changed native jump properties")
+end)
+scenario("rescue takes a supported uphill prefix before a delayed connector plan finishes", function()
+    for i = 1, 16 do box("SteepTread", Vec.new(1 + (i - 1) * 0.5, 0, -4), Vec.new(1 + i * 0.5, i * 0.7, 4)) end
+    box("UpperLanding", Vec.new(9, 0, -4), Vec.new(24, 11.2, 24))
+    box("NorthWall", Vec.new(-5, 0, 2), Vec.new(9, 25, 3))
+    box("SouthWall", Vec.new(-5, 0, -3), Vec.new(9, 25, -2))
+    world.planDelay = 2
+    local goal, token = Vec.new(20, 14.2, 20), rescueToken()
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 0.7, rescueJuke = goal })
+    check(root.Position.X > 4 and root.Position.Y > 5.5,
+        "safe upward treads were excluded from local exploration while native pathfinding yielded: " .. root.Position.X .. "," .. root.Position.Y .. "," .. root.Position.Z)
+end)
+scenario("a new rescue leg cannot inherit an old sideways recovery destination", function()
+    local token, goal = rescueToken(), Vec.new(30, 3, 0)
+    FH.Move(token, hum, goal)
+    local watch = FH.MoveWatch
+    watch.escape, watch.escapeUntil = Vec.new(-6, 3, 0), now + 1.8
+    watch.escapeAnchor, watch.escapeAt = root.Position, now
+    watch.escapeCheckAt, watch.escapeClear = now + 1, true
+    watch.lastSide = 1
+    Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 0.4, rescueJuke = goal })
+    check(root.Position.X > 4, "the old recovery writer overrode the new rescue's forward route")
+    check(Follow.RescueControl == nil, "finished rescue retained controller ownership")
+end)
+scenario("reported Freefall without real contact never authorizes a grounded rescue takeoff", function()
+    local token = rescueToken()
+    root.Position = Vec.new(0, 20, 0); updateParts()
+    hum.FloorMaterial, hum.State = "Air", "Freefall"
+    FH.Move(token, hum, Vec.new(10, 20, 0))
+    if Follow.RescueGrounded then
+        hum.FloorMaterial = "Ground"
+        check(not Follow.RescueGrounded(hum, root, true), "stale solid material at an unsupported apex counted as contact progress")
+        hum.FloorMaterial = "Air"
+    end
+    for _ = 1, 5 do
+        if Follow.RescueGrounded then check(not Follow.RescueGrounded(hum, root), "unsupported body was classified as grounded") end
+        check(not FH.TakeoffSupported(hum, root), "rescue manufactured a takeoff in free fall")
+        task.wait(0.03)
+    end
+    check(world.jumps == 0 and world.doubles == 0, "unsupported contact check injected a jump")
+end)
+scenario("rescue can chain two ordinary takeoffs when the game refuses an airborne second jump", function()
+    box("LowerPlatform", Vec.new(4, 0, -4), Vec.new(8, 2.8, 4))
+    box("HigherPlatform", Vec.new(8, 0, -4), Vec.new(24, 5.6, 4))
+    world.allowDouble = false
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, from.Y - 3, from.Z), Action = "Walk" },
+            { Position = Vec.new(5.5, 2.8, 0), Action = "Jump" },
+            { Position = Vec.new(10, 5.6, 0), Action = "Jump" }, { Position = to, Action = "Walk" } }
+    end
+    local goal, token = Vec.new(22, 8.6, 0), rescueToken()
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 4, rescueJuke = goal })
+    check(result == "arrived" and world.jumps >= 2, "two ordinary native hops were replaced by a stalled/abandoned climb")
+    check(world.doubles == 0 and hum.JumpPower == 36 and hum.JumpHeight == 7.2,
+        "paired grounded hops relied on an airborne boost or changed jump properties")
+end)
+scenario("a local double-input window route beats a remote navmesh walking detour", function()
+    box("HighWindow", Vec.new(3, 0, -20), Vec.new(3.5, 5.4, 20))
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        if from.X >= 5 then return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" }, { Position = to, Action = "Walk" } } end
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, 22), Action = "Walk" },
+            { Position = Vec.new(8, 0, 22), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local goal, token = Vec.new(50, 3, 0), rescueToken()
+    local steering = { token = token, root = root, rescueGoal = goal, goal = goal,
+        aim = Vec.new(0, 3, 6), dir = Vec.new(0, 0, 1), checkAt = now + 1,
+        progressPos = root.Position, progressAt = now, trail = {} }
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 4, rescueJuke = goal, rescueSteer = steering })
+    check(result == "arrived" and world.doubles >= 1, "native walking detour hid a shorter real two-input window crossing")
+    check(now < 103.7 and hum.JumpPower == 36 and hum.JumpHeight == 7.2, "shorter window route modified jump strength or remained slow")
+end)
+scenario("a declined high-window crossing falls back to the walking route without buffs", function()
+    box("HighWindow", Vec.new(3, 0, -20), Vec.new(3.5, 5.4, 20))
+    world.allowDouble = false
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        if from.X >= 5 then return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" }, { Position = to, Action = "Walk" } } end
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, 22), Action = "Walk" },
+            { Position = Vec.new(8, 0, 22), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local goal, token = Vec.new(50, 3, 0), rescueToken()
+    local steering = { token = token, root = root, rescueGoal = goal, goal = goal,
+        aim = Vec.new(0, 3, 6), dir = Vec.new(0, 0, 1), checkAt = now + 1,
+        progressPos = root.Position, progressAt = now, trail = {} }
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 9, rescueJuke = goal, rescueSteer = steering })
+    check(result == "arrived" and world.doubles == 0, "failed window was retried instead of taking the usable walking route")
+    check(world.jumps <= 4 and hum.JumpPower == 36 and hum.JumpHeight == 7.2, "failed native second input caused jump spam or a boost")
+end)
+local function wedgeRescue(angle, down, reportedAir)
+    local length = 8 / math.tan(math.rad(angle))
+    wedge(2, 2+length, -4, 4, 8)
+    box("TopLanding", Vec.new(2+length,0,-4), Vec.new(12+length,8,4))
+    if down then root.Position = Vec.new(8+length,11,0); updateParts() end
+    world.airReport, world.airReportX = reportedAir, 3
+    FH.BanDirect = now+20
+    world.route = function(from,to)
+        local w = { {Position=Vec.new(from.X,from.Y-3,from.Z),Action="Walk"} }
+        if down then
+            for i=4,0,-1 do table.insert(w,{Position=Vec.new(2+length*i/4,8*i/4,0),Action="Walk"}) end
+        else
+            for i=0,4 do table.insert(w,{Position=Vec.new(2+length*i/4,8*i/4,0),Action="Walk"}) end
+        end
+        table.insert(w,{Position=to,Action="Walk"});return w
+    end
+    local goal = down and Vec.new(0,3,0) or Vec.new(8+length,11,0)
+    local result = Follow.WalkTo(rescueToken(),function()return goal end,0.8,nil,
+        {noDoor=true,maxTime=3.5,rescueJuke=goal})
+    check(result=="arrived", "convex ramp support was mistaken for a wall or an airborne stall")
+    check(world.doubles==0 and hum.JumpPower==36, "ramp walking used double-jump spam or a boost")
+end
+scenario("rescue climbs a convex wedge ramp",function()wedgeRescue(35,false,false)end)
+scenario("rescue descends a convex wedge ramp",function()wedgeRescue(35,true,false)end)
+scenario("rescue climbs a steep supported wedge with reported Air",function()wedgeRescue(60,false,true)end)
+scenario("rescue descends a steep supported wedge with reported Air",function()wedgeRescue(60,true,true)end)
+scenario("rescue keeps climbing through a stair landing and a reversing second flight", function()
+    root.Position = Vec.new(0,3,-2.5); updateParts()
+    for i=1,12 do
+        box("FirstFlight", Vec.new(2+(i-1)*0.5,0,-4), Vec.new(2+i*0.5,i*0.35,-1))
+        box("SecondFlight", Vec.new(2+(i-1)*0.5,0,1), Vec.new(2+i*0.5,4.2+(13-i)*0.35,4))
+    end
+    box("TurnLanding",Vec.new(8,0,-4),Vec.new(12,4.2,4))
+    box("UpperLanding",Vec.new(-3,0,1),Vec.new(2,8.4,4))
+    box("CentralWall",Vec.new(-4,0,-1),Vec.new(8,22,1))
+    world.airReport, world.airReportX = true, 4
+    world.route = function(from,to)
+        local points={ Vec.new(from.X,from.Y-3,from.Z),Vec.new(2,0,-2.5),Vec.new(4,1.4,-2.5),
+            Vec.new(6,2.8,-2.5),Vec.new(8,4.2,-2.5),Vec.new(10,4.2,-2.5),Vec.new(10,4.2,2.5),
+            Vec.new(8,4.55,2.5),Vec.new(6,5.95,2.5),Vec.new(4,7.35,2.5),Vec.new(2,8.4,2.5),to }
+        local w={};for _,point in ipairs(points)do table.insert(w,{Position=point,Action="Walk"})end;return w
+    end
+    local goal=Vec.new(0,11.4,2.5)
+    local result=Follow.WalkTo(rescueToken(),function()return goal end,0.8,nil,{noDoor=true,maxTime=5,rescueJuke=goal})
+    check(result=="arrived" and root.Position.Y>11,"landing/second-flight turn stranded the stair rescue: "..tostring(result)..":"..root.Position.X..","..root.Position.Y..","..root.Position.Z)
+    check(world.doubles==0 and now<104.5,"stair landing caused repeated double jumps or excessive delay")
+end)
+scenario("a preempted rescue cannot change AutoHide's airborne classification", function()
+    local rescue=rescueToken()
+    hum.FloorMaterial, hum.State="Air","Freefall"
+    FH.RescueSupport={hum=hum,root=root,pos=root.Position,feetY=0,at=now,since=now-1,valid=true,velocity=Vec.new(),filterAt=rayFilterAt}
+    Follow.RescueControl={token=rescue,hum=hum,root=root}
+    local evade={owner="evade",priority=100,ok=function()return true end}
+    FH.Motion={token=evade,hum=hum,priority=100,untilAt=now+1,aim=Vec.new(10,3,0)}
+    if Follow.RescueGrounded then check(not Follow.RescueGrounded(hum,root),"stale rescue claimed support after AutoHide took over") end
+    check(Follow.Airborne(hum,root),"rescue contact proof changed an evade owner's flight state")
+end)
+scenario("a rescue task without a heartbeat releases its movement and intent", function()
+    if not Follow.RescueControlled then return end
+    local token=rescueToken()
+    Follow.RescueControl={token=token,hum=hum,root=root,seen=now}
+    FH.Move(token,hum,Vec.new(20,3,0))
+    Follow.RescueControl.seen=now-2
+    check(not Follow.RescueControlled(token,hum,root),"dead rescue retained coordinator authority")
+    check(Follow.RescueControl==nil and FH.Motion.token==nil and FH.StallIntent==nil,
+        "dead rescue left a movement lease or replayable stall intent")
+    task.wait(0.3)
+    check(root.Position.X<0.1 and world.jumps==0,"dead rescue continued walking or jumping")
+end)
+scenario("a delayed long-distance native detour cannot pull rescue back through its cleared window", function()
+    box("HighWindow", Vec.new(3,0,-20), Vec.new(3.5,5.4,20))
+    FH.BanDirect=now+20
+    world.route=function(from,to)
+        if from.X>=5 then return {{Position=Vec.new(from.X,0,from.Z),Action="Walk"},{Position=to,Action="Walk"}} end
+        return {{Position=Vec.new(from.X,0,from.Z),Action="Walk"},{Position=Vec.new(0,0,22),Action="Walk"},
+            {Position=Vec.new(8,0,22),Action="Walk"},{Position=to,Action="Walk"}}
+    end
+    local goal=Vec.new(125,3,0)
+    local backward=false;local previous=0
+    world.frameSample=function()
+        if root.Position.X>5 and root.Position.X<previous-0.05 then backward=true end
+        previous=root.Position.X
+    end
+    local result=Follow.WalkTo(rescueToken(),function()return goal end,0.8,nil,{noDoor=true,maxTime=9,rescueJuke=goal})
+    check(result=="arrived" and not backward,"old native start restored a reverse window leg for a distant pod")
+    check(world.doubles>=1 and now<108.8,"distant rescue abandoned the verified window and followed the obsolete walking circuit")
+end)
+scenario("a follow cache refresh does not revoke a still-valid rescue coordinator", function()
+    if not Follow.RescueControlled then return end -- Contract belongs to the new coordinator.
+    local token=rescueToken()
+    local control={token=token,hum=hum,root=root,seen=now}
+    Follow.RescueControl=control
+    FH.Move(token,hum,Vec.new(20,3,0))
+    FH.ResetCaches(true)
+    check(Follow.RescueControl==control and FH.Motion.token==token,"another mode's cache refresh revoked rescue movement ownership")
+    FH.ReleaseMotion(token,false)
+    check(Follow.RescueControl==nil,"rescue release retained ownership after cache refresh")
+end)
+scenario("a silently ignored takeoff on reported Air is confirmed only from real support", function()
+    for i = 1, 24 do box("Tread", Vec.new(2 + (i - 1) * 0.5, 0, -4), Vec.new(2 + i * 0.5, i * 0.35, 4)) end
+    box("Landing", Vec.new(14, 0, -4), Vec.new(24, 8.4, 4))
+    world.stepHeight, world.airReport, world.airReportX = 0.2, true, 6
+    world.ignoreSpaceAfterX = 6
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        local w = { { Position = Vec.new(from.X, from.Y - 3, from.Z), Action = "Walk" } }
+        for i = 4, 24, 4 do table.insert(w, { Position = Vec.new(2 + (i - 0.5) * 0.5, i * 0.35, 0), Action = "Walk" }) end
+        table.insert(w, { Position = to, Action = "Walk" }); return w
+    end
+    local goal, token = Vec.new(22, 11.4, 0), rescueToken()
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 4.5, rescueJuke = goal })
+    check(result == "arrived" and now < 103.8, "reported airborne state stranded rescue on actual stair support")
+    check(world.ignoredSpace and world.engineJumps == 1, "a successful API call suppressed confirmation of the missing supported first takeoff")
+    check(hum.JumpPower == 36 and hum.JumpHeight == 7.2, "support recovery changed native jump properties")
 end)
 for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)

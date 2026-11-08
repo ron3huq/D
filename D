@@ -2673,6 +2673,7 @@ function FH.StallJumpStep()
     if now < (FH.StallCheckAt or 0) then return false end
     FH.StallCheckAt = now + 0.1
     local token, hum, root = state.token, state.hum, state.root
+    if Follow.RescueControlled(token, hum, root) then return false end
     if FH.ExitTraversalClear and FH.ExitTraversalClear(token, hum, root, state.goal) then return false end
     if FH.ContactApproachValid(token, hum, root, state.progressGoal or state.goal) then return false end
     if FH.AwaitingFloorRoute(token, hum, root) then return false end
@@ -2999,6 +3000,64 @@ function FH.RecoveryAim(token, hum, goal, intentGoal)
     state.escapeCheckAt, state.escapeClear = now + 0.25, true
     return pick
 end
+function Follow.RescueControlled(token, hum, root)
+    local control = Follow.RescueControl
+    if control and control.token == token and control.seen and os.clock() - control.seen > 1.2 then
+        -- A failed/ended task must not leave a coordinator suppressing recovery
+        -- or a stale forward intent that can act after its movement lease ends.
+        FH.ReleaseMotion(token, true)
+        return false
+    end
+    return control ~= nil and control.token == token and control.hum == hum and control.root == root
+        and FH.MotionAvailable(token)
+end
+function Follow.ObserveRescueMotion(token, hum, root)
+    local now, watch = os.clock(), FH.MoveWatch
+    if Follow.RescueControl and Follow.RescueControl.token == token then Follow.RescueControl.seen = now end
+    if not watch or watch.token ~= token or watch.hum ~= hum or watch.root ~= root then
+        watch = { token = token, hum = hum, root = root, anchor = root.Position, at = now }
+        FH.MoveWatch = watch
+    end
+    watch.seen = now
+    if Flat(root.Position - watch.anchor).Magnitude >= 0.5
+        or root.Position.Y - watch.anchor.Y >= 0.5 and Follow.RescueGrounded(hum, root, true) then
+        watch.anchor, watch.at, watch.stairAttempts = root.Position, now, nil
+    end
+end
+function Follow.RescueFailedPart(token, part)
+    local control = Follow.RescueControl
+    local untilAt = control and control.token == token and control.failedObstacles and control.failedObstacles[part]
+    return untilAt ~= nil and os.clock() < untilAt
+end
+function Follow.ObserveRescueJump(token, hum, root, goal)
+    local control, flight = Follow.RescueControl, FH.JumpFlight
+    if not control or control.token ~= token or not flight or flight.normal
+        or flight.token ~= token or flight.hum ~= hum or flight.root ~= root
+        or os.clock() - flight.t > 0.15 then return end
+    local delta = Flat(goal - root.Position)
+    if delta.Magnitude <= 1.5 then return end
+    local previous = control.attempt
+    if previous and delta.Unit:Dot(previous.dir) > 0.8
+        and Flat(root.Position - previous.origin).Magnitude < 6 then return end
+    local takeoff = FH.LastTakeoff
+    local feetY = takeoff and takeoff.root == root and takeoff.feetY or FH.Feet(hum, root)
+    local origin = takeoff and takeoff.root == root and takeoff.pos or root.Position
+    local hit = Workspace:Raycast(Vector3.new(origin.X, feetY + 0.7, origin.Z), delta.Unit * math.min(delta.Magnitude, 6), rayParams)
+    local portal
+    if hit and hit.Instance:IsA("BasePart") then
+        local normal = Flat(-hit.Normal)
+        if normal.Magnitude > 0.5 then
+            normal = normal.Unit
+            local cf, size = hit.Instance.CFrame, hit.Instance.Size
+            local depth = math.abs(normal:Dot(cf.RightVector)) * size.X
+                + math.abs(normal:Dot(cf.UpVector)) * size.Y + math.abs(normal:Dot(cf.LookVector)) * size.Z
+            portal = { point = hit.Position + normal * (depth + FH.BodyRadius(root) + 0.2), dir = normal,
+                root = root, obstacle = hit.Instance }
+        end
+    end
+    control.attempt = { origin = root.Position, aim = goal, dir = delta.Unit, portal = portal,
+        obstacle = hit and hit.Instance, at = os.clock(), progressAt = os.clock(), anchor = root.Position }
+end
 function FH.Move(token, hum, goal, force, intentGoal)
     if not (hum and goal) or hum.Health <= 0 or Ctl.On() or Fly.Active or not FH.MotionAvailable(token) then
         if FH.MoveWatch and FH.MoveWatch.token == token then FH.MoveWatch = nil end
@@ -3031,7 +3090,12 @@ function FH.Move(token, hum, goal, force, intentGoal)
     end
     -- A rejected forward lane still needs its horizontal-progress watch;
     -- recovery may safely choose a different lane before this final check.
-    goal = FH.RecoveryAim(token, hum, goal, intentGoal)
+    if Follow.RescueControlled(token, hum, root) then
+        Follow.ObserveRescueMotion(token, hum, root)
+        Follow.ObserveRescueJump(token, hum, root, goal)
+    else
+        goal = FH.RecoveryAim(token, hum, goal, intentGoal)
+    end
     if rejected(goal) then return false end
     local m, now = FH.Motion, os.clock()
     if m.token ~= token or m.hum ~= hum then
@@ -3120,6 +3184,7 @@ function FH.CarryMotion(token, hum, root, seconds)
 end
 function FH.ReleaseMotion(token, stop)
     if FH.ContactApproach and FH.ContactApproach.token == token then FH.ContactApproach = nil end
+    if Follow.RescueControl and Follow.RescueControl.token == token then Follow.RescueControl = nil end
     if FH.ExitTraversal and FH.ExitTraversal.token == token then FH.ExitTraversal = nil end
     if FH.ForwardPulse and FH.ForwardPulse.token == token then FH.ReleaseForward() end
     if FH.VerticalRouteWait and FH.VerticalRouteWait.token == token then FH.VerticalRouteWait = nil end
@@ -3179,7 +3244,8 @@ local function TokOK(token) return FH.MotionValid(token) and FH.MotionAvailable(
 function FH.ResetCaches(keep)
     FH.ExitTraversal = nil
     FH.VerticalRouteWait, Follow.CrossingTraversal, Follow.DropTraversal, Follow.DoorTraversal = nil, nil, nil, nil
-    FH.RescueSurfaceProbe = nil
+    FH.RescueSurfaceProbe, FH.RescueSupport = nil, nil
+    if Follow.RescueControl and not FH.MotionValid(Follow.RescueControl.token) then Follow.RescueControl = nil end
     if FH.ForwardPulse then FH.ReleaseForward() end
     FH.Jmp = nil
     FH.JumpFlight = nil
@@ -4068,6 +4134,41 @@ function FH.Emote() FH.Chat(math.random() < 0.65 and "/e wave" or "/e dance2") e
 -- Sloping/moving support can leave FloorMaterial at Air even while the avatar
 -- is resting on it. A nearby floor and low vertical velocity permit a native
 -- takeoff; actual falling bodies never obtain a jump from this contact test.
+-- Physics can report Freefall/Air while a stair or sloped collider actually
+-- supports the body. Rescue uses a sustained contact proof, never the jump
+-- state alone; falling/apex frames cannot manufacture another takeoff.
+function Follow.RescueGrounded(hum, root, actualContact)
+    local token = FH.Motion and FH.Motion.token
+    local control = Follow.RescueControl
+    if control and control.root == root and control.hum == hum and TokOK(control.token) then token = control.token end
+    if not (hum and root) or hum.Health <= 0 or hum.Sit or hum.PlatformStand
+        or not (type(token) == "table" and token.owner == "rescue"
+            or type(token) == "number" and Follow.Rescuing)
+        or not TokOK(token) then
+        FH.RescueSupport = nil
+        return false
+    end
+    local velocity = root.AssemblyLinearVelocity
+    if not actualContact and hum.FloorMaterial ~= Enum.Material.Air and math.abs(velocity.Y) <= 2 then return true end
+    local now, feetY = os.clock(), FH.Feet(hum, root)
+    local sample = FH.RescueSupport
+    if sample and sample.hum == hum and sample.root == root and sample.filterAt == rayFilterAt
+        and now - sample.at < 0.04 and (root.Position - sample.pos).Magnitude < 0.15
+        and (velocity - sample.velocity).Magnitude < 2 then
+        return sample.valid and now - sample.since >= 0.06
+    end
+    local hit = Workspace:Raycast(Vector3.new(root.Position.X, feetY + 0.4, root.Position.Z),
+        Vector3.new(0, -0.9, 0), FH.SupportRays or rayParams)
+    local slope = math.max(0.25, math.cos(math.rad(math.min(hum.MaxSlopeAngle or 45, 75))))
+    local valid = hit and hit.Normal.Y >= slope and math.abs(hit.Position.Y - feetY) <= 0.45
+        and math.abs((velocity - Vector3.new(0, FH.SupportVelocityY(hit), 0)):Dot(hit.Normal)) <= 2
+    local since = sample and sample.valid and sample.hum == hum and sample.root == root
+        and now - sample.at < 0.15 and (root.Position - sample.pos).Magnitude < 1.5
+        and math.abs(feetY - sample.feetY) < 0.75 and sample.since or now
+    FH.RescueSupport = { hum = hum, root = root, pos = root.Position, feetY = feetY,
+        at = now, since = since, valid = valid == true, velocity = velocity, filterAt = rayFilterAt }
+    return valid == true and now - since >= 0.06
+end
 function FH.TakeoffSupported(hum, root)
     if not hum then return false end
     root = root or hum.RootPart
@@ -4078,6 +4179,7 @@ function FH.TakeoffSupported(hum, root)
         return true
     end
     if not root then return false end
+    if Follow.RescueGrounded(hum, root) then return true end
     local ok, state = pcall(function() return hum:GetState() end)
     if not ok or state == Enum.HumanoidStateType.Jumping then return false end
     if state == Enum.HumanoidStateType.Freefall then
@@ -4199,7 +4301,7 @@ function FH.ConfirmNormalTakeoff(hum, root, token)
             or hum.Health <= 0
             or hum.Sit
             or hum.PlatformStand
-            or hum.FloorMaterial == Enum.Material.Air
+            or (hum.FloorMaterial == Enum.Material.Air and not Follow.RescueGrounded(hum, root, true))
             or not FH.TakeoffSupported(hum, root)
             or root.Position.Y > ticket.pos.Y + 0.05
             or root.AssemblyLinearVelocity.Y > 1
@@ -4743,6 +4845,7 @@ function FH.PeriodicSpaceStep()
     state.nextAt = now + 10
     local motion, root = FH.Motion, RootNow()
     local token = motion and motion.token
+    if Follow.RescueControlled(token, hum, root) then return false end
     local owned = type(token) == "number" and followOn and token == Follow.Token
         or type(token) == "table" and token.owner == "rescue" and AR.Active
     if
@@ -4877,6 +4980,11 @@ function FH.ForwardWatchStep()
     FH.ForwardCheckAt = now + 0.2
     local hum, root, motion = GetHumanoid(), RootNow(), FH.Motion
     local token, goal = motion.token, motion.aim
+    if Follow.RescueControlled(token, hum, root) then
+        if pulse and pulse.token == token then FH.ReleaseForward(pulse) end
+        FH.ForwardWatch = nil
+        return false
+    end
     local intent = FH.StallIntent
     if
         (
@@ -5185,6 +5293,7 @@ function FH.TraversalLane(token, hum, root, point, feetY, reachLimit, wantWalk, 
     -- backward through scenery already passed. Width is the actual body.
     local shapeOK, hit = FH.TraversalSweep(root, origin, dir, reach + radius, height - 0.04, radius, 0.05)
     local physicalHit = hit
+    if hit and Follow.RescueFailedPart(token, hit.Instance) then return finish(false) end
     local footHeight = math.max(0.1, math.min(bottom - 0.08, 1.5))
     if shapeOK and not hit and bottom > 0.2 then
         local _, footHit = FH.TraversalSweep(
@@ -5198,6 +5307,7 @@ function FH.TraversalLane(token, hum, root, point, feetY, reachLimit, wantWalk, 
         )
         hit = footHit
     end
+    if hit and Follow.RescueFailedPart(token, hit.Instance) then return finish(false) end
     if shapeOK and not hit and wantWalk == false then return finish(nil) end
     if hit and FH.DoorOf(hit.Instance) then return finish(false) end
     if hit or not shapeOK then
@@ -5464,7 +5574,7 @@ function FH.TryJump(hum, root, aim, feetY, kind, sill, owner)
         end
     end
     if kind ~= "jump" and kind ~= "jump2" then return false end
-    if hum.FloorMaterial == Enum.Material.Air then return false end
+    if hum.FloorMaterial == Enum.Material.Air and not Follow.RescueGrounded(hum, root) then return false end
     local landing = rp + delta.Unit * reach
     if not scopedSafe and not Follow.PlanClear(rp, landing, feetY, reach) then return false end
     -- A refused jump must not restart movement while waiting for its cooldown.
@@ -8722,7 +8832,21 @@ function Follow.RescueWaypoints(wps)
             result[i] = { Position = point, Action = waypoint.Action, Label = waypoint.Label }
         end
     end
+    for i = 2, #result - 1 do
+        local incoming = Flat(result[i].Position - result[i - 1].Position)
+        local outgoing = Flat(result[i + 1].Position - result[i].Position)
+        result[i].RescueCorner = incoming.Magnitude > 0.1 and outgoing.Magnitude > 0.1
+            and incoming.Unit:Dot(outgoing.Unit) < 0.9
+    end
     return result
+end
+function Follow.RescueStaleEntry(state, root, point, requestedAt)
+    for _, portal in ipairs(state.completedPortals or {}) do
+        if portal.root == root and os.clock() - portal.at < 8 and requestedAt < portal.at
+            and Flat(root.Position - portal.point):Dot(portal.dir) >= 0
+            and Flat(point - portal.point):Dot(portal.dir) < -0.2 then return true end
+    end
+    return false
 end
 function Follow.RescuePathIndex(token, hum, root, wps)
     local rp, feetY = root.Position, FH.Feet(hum, root)
@@ -8840,8 +8964,12 @@ function Follow.RescueLocalLane(token, hum, root, goal, feetY, state, dropOnly, 
         for _, length in ipairs({ 6, 3 }) do
             local raw = rp + dir * length
             local ground, hit = FH.Ground(raw)
-            if hit and hit.Normal.Y > 0.6 then
-                local floor = ground.Y - 0.5
+            local surface, surfaceKind, surfaceY
+            if not dropOnly and (not hit or math.abs(ground.Y - 0.5 - feetY) > 1.5) then
+                surface, surfaceKind, surfaceY = Follow.RescueSurfaceLane(token, hum, root, raw, feetY, length)
+            end
+            if surface or hit and hit.Normal.Y > 0.6 then
+                local floor = surface and surfaceY or ground.Y - 0.5
                 local point = Vector3.new(raw.X, floor, raw.Z)
                 local rejected = FH.LaneRejected(rp, point, feetY)
                 for _, lane in ipairs(state.failedLanes or {}) do
@@ -8854,12 +8982,20 @@ function Follow.RescueLocalLane(token, hum, root, goal, feetY, state, dropOnly, 
                     if floor < feetY - 1.5 then
                         landing, crossing = Follow.DropLane(hum, root, point, feetY)
                         clear = landing ~= nil
+                    elseif surface then
+                        clear = true
                     elseif not dropOnly and math.abs(floor - feetY) <= 1.5 then
                         clear = Follow.OwnedLaneClear(token, hum, root, rp, point, feetY, length, true)
                     end
                     if clear then
                         local before, after = Flat(goal - rp).Magnitude, Flat(goal - point).Magnitude
                         local retreat = toward.Magnitude > 0.1 and dir:Dot(toward.Unit) < -0.15
+                        local visited = false
+                        for _, visit in ipairs(state.trail or {}) do
+                            if (point.X - visit.x)^2 + (point.Z - visit.z)^2 < 9 then visited = true; break end
+                        end
+                        if surface and not dropOnly and not visited and toward.Magnitude > 0.1
+                            and dir:Dot(toward.Unit) > 0.995 then return point, landing, crossing end
                         local score = before - after + dir:Dot(forward) * 2 + length * (retreat and 1.4 or 0.2)
                         if dropOnly and blockedDirection then score -= dir:Dot(blockedDirection) * 12 end
                         for _, visit in ipairs(state.trail or {}) do
@@ -8931,6 +9067,21 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
     if rescueGoal and Follow.ActiveDoor(token, hum, root) then return FH.Move(token, hum, Follow.DoorTraversal.aim) end
     if Follow.ActiveCrossing(token, hum, root) then return FH.Move(token, hum, Follow.CrossingTraversal.aim) end
     if Follow.ActiveDrop(token, hum, root) then return FH.Move(token, hum, Follow.DropTraversal.aim) end
+    if rescueGoal and state.verticalLane and state.goal and (goal - state.goal).Magnitude < 1 then
+        local lane = state.verticalLane
+        if Flat(rp - lane.anchor).Magnitude >= 0.5 then lane.anchor, lane.progressAt = rp, now end
+        if now >= lane.checkAt then
+            lane.checkAt = now + 0.12
+            local surface, _, floorY = Follow.RescueSurfaceLane(token, hum, root, lane.aim, feetY)
+            lane.clear = surface and math.abs(floorY - lane.aim.Y) <= 1.25 or clearLane(rp, lane.aim, feetY)
+        end
+        if Flat(lane.aim - rp).Magnitude > 0.6 and lane.clear
+            and now - lane.progressAt < 0.7 and now - lane.at < 1.8 then
+            if FH.VerticalRouteWait and FH.VerticalRouteWait.token == token then FH.VerticalRouteWait = nil end
+            return FH.Move(token, hum, lane.aim)
+        end
+        state.verticalLane = nil
+    end
     local verticalBlocked = false
     local goalGround, goalHit = Follow.GoalGround(goal, approachModel)
     if stable and goalHit and goalHit.Normal.Y > 0.6 and math.abs(goalGround.Y - 0.5 - feetY) > 1.5 then
@@ -9642,6 +9793,50 @@ function Follow.RecheckLane(state, root, index, point, feetY, check)
 end
 -- Rescue can cross a low obstruction instead of following the native path's
 -- walking detour. Every shoulder lane still needs floor, headroom and landing.
+-- Native navmeshes do not describe the game's second Space input. Compare
+-- nearby physically checked jump portals as real prefixes to complete routes,
+-- even when the native walking detour has no nearby far-side waypoint.
+function Follow.RescueJumpRoute(token, hum, root, goal, feetY, bestLength, alive, offer)
+    local forward = Flat(goal - root.Position)
+    if forward.Magnitude < 7 or not hum or not FH.TakeoffSupported(hum, root) then return nil end
+    forward = forward.Unit
+    local rp, result, resultLength = root.Position, nil, bestLength or math.huge
+    local tested = 0
+    for _, angle in ipairs({ 0, -0.35, 0.35 }) do
+        if not alive() then return nil end
+        local dir = forward * math.cos(angle) + Vector3.new(-forward.Z, 0, forward.X) * math.sin(angle)
+        local raw = rp + dir * 6
+        local floor, hit = FH.Ground(raw)
+        if hit and hit.Normal.Y > 0.6 and math.abs(floor.Y - 0.5 - feetY) <= 1.5 then
+            local landing = Vector3.new(raw.X, floor.Y - 0.5, raw.Z)
+            local safe, kind = FH.TraversalLane(token, hum, root, landing, feetY, 6, false)
+            if safe and (kind == "jump" or kind == "jump2")
+                and not FH.LaneRejected(rp, landing, feetY) then
+                tested += 1
+                local tail, _, _, path = FH.PathAny(landing + Vector3.new(0, 0.5, 0), goal, 2, false, alive, true, true, true)
+                if path then path:Destroy() end
+                if not alive() then return nil end
+                local portal = { Dir = dir, Center = (rp + landing) * 0.5, Width = FH.BodyRadius(root) * 2 + 1 }
+                if tail and not Follow.RescueRouteReturns(portal, tail) then
+                    local route = {
+                        { Position = Vector3.new(rp.X, feetY, rp.Z), Action = Enum.PathWaypointAction.Walk },
+                        { Position = Vector3.new(rp.X, feetY, rp.Z), Action = Enum.PathWaypointAction.Jump },
+                        { Position = landing, Action = Enum.PathWaypointAction.Walk },
+                    }
+                    for i = 2, #tail do route[#route + 1] = tail[i] end
+                    local length = FH.Len(route)
+                    if length < resultLength - 0.05 and not FH.PathBad(route) then
+                        result, resultLength = route, length
+                        if offer then offer(route, length) end
+                        if length <= Flat(goal - rp).Magnitude + 0.1 then break end
+                    end
+                end
+                if tested >= 2 then break end
+            end
+        end
+    end
+    return result, resultLength
+end
 function Follow.RescueJumpLane(rp, point, feetY)
     local delta = Flat(point - rp)
     local distance = delta.Magnitude
@@ -9725,6 +9920,7 @@ function Follow.Airborne(hum, root)
     local state = hum:GetState()
     local velocity = root.AssemblyLinearVelocity
     if state == Enum.HumanoidStateType.Jumping then return velocity ~= nil and math.abs(velocity.Y) > 0.5 end
+    if state == Enum.HumanoidStateType.Freefall and Follow.RescueGrounded(hum, root) then return false end
     return state == Enum.HumanoidStateType.Freefall
 end
 function Follow.AirClear(hum, root, point, reachLimit)
@@ -9774,6 +9970,13 @@ function Follow.GoalOnFloor(hum, root, goal, ignoreModel)
 end
 function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     opts = opts or {}
+    local previousRescue, rescueControl = Follow.RescueControl, nil
+    if opts.rescueJuke then
+        rescueControl = { token = token, hum = GetHumanoid(), root = RootNow(), phase = "route", seen = os.clock() }
+        Follow.RescueControl = rescueControl
+        -- A sidestep from a previous leg cannot survive a new approach phase.
+        if FH.MoveWatch and FH.MoveWatch.token == token then FH.MoveWatch = nil end
+    end
     local noDoor, maxTime, nearOk, evade = opts.noDoor, opts.maxTime, opts.nearOk, opts.evade
     local stableFollow = type(token) == "number" and not opts.rescueJuke and not evade
     local physicalRoute = FH.TraversalOwned(token)
@@ -9805,7 +10008,14 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local jumpTraversal, groundedFeetY, dropTraversal, crossingTraversal
     local lookaheadCheck = {}
     local pendingSteer = opts.rescueSteer or {}
+    if rescueControl then
+        if pendingSteer.obstacleRoot ~= rescueControl.root then pendingSteer.failedObstacles = nil end
+        pendingSteer.failedObstacles = pendingSteer.failedObstacles or setmetatable({}, { __mode = "k" })
+        pendingSteer.obstacleRoot = rescueControl.root
+        rescueControl.failedObstacles = pendingSteer.failedObstacles
+    end
     local rescueDoorTried = false
+    local acceptingPlanAt = startT
     local function dispose(res)
         if not res then return end
         if res.path then
@@ -9850,6 +10060,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if drop and drop.token == token then Follow.DropTraversal = nil end
         if Follow.DoorTraversal and Follow.DoorTraversal.token == token then Follow.DoorTraversal = nil end
         FH.ReleaseMotion(token, stop)
+        if rescueControl and (Follow.RescueControl == nil or Follow.RescueControl == rescueControl) then
+            Follow.RescueControl = previousRescue and TokOK(previousRescue.token) and previousRescue or nil
+            if Follow.RescueControl then Follow.RescueControl.seen = os.clock() end
+        end
         return result
     end
     local function setPath(w, full, path)
@@ -9903,6 +10117,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if path then path:Destroy() end
             return false
         end
+        if opts.rescueJuke and index and hum and root
+            and Follow.RescueStaleEntry(pendingSteer, root, w[index].Position, acceptingPlanAt) then
+            if path then path:Destroy() end
+            return false
+        end
         clearPath()
         if FH.VerticalRouteWait and FH.VerticalRouteWait.token == token then FH.VerticalRouteWait = nil end
         if FH.Motion.replanToken == token then FH.Motion.replanToken = nil end
@@ -9937,7 +10156,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         return true
     end
     local function ownedFlight(hum, root, now)
-        if not Follow.Airborne(hum, root) and hum.FloorMaterial ~= Enum.Material.Air then return false end
+        if not Follow.Airborne(hum, root) and (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root)) then return false end
         if
             Follow.Airborne(hum, root)
             and hum == GetHumanoid()
@@ -9982,7 +10201,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             )
         if not normal then
             local stairs, feetY = false, nil
-            if hum.FloorMaterial ~= Enum.Material.Air and not EM.ComboState then
+            if (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root)) and not EM.ComboState then
                 stairs, feetY = FH.StairProbe(hum, root, wps[index].Position)
             end
             if stairs then
@@ -10082,6 +10301,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             local w, length, partial, path = FH.PathAny(rp, goal, radIdx, fails > 0,
                 function() return not dead() end, false, true, true, offer)
             if dead() then if path then path:Destroy() end; return nil end
+            if windows and (not w or length > straight + 0.1) then
+                local currentRoot = RootNow()
+                if currentRoot and (currentRoot.Position - rp).Magnitude < 3 then
+                    local shortcut, shorter = Follow.RescueJumpRoute(token, hum, currentRoot, goal,
+                        FH.Feet(hum, currentRoot), length, function() return not dead() end, offer)
+                    if dead() then if path then path:Destroy() end; return nil end
+                    if shortcut then
+                        if path then path:Destroy() end
+                        w, length, path = shortcut, shorter, nil
+                    end
+                end
+            end
             native = { w = w, length = length, partial = partial, path = path }
             if w and not FH.PathBad(w) and FH.RouteCost(w, length, true) <= straight + 0.01 then
                 return { mode = "path", wps = w, full = true, path = path }
@@ -10093,7 +10324,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             and nav.Map == GetCurrentMap()
             and nav.Route
             and hum
-            and hum.FloorMaterial ~= Enum.Material.Air
+            and (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, RootNow()))
         then
             nav.CurrentGoal, nav.PriorityAt = goal, 0
             nav.QueueArea(rp, 24)
@@ -10333,8 +10564,15 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 pendingSteer.doors, pendingSteer.suspended, pendingSteer.retreatOrigin = nil, nil, nil
                 pendingSteer.verticalLane, pendingSteer.verticalSince, pendingSteer.verticalRetryAt = nil, nil, 0
                 pendingSteer.dir, pendingSteer.token = nil, nil
+                pendingSteer.failedObstacles = setmetatable({}, { __mode = "k" })
+                pendingSteer.completedPortals = nil
+                if rescueControl then
+                    rescueControl.failedObstacles, rescueControl.attempt = pendingSteer.failedObstacles, nil
+                end
+                FH.RescueSupport, FH.TraversalProbe = nil, nil
                 if Follow.DoorTraversal and Follow.DoorTraversal.token == token then Follow.DoorTraversal = nil end
                 FH.ReleaseMotion(token, false)
+                if rescueControl then Follow.RescueControl = rescueControl end
                 if FH.LiveLanes then
                     for i = #FH.LiveLanes.lanes, 1, -1 do
                         if FH.LiveLanes.lanes[i].token == token then table.remove(FH.LiveLanes.lanes, i) end
@@ -10365,6 +10603,16 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             continue
         end
 
+        if rescueControl then
+            if Follow.RescueControl == nil then Follow.RescueControl = rescueControl end
+            if rescueControl.root ~= root then
+                pendingSteer.completedPortals = nil
+                pendingSteer.failedObstacles = setmetatable({}, { __mode = "k" })
+                rescueControl.failedObstacles, rescueControl.attempt = pendingSteer.failedObstacles, nil
+                FH.RescueSupport, FH.TraversalProbe = nil, nil
+            end
+            rescueControl.hum, rescueControl.root, rescueControl.seen = hum, root, os.clock()
+        end
         local rp = root.Position
         local now = os.clock()
         local feetY = FH.Feet(hum, root)
@@ -10375,6 +10623,41 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         FH.RefreshFilter()
         FH.Tick(hum, root)
         local flying = ownedFlight(hum, root, now)
+        local attempt = rescueControl and rescueControl.attempt
+        if attempt then
+            local portal = attempt.portal
+            if portal and not portal.at and Flat(rp - portal.point):Dot(portal.dir) >= 0 then
+                portal.at = now
+                pendingSteer.completedPortals = pendingSteer.completedPortals or {}
+                pendingSteer.completedPortals[#pendingSteer.completedPortals + 1] = portal
+                if #pendingSteer.completedPortals > 4 then table.remove(pendingSteer.completedPortals, 1) end
+            end
+            local remaining = Flat(attempt.aim - rp):Dot(attempt.dir)
+            if remaining <= 0.8 then
+                rescueControl.attempt = nil
+            else
+                if Flat(rp - attempt.anchor):Dot(attempt.dir) >= 0.5
+                    or not flying and rp.Y - attempt.anchor.Y >= 0.5 and Follow.RescueGrounded(hum, root, true) then
+                    attempt.anchor, attempt.progressAt = rp, now
+                end
+                if not flying and now - attempt.at > 1 and now - attempt.progressAt > 0.45 then
+                    -- API admission and vertical bouncing are not a crossed
+                    -- portal. Reject this attempt even if another jump request
+                    -- would otherwise restart its timer indefinitely.
+                    FH.RejectLane(token, hum, attempt.aim, 5)
+                    if attempt.obstacle then rescueControl.failedObstacles[attempt.obstacle] = now + 8 end
+                    FH.TraversalProbe = nil
+                    if FH.Jmp and FH.Jmp.token == token then FH.Jmp = nil end
+                    if FH.JumpFlight and FH.JumpFlight.token == token then FH.JumpFlight = nil end
+                    pendingSteer.failedLanes = pendingSteer.failedLanes or {}
+                    pendingSteer.failedLanes[#pendingSteer.failedLanes + 1] =
+                        { origin = rp, dir = attempt.dir, untilAt = now + 5 }
+                    rescueControl.attempt = nil
+                    reset()
+                    progressPosition, progressAt, nextPlan = rp, now, 0
+                end
+            end
+        end
         if requestedReplan and flying then FH.Motion.replanToken = token end
         if opts.rescueJuke and Follow.Airborne(hum, root) and math.abs(root.AssemblyLinearVelocity.Y) < 2 then
             local suspended = pendingSteer.suspended
@@ -10413,7 +10696,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             local along = delta:Dot(crossing.dir)
             local lateral = (delta - crossing.dir * along).Magnitude
             local passed = along <= 0.8 and lateral <= 2.2
-            local grounded = not Follow.Airborne(hum, root) and hum.FloorMaterial ~= Enum.Material.Air
+            local grounded = not Follow.Airborne(hum, root) and (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root))
             if
                 crossing.hum ~= hum
                 or crossing.root ~= root
@@ -10422,6 +10705,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 or passed
                 or (grounded and crossing.airborne and not opts.rescueJuke)
             then
+                if opts.rescueJuke and not passed and grounded and now >= crossing.untilAt then
+                    FH.RejectLane(token, hum, crossing.aim, 5)
+                    planAt, nextPlan = -math.huge, 0
+                end
                 if Follow.CrossingTraversal == crossing then Follow.CrossingTraversal = nil end
                 crossingTraversal = nil
                 if passed and mode == "path" and crossing.index and wps and wps[crossing.index + 1] then
@@ -10471,7 +10758,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 drop.hum ~= hum
                 or drop.root ~= root
                 or now >= drop.untilAt
-                or (hum.FloorMaterial ~= Enum.Material.Air and math.abs(feetY - drop.aim.Y) < 1.5)
+                or ((hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root)) and math.abs(feetY - drop.aim.Y) < 1.5)
             then
                 if opts.rescueJuke and drop.hum == hum and drop.root == root
                     and not Follow.Airborne(hum, root) and math.abs(feetY - drop.aim.Y) < 1.5
@@ -10496,7 +10783,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if flying and FH.JumpFlight and FH.JumpFlight.normal and FH.JumpFlight.feetY then
             feetY = FH.JumpFlight.feetY
         end
-        if routeProgress and not flying and hum.FloorMaterial ~= Enum.Material.Air then groundedFeetY = feetY end
+        if routeProgress and not flying and (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root)) then groundedFeetY = feetY end
         if jumpTraversal then
             local traversal = jumpTraversal
             local takeoff = wps and wps[traversal.index]
@@ -10538,7 +10825,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         then
             if not (keep and flatDist > 5 and keep()) then return finish("arrived", true) end
         end
-        if progressPosition and Flat(rp - progressPosition).Magnitude >= 0.75 then
+        if progressPosition and (Flat(rp - progressPosition).Magnitude >= 0.75
+            or opts.rescueJuke and not flying and rp.Y - progressPosition.Y >= 0.5
+                and Follow.RescueGrounded(hum, root, true)) then
             progressPosition, progressAt = rp, now
         elseif not progressPosition then
             progressPosition, progressAt = rp, now
@@ -10567,6 +10856,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
             end
             if mode ~= "path" or preview.length < remaining - 0.05 then
+                acceptingPlanAt = job.at
                 setPath(preview.wps, true, nil)
             end
         end
@@ -10585,6 +10875,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 end
             end
             if j.gen == gen and fresh then
+                acceptingPlanAt = j.at
                 local res = applyRes(j.res, rp, goal)
                 if not alive() then return finish("abort", false) end
                 if res == "door" then
@@ -10618,7 +10909,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             and mode == "path"
             and not job
             and not flying
-            and flatDist < 32
+            and flatDist < (opts.rescueJuke and 90 or 32)
             and dyg < 3.6
             and now >= shortcutAt
             and not FH.JumpFlight
@@ -10721,7 +11012,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
             if
                 opts.rescueJuke
-                and hum.FloorMaterial ~= Enum.Material.Air
+                and (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root))
                 and not FH.JumpFlight
                 and now - rescueShortcutAt >= 0.25
             then
@@ -10784,6 +11075,13 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     end
                 end
                 if not jumping and distance > (routeProgress and 1.2 or 3) and not passed then break end
+                if opts.rescueJuke and current.RescueCorner and not flying
+                    and math.abs(following.Position.Y - feetY) <= 1.5
+                    and not Follow.RescueBodyClear(hum, root, following.Position, feetY, 4) then
+                    local nextDirection = Flat(following.Position - rp)
+                    local nextKind = nextDirection.Magnitude > 0.1 and FH.Profile(rp.X, rp.Z, nextDirection.Unit, feetY, math.min(nextDirection.Magnitude, 3.4))
+                    if nextKind ~= "door" then break end
+                end
                 if jumping then
                     if distance > 4.5 and not crossedJump then break end
                     if jumpIndex ~= wpi and not waypointJump(wpi, hum, root, now) then break end
@@ -10859,6 +11157,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     if index < wpi or index > #wps or (blockedAt and index >= blockedAt) then return false end
                     local point = wps[index].Position
                     for i = wpi, index do
+                        if opts.rescueJuke and wps[i].RescueCorner and wps[i + 1] and not flying
+                            and math.abs(wps[i + 1].Position.Y - feetY) <= 1.5
+                            and not Follow.RescueBodyClear(hum, root, wps[i + 1].Position, feetY, 4) then return false end
                         if
                             wps[i].Action == Enum.PathWaypointAction.Jump
                             or math.abs(wps[i].Position.Y - wp.Position.Y) > 1.5
@@ -10900,27 +11201,34 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         function() return laneClear(laIdx, false) end
                     )
                 then
-                    -- This route lost its forward lane. Replan from here rather
-                    -- than alternating between its old corner and lookahead.
-                    banDirect = math.max(banDirect, now + 0.5)
-                    reset()
-                    nextPlan = 0
-                    if
-                        not Follow.PlanStep(
-                            token,
-                            hum,
-                            root,
-                            goal,
-                            feetY,
-                            pendingSteer,
-                            opts.rescueJuke,
-                            opts.approachModel
-                        )
-                    then
-                        FH.Move(token, hum, rp, false, goal)
+                    if opts.rescueJuke and clearLane(rp, wp.Position, feetY) then
+                        -- Losing a corner-cut is not losing the waypoint route.
+                        -- Fall back to the actual next supported tread/corner.
+                        laIdx, laAt = nil, now
+                        table.clear(lookaheadCheck)
+                    else
+                        -- This route lost its forward lane. Replan from here rather
+                        -- than alternating between its old corner and lookahead.
+                        banDirect = math.max(banDirect, now + 0.5)
+                        reset()
+                        nextPlan = 0
+                        if
+                            not Follow.PlanStep(
+                                token,
+                                hum,
+                                root,
+                                goal,
+                                feetY,
+                                pendingSteer,
+                                opts.rescueJuke,
+                                opts.approachModel
+                            )
+                        then
+                            FH.Move(token, hum, rp, false, goal)
+                        end
+                        task.wait(0.03)
+                        continue
                     end
-                    task.wait(0.03)
-                    continue
                 end
                 if (not laIdx or laIdx <= wpi) and now - laAt > 0.08 then
                     laAt, laIdx = now, wpi

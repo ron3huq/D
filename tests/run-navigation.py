@@ -28,13 +28,13 @@ def function(name):
     return source[match.start():match.end() + end.end()] + "\n"
 
 names = """
-FH.MotionPriority FH.MotionValid FH.MotionActive FH.MotionAvailable FH.MarkWork FH.IsWorking
+FH.ResetCaches FH.MotionPriority FH.MotionValid FH.MotionActive FH.MotionAvailable FH.MarkWork FH.IsWorking
 FH.NoteStallIntent FH.IsHacking FH.AwaitingFloorRoute FH.CommittedTraversal FH.StallJumpStep
-FH.RecoveryAim FH.Move FH.CarryMotion FH.ReleaseMotion FH.BodyRadius FH.CollisionBody
+FH.RecoveryAim Follow.RescueControlled Follow.ObserveRescueMotion Follow.RescueFailedPart Follow.ObserveRescueJump FH.Move FH.CarryMotion FH.ReleaseMotion FH.BodyRadius FH.CollisionBody
 FH.ContactDistance FH.ContactGoal FH.SelectedTrigger FH.InteractionAck FH.SetContactApproach
 FH.ContactApproachValid FH.ComputerSlotTaken FH.ComputerContactClear FH.ComputerContact FH.PodContactReady
 FH.LaneRevision FH.RejectLane FH.LaneRejected FH.PathLaneRejected FH.AddBad FH.IsBad FH.PathBad
-FH.JumpReady FH.RecordTakeoff FH.CompTriggers FH.CanHold FH.Feet FH.Space FH.TakeoffSupported FH.NormalJump
+FH.JumpReady FH.RecordTakeoff FH.CompTriggers FH.CanHold FH.Feet FH.Space Follow.RescueGrounded FH.TakeoffSupported FH.NormalJump
 FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.JumpTickStep FH.MotionProfile FH.JumpMoveStep
 FH.MotionGuardedStep FH.MotionStep FH.ForwardLane FH.ReleaseForward FH.ForwardOwner FH.PressForward FH.ForwardWatchStep
 FH.PeriodicComputerBlocked FH.PeriodicSpaceStep FH.GroundMoveStep FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
@@ -43,7 +43,7 @@ FH.TraversalLane FH.TryJump FH.ApproachClear FH.StairLane FH.Profile FH.Seg FH.L
 FH.Ground FH.Path FH.Len FH.RouteCost FH.PathAny Follow.Hold Follow.Release Follow.PlanClear
 Follow.DropLane Follow.ActiveDrop Follow.DropClear Follow.StartDrop FH.BindNativeFlight
 Follow.ActiveCrossing Follow.CrossingPlan Follow.CommitCrossing Follow.RouteProfile
-Follow.RescueSurfaceLane Follow.RescueWaypoints Follow.RescuePathIndex Follow.RescueBodyClear Follow.OwnedLaneClear Follow.ActiveEscape Follow.RescueLocalLane Follow.PlanStep Follow.RescueJumpLane Follow.RescueShortcut
+Follow.RescueSurfaceLane Follow.RescueWaypoints Follow.RescueStaleEntry Follow.RescuePathIndex Follow.RescueBodyClear Follow.OwnedLaneClear Follow.ActiveEscape Follow.RescueLocalLane Follow.PlanStep Follow.RescueJumpRoute Follow.RescueJumpLane Follow.RescueShortcut
 Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalGround Follow.GoalOnFloor
 Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
 Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
