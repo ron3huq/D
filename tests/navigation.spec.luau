@@ -1535,6 +1535,26 @@ scenario("landing on a higher tread rearms a real next hop without a fixed pause
         "fixture did not land on higher support")
     check(FH.NormalJump(hum), "fixed cooldown stranded a progressed avatar on the next raised tread")
 end)
+scenario("two open exits keep approaching after landing on an obstacle", function()
+    openExit(30); openExit(-70); exitPlayers()
+    box("ExitRouteProp", Vec.new(4, 0, -4), Vec.new(14, 6, 4))
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(5, 0, 0), Action = "Jump" },
+            { Position = Vec.new(15, 0, 0), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    task.delay(0.24, function()
+        root.Position = Vec.new(8, 9, 0); updateParts()
+        hum.FloorMaterial, hum.State, world.vy = "Ground", "Running", 0
+        FH.JumpFlight, FH.Jmp = nil, nil
+    end)
+    local state = {}
+    local result = FH.ExitRoute(7, state)
+    check(result == "waiting" and root.Position.X > 17 and not stats.Escaped.Value,
+        "open exit route lost its approach after landing on a prop: " .. tostring(result))
+    check(now < 104 and world.blocked < 10, "exit spent too long stalled at the prop edge")
+end)
 scenario("two open exits still produce approach and stable waiting", function()
     local exit = openExit(30); openExit(-70)
     exitPlayers()
@@ -1613,6 +1633,21 @@ scenario("half of remaining survivors at one exit includes 2/3 and 2/4", functio
     ar.Position = Vec.new(-39, 3, 0)
     check(not FH.ExitPolicy(exit.center, Vec.new(11, 3, 0)), "survivors split across different exits were merged into one assembled group")
 end)
+scenario("both-open exits retain confirmed unlock despite contradictory UI", function()
+    world.gameInfo = { computersLeft = 0 }
+    check(FH.TestExitOpen(), "unlock did not latch")
+    local a, b = openExit(30), openExit(-70)
+    exitPlayers()
+    world.gameInfo = { exitBlocked = true, computersLeft = 2 }
+    local exitOpen = FH.ExitOpen
+    FH.ExitOpen = FH.TestExitOpen
+    local result = FH.ExitRoute(7, {})
+    FH.ExitOpen = exitOpen
+    check(result == "waiting" and root.Position.X > 17,
+        "conflicting UI disabled navigation while both gates remained open")
+    a.open, b.open = false, false
+    check(not FH.TestExitOpen(), "closed new-round gates retained the old unlock")
+end)
 scenario("confirmed exit unlock survives disappearing UI but resets for a new round", function()
     world.gameInfo = { computersLeft = 0 }
     check(FH.TestExitOpen(), "explicit unlock was ignored")
@@ -1653,6 +1688,24 @@ scenario("rescue leaves a concave wall pocket while the native route is pending"
     check(root.Position.X < -5, "rescue waited/pressed into the wall instead of taking its only backward exit")
     check(world.jumps == 0, "solid wall pocket was treated as a jump obstacle")
 end)
+for _, width in ipairs({ 4, 10, 18 }) do
+    scenario("rescue leaves a wide raised prop with stale low waypoints " .. width, function()
+        box("WidePerch", Vec.new(-width/2, 0, -width/2), Vec.new(width/2, 6, width/2))
+        root.Position = Vec.new(0, 9, 0); updateParts()
+        world.planDelay = 0.5
+        world.route = function(from, to)
+            return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+                { Position = Vec.new(1, 0, 0), Action = "Walk" }, { Position = to, Action = "Walk" } }
+        end
+        local goal, token = Vec.new(30, 3, 0), rescueToken()
+        local moved
+        task.delay(0.5, function() moved = root.Position.X > 3 end)
+        local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+            { noDoor = true, maxTime = 4, rescueJuke = goal })
+        check(moved and result == "arrived", "raised support/stale entry stalled rescue: " .. tostring(result))
+        check(world.jumps == 0, "descent from the prop requested an unnecessary jump")
+    end)
+end
 scenario("rescue steps down from a high object when its forward descent is walled", function()
     box("TallObject", Vec.new(-2, 0, -2), Vec.new(2, 10, 2))
     box("ForwardWall", Vec.new(2.2, 0, -3), Vec.new(2.5, 22, 3))
@@ -1926,6 +1979,27 @@ scenario("door continuation cancels on a new obstruction or movement owner", fun
     FH.ReleaseMotion(token, false)
     check(Follow.DoorTraversal == nil, "released rescue retained door ownership")
 end)
+scenario("landing past an old jump waypoint immediately keeps the forward heading", function()
+    box("WideProp", Vec.new(4, 0, -4), Vec.new(14, 6, 4))
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(5, 0, 0), Action = "Jump" },
+            { Position = Vec.new(15, 0, 0), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local forward
+    task.delay(0.24, function()
+        root.Position = Vec.new(8, 9, 0); updateParts()
+        hum.FloorMaterial, hum.State, world.vy = "Ground", "Running", 0
+        FH.JumpFlight, FH.Jmp = nil, nil
+        task.delay(0.16, function() forward = root.Position.X > 9 end)
+    end)
+    local goal, token = Vec.new(30, 3, 0), rescueToken()
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 3, rescueJuke = goal })
+    check(forward and result == "arrived" and world.blocked < 10,
+        "landed beyond takeoff but stalled leaving the prop: " .. tostring(result))
+end)
 scenario("landing above an old takeoff exits the prop instead of aiming at its own feet", function()
     box("WideProp", Vec.new(4, 0, -4), Vec.new(14, 3, 4))
     FH.BanDirect = now + 20
@@ -2093,6 +2167,25 @@ scenario("a local double-input window route beats a remote navmesh walking detou
         { noDoor = true, maxTime = 4, rescueJuke = goal, rescueSteer = steering })
     check(result == "arrived" and world.doubles >= 1, "native walking detour hid a shorter real two-input window crossing")
     check(now < 103.7 and hum.JumpPower == 36 and hum.JumpHeight == 7.2, "shorter window route modified jump strength or remained slow")
+end)
+scenario("a delayed native detour still compares the shorter window from the live pose", function()
+    box("HighWindow", Vec.new(3, 0, -20), Vec.new(3.5, 5.4, 20))
+    FH.BanDirect = now + 20
+    world.planDelay = 0.4
+    world.route = function(from, to)
+        if from.X >= 5 then return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" }, { Position = to, Action = "Walk" } } end
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0, 0, 22), Action = "Walk" },
+            { Position = Vec.new(8, 0, 22), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local goal, token = Vec.new(50, 3, 0), rescueToken()
+    local steering = { token = token, root = root, rescueGoal = goal, goal = goal,
+        aim = Vec.new(0, 3, 6), dir = Vec.new(0, 0, 1), checkAt = now + 1,
+        progressPos = root.Position, progressAt = now, trail = {} }
+    local result = Follow.WalkTo(token, function() return goal end, 0.8, nil,
+        { noDoor = true, maxTime = 6, rescueJuke = goal, rescueSteer = steering })
+    check(result == "arrived" and world.doubles >= 1, "native walking detour hid a shorter real two-input window crossing")
+    check(now < 105.5 and hum.JumpPower == 36 and hum.JumpHeight == 7.2, "shorter window route modified jump strength or remained slow")
 end)
 scenario("a declined high-window crossing falls back to the walking route without buffs", function()
     box("HighWindow", Vec.new(3, 0, -20), Vec.new(3.5, 5.4, 20))

@@ -1,3 +1,24 @@
+# Rescue perch arrival and physically open exit retention — 2026-11-08
+
+Base: `ce4d085f1f61e4f06ff254d3ecc6516c00ce8a6b`, fetched before this repair.
+
+## Reproduced failures
+
+- **A rescue intermediate destination could stop inside the edge clearance.** The previous precise-arrival change covered sharp corners but left other rescue legs with a 0.5-stud render cutoff. A new landing case puts the avatar beyond an old takeoff onto a six-stud prop, then follows the actual navigation/controller code toward a landing just beyond its edge. Old code moves initially, stops short of the edge destination and fails to complete after three seconds, with 224 simulated collision frames. This is why checking only initial movement after landing was insufficient. Controlled rescue movement now uses the existing native analog precise-arrival controller for every leg, including jump continuations/drop entries. The revised case reaches its destination in 1.62 seconds with six collision frames. No collision properties, speed, velocity, JumpPower or JumpHeight are changed.
+- **Contradictory UI could disable a confirmed exit while gates were open.** ExitOpen cleared the unlock latch for a blocked message or positive computer count before considering physical gate state. A focused both-open fixture first confirms unlock, then supplies contradictory UI: the old code disables ExitRoute immediately. The revised code checks live gate geometry before revoking that confirmed, same-map latch. It deliberately bypasses the geometry cache on this conflict so closed gates plus a new-round positive count reset immediately. The existing wait policy, survivor counts, same-door proximity and nearby-Beast escape rules are unchanged. This test isolates the signal/physical-state handoff with the fixture's gate-state boundary; it does not establish which UI values occurred during the user's live failure.
+
+## Rescue route selection
+
+The planner formerly skipped its local jump/window comparison once preview steering had moved three studs beyond the query's original start. It now evaluates from the live grounded pose and compares with the estimated remaining native route, rather than comparing a live shortcut with the whole old-start route. Flight keeps its committed steering; native takeoff support and collision checks still govern traversal. Existing and newly delayed window/detour coverage completes without jump-property changes. The delayed fixture also passes the baseline through another local shortcut mechanism, so it is coverage rather than evidence of a measured speed improvement from this planner change. No global shortest-route guarantee is inferred from it.
+
+## Validation and limits
+
+131 simulated scenarios / 283 assertions pass, including three prop widths, landing beyond an old takeoff, two open exits after obstacle landing, conflicting exit UI, delayed window comparison and existing stairs/door/ownership cases. Baseline comparison exposes two failures in the added coverage. Full Luau compilation and whitespace checks pass.
+
+Re-read the local Library descent interval at 458.4–460.8 seconds: horizontal movement continues through the descending support, without using crawl/Shift as a model. No raw coordinates or recordings are committed. These behavior examples do not expose the revised script's internal state or reconstruct map collision meshes. There is no live Roblox Player/Studio test here. These fixes address demonstrated stop mechanisms; they do not prove that every reported obstacle/stair stall, circuitous rescue route or both-open exit failure is gone.
+
+---
+
 # PC slot ownership and rescue contact handoff — 2026-11-08
 
 Base: `83722eddbc7ac806b9453d9a00ed608d9d9e369f`, freshly fetched from main.

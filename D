@@ -3114,7 +3114,7 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
     -- Render steering follows every accepted destination. Only engine MoveTo
     -- orders are throttled, so a short next waypoint cannot leave Move(0) at
     -- the previous cached point while waiting for its refresh timer.
-    m.aim, m.precision = goal, precision == true
+    m.aim, m.precision = goal, precision == true or Follow.RescueControlled(token, hum, root)
     local flight = FH.JumpFlight
     if
         flight
@@ -4024,6 +4024,17 @@ function FH.ExitOpen()
         return false
     end
     local info = FH.GameInfo()
+    local confirmed = FH.Endgame
+    if confirmed.on and confirmed.map == GetCurrentMap()
+        and (info.exitBlocked or info.computersLeft and info.computersLeft > 0) then
+        -- Conflicting/stale UI cannot revoke a confirmed unlock while a gate
+        -- is physically open. Probe live rather than using the 0.25s cache:
+        -- a closed gate plus a new round's positive count must reset at once.
+        local map = GetCurrentMap()
+        for _, door in ipairs(ExitDoors) do
+            if IsInWorld(door) and door:IsDescendantOf(map) and FH.ExitDoorOpen(door) then return true end
+        end
+    end
     if info.computersLeft and info.computersLeft > 0 then
         FH.Endgame = { on = false }
         return false
@@ -10332,9 +10343,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if dead() then if path then path:Destroy() end; return nil end
             if windows and (not w or length > straight + 0.1) then
                 local currentRoot = RootNow()
-                if currentRoot and (currentRoot.Position - rp).Magnitude < 3 then
+                if currentRoot and hum == GetHumanoid() and not Follow.Airborne(hum, currentRoot) then
+                    -- Preview steering may have travelled far while ComputeAsync
+                    -- yielded. Compare from the live pose instead of silently
+                    -- dropping all window alternatives after three studs.
+                    local remaining = math.huge
+                    if w then
+                        local index = Follow.RescuePathIndex(token, hum, currentRoot, w)
+                        remaining = (w[index].Position - Vector3.new(currentRoot.Position.X,
+                            FH.Feet(hum, currentRoot), currentRoot.Position.Z)).Magnitude
+                        for i = index + 1, #w do remaining += (w[i].Position - w[i - 1].Position).Magnitude end
+                    end
                     local shortcut, shorter = Follow.RescueJumpRoute(token, hum, currentRoot, goal,
-                        FH.Feet(hum, currentRoot), length, function() return not dead() end, offer)
+                        FH.Feet(hum, currentRoot), remaining, function() return not dead() end, offer)
                     if dead() then if path then path:Destroy() end; return nil end
                     if shortcut then
                         if path then path:Destroy() end
