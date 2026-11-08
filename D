@@ -3002,12 +3002,8 @@ function FH.RecoveryAim(token, hum, goal, intentGoal)
 end
 function Follow.RescueControlled(token, hum, root)
     local control = Follow.RescueControl
-    if control and control.token == token and control.seen and os.clock() - control.seen > 1.2 then
-        -- A failed/ended task must not leave a coordinator suppressing recovery
-        -- or a stale forward intent that can act after its movement lease ends.
-        FH.ReleaseMotion(token, true)
-        return false
-    end
+    -- Ownership inspection is read-only. A carried valid leg can outlive the
+    -- caller's last Move; only completion/cancellation/error cleanup releases it.
     return control ~= nil and control.token == token and control.hum == hum and control.root == root
         and FH.MotionAvailable(token)
 end
@@ -3027,7 +3023,7 @@ end
 function Follow.RescueFailedPart(token, part)
     local control = Follow.RescueControl
     local untilAt = control and control.token == token and control.failedObstacles and control.failedObstacles[part]
-    return untilAt ~= nil and os.clock() < untilAt
+    return type(untilAt) == "number" and os.clock() < untilAt
 end
 function Follow.ObserveRescueJump(token, hum, root, goal)
     local control, flight = Follow.RescueControl, FH.JumpFlight
@@ -3058,7 +3054,7 @@ function Follow.ObserveRescueJump(token, hum, root, goal)
     control.attempt = { origin = root.Position, aim = goal, dir = delta.Unit, portal = portal,
         obstacle = hit and hit.Instance, at = os.clock(), progressAt = os.clock(), anchor = root.Position }
 end
-function FH.Move(token, hum, goal, force, intentGoal)
+function FH.Move(token, hum, goal, force, intentGoal, precision)
     if not (hum and goal) or hum.Health <= 0 or Ctl.On() or Fly.Active or not FH.MotionAvailable(token) then
         if FH.MoveWatch and FH.MoveWatch.token == token then FH.MoveWatch = nil end
         return false
@@ -3118,7 +3114,7 @@ function FH.Move(token, hum, goal, force, intentGoal)
     -- Render steering follows every accepted destination. Only engine MoveTo
     -- orders are throttled, so a short next waypoint cannot leave Move(0) at
     -- the previous cached point while waiting for its refresh timer.
-    m.aim = goal
+    m.aim, m.precision = goal, precision == true
     local flight = FH.JumpFlight
     if
         flight
@@ -3204,6 +3200,7 @@ function FH.ReleaseMotion(token, stop)
         end
     end
     if FH.StairWatch and FH.StairWatch.hum == m.hum then FH.StairWatch = nil end
+    m.precision = nil
     m.token, m.aim, m.sentAim, m.hum, m.priority, m.untilAt, m.replanToken = nil, nil, nil, nil, 0, 0, nil
     if FH.JumpFlight and FH.JumpFlight.token == token then FH.JumpFlight = nil end
     if FH.MoveWatch and FH.MoveWatch.token == token then FH.MoveWatch = nil end
@@ -4546,9 +4543,19 @@ function FH.MotionProfile(hum, root, aim, feetY, maxReach)
     }
     return kind, sill, instance, door
 end
+-- Tight transit corners need their actual waypoint, not the ordinary
+-- half-stud stop radius. Analog native input limits the final frame to the
+-- remaining distance; neither speed nor velocity properties are changed.
+function FH.PreciseMove(hum, root, point, dt)
+    local direction = Flat(point - root.Position)
+    if direction.Magnitude <= 0.001 then hum:Move(Vector3.zero, false); return end
+    local frame = math.clamp(tonumber(dt) or 1 / 60, 1 / 240, 0.25)
+    local scale = math.min(1, direction.Magnitude / (math.max(hum.WalkSpeed, 1) * frame))
+    hum:Move(direction.Unit * scale, false)
+end
 -- Reassert the owned direction after Roblox input processing during takeoff
 -- and flight without restarting the Humanoid's MoveTo operation each frame.
-function FH.JumpMoveStep()
+function FH.JumpMoveStep(dt)
     local flight, motion = FH.JumpFlight, FH.Motion
     if not flight then return end
     local hum, root = GetHumanoid(), RootNow()
@@ -4603,6 +4610,11 @@ function FH.JumpMoveStep()
         end
         return
     end
+    if motion.precision then
+        FH.PreciseMove(hum, root, motion.aim, dt)
+        motion.sentAt = os.clock()
+        return
+    end
     local direction = Flat(motion.aim - root.Position)
     if direction.Magnitude <= 0.5 then return end
     hum:Move(direction.Unit, false)
@@ -4611,7 +4623,7 @@ end
 -- Roblox's ordinary input controller also writes Move(0) when no movement key
 -- is held. Keep the leased direction after that update on the ground as well
 -- as during native Space recovery; a cached MoveTo alone can be cancelled.
-function FH.GroundMoveStep()
+function FH.GroundMoveStep(dt)
     local motion = FH.Motion
     if not motion or motion.token == nil or not motion.aim or FH.JumpFlight then return end
     local hum, root = GetHumanoid(), RootNow()
@@ -4641,6 +4653,7 @@ function FH.GroundMoveStep()
     then
         return
     end
+    if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); return end
     local direction = Flat(motion.aim - root.Position)
     hum:Move(direction.Magnitude > 0.5 and direction.Unit or Vector3.new(0, 0, 0), false)
 end
@@ -5080,11 +5093,11 @@ function FH.ForwardWatchStep()
     if motion.token == token and motion.aim then return FH.TryJump(hum, root, motion.aim, FH.Feet(hum, root)) end
     return false
 end
-function FH.MotionGuardedStep(name)
+function FH.MotionGuardedStep(name, dt)
     local now = os.clock()
     local retries = FH.MotionStepRetry
     if retries and now < (retries[name] or 0) then return false end
-    local ok = pcall(FH[name])
+    local ok = pcall(FH[name], dt)
     if not ok then
         retries = retries or {}
         FH.MotionStepRetry = retries
@@ -5093,18 +5106,18 @@ function FH.MotionGuardedStep(name)
     end
     return ok
 end
-function FH.MotionStep()
-    FH.MotionGuardedStep("JumpTickStep")
-    FH.MotionGuardedStep("NoteNormalTakeoff")
-    FH.MotionGuardedStep("StairJumpStep")
-    FH.MotionGuardedStep("StallJumpStep")
-    FH.MotionGuardedStep("PeriodicSpaceStep")
-    FH.MotionGuardedStep("ForwardWatchStep")
-    FH.MotionGuardedStep("JumpMoveStep")
-    FH.GroundMoveStep()
+function FH.MotionStep(dt)
+    FH.MotionGuardedStep("JumpTickStep", dt)
+    FH.MotionGuardedStep("NoteNormalTakeoff", dt)
+    FH.MotionGuardedStep("StairJumpStep", dt)
+    FH.MotionGuardedStep("StallJumpStep", dt)
+    FH.MotionGuardedStep("PeriodicSpaceStep", dt)
+    FH.MotionGuardedStep("ForwardWatchStep", dt)
+    FH.MotionGuardedStep("JumpMoveStep", dt)
+    FH.GroundMoveStep(dt)
 end
-RunService:BindToRenderStep("NovaJumpMove", Enum.RenderPriority.Input.Value + 1, function()
-    local ok = pcall(FH.MotionStep)
+RunService:BindToRenderStep("NovaJumpMove", Enum.RenderPriority.Input.Value + 1, function(dt)
+    local ok = pcall(FH.MotionStep, dt)
     if not ok then
         FH.JumpFlight = nil
         FH.StallIntent = nil
@@ -8779,6 +8792,7 @@ function Follow.RescueSurfaceLane(token, hum, root, point, feetY, reachLimit)
         return safe, kind, floorY
     end
     local radius, height, bottom = FH.CollisionBody(hum, root, feetY)
+    radius = math.max(0.1, radius - 0.001) -- Query skin only; retain the actual collision/pathfinding radius.
     local across = Vector3.new(-dir.Z, 0, dir.X)
     local count, floorY = math.max(1, math.ceil(reach / 0.25)), feetY
     local length = reach / count
@@ -8884,11 +8898,18 @@ function Follow.RescueBodyClear(hum, root, point, feetY, reach)
     local delta = Flat(point - root.Position)
     if delta.Magnitude <= 0.1 then return true end
     local radius, height, bottom = FH.CollisionBody(hum, root, feetY)
-    local center = Vector3.new(root.Position.X, feetY + bottom + height * 0.5, root.Position.Z)
-    local ok, hit = pcall(function()
-        return Workspace:Blockcast(CFrame.new(center), Vector3.new(radius * 2, math.max(0.2, height - 0.04), radius * 2),
-            delta.Unit * math.min(delta.Magnitude, reach or 6), rayParams)
-    end)
+    local center = CFrame.new(root.Position.X, feetY + bottom + height * 0.5, root.Position.Z)
+    local size = Vector3.new(radius * 2, math.max(0.2, height - 0.04), radius * 2)
+    local movement = delta.Unit * math.min(delta.Magnitude, reach or 6)
+    local ok, hit = pcall(function() return Workspace:Blockcast(center, size, movement, rayParams) end)
+    if ok and hit then
+        -- A swept box edge can graze a wall at a valid native corner. A tiny
+        -- query skin distinguishes tangency from moving into the obstacle.
+        -- Actual character collision and pathfinding radius stay unchanged.
+        local skin = Vector3.new(math.max(0.1, size.X - 0.002), size.Y, math.max(0.1, size.Z - 0.002))
+        local checked, blocked = pcall(function() return Workspace:Blockcast(center, skin, movement, rayParams) end)
+        return checked and blocked == nil
+    end
     return not ok or hit == nil
 end
 function Follow.OwnedLaneClear(token, hum, root, from, point, feetY, reach, owned)
@@ -11359,7 +11380,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         end
 
         if opts.rescueJuke then aim = FH.RescueJuke(token, root, aim, opts.rescueJuke, feetY) end
-        FH.Move(token, hum, aim)
+        local preciseCorner = opts.rescueJuke and mode == "path" and wps and wps[wpi]
+            and wps[wpi].RescueCorner and Flat(aim - wps[wpi].Position).Magnitude < 0.1
+        FH.Move(token, hum, aim, false, nil, preciseCorner)
         task.wait(0.03)
     end
     return finish("abort", false)
@@ -13362,6 +13385,7 @@ function Follow.Main(token, player)
             if not ok then
                 warn("[Follow] loi: " .. tostring(err))
                 pcall(Follow.Release, token)
+                FH.ReleaseMotion(token, false)
                 task.wait(0.3)
             end
             task.wait(0.02)
@@ -15274,6 +15298,7 @@ function AR.Loop(token)
         if not ok then
             warn("[AutoHelp] loi: " .. tostring(err))
             AR.Release(tok)
+            FH.ReleaseMotion(tok, false)
             if not AR.Request then AR.SetBusy(false) end
             task.wait(0.4)
         end

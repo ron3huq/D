@@ -35,7 +35,7 @@ FH.ContactDistance FH.ContactGoal FH.SelectedTrigger FH.InteractionAck FH.SetCon
 FH.ContactApproachValid FH.ComputerSlotTaken FH.ComputerContactClear FH.ComputerContact FH.PodContactReady
 FH.LaneRevision FH.RejectLane FH.LaneRejected FH.PathLaneRejected FH.AddBad FH.IsBad FH.PathBad
 FH.JumpReady FH.RecordTakeoff FH.CompTriggers FH.CanHold FH.Feet FH.Space Follow.RescueGrounded FH.TakeoffSupported FH.NormalJump
-FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.JumpTickStep FH.MotionProfile FH.JumpMoveStep
+FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.JumpTickStep FH.MotionProfile FH.PreciseMove FH.JumpMoveStep
 FH.MotionGuardedStep FH.MotionStep FH.ForwardLane FH.ReleaseForward FH.ForwardOwner FH.PressForward FH.ForwardWatchStep
 FH.PeriodicComputerBlocked FH.PeriodicSpaceStep FH.GroundMoveStep FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
 FH.NativeJumpLimits FH.SupportVelocityY FH.TraversalOwned FH.TraversalSweep FH.TraversalStairs
@@ -46,7 +46,7 @@ Follow.ActiveCrossing Follow.CrossingPlan Follow.CommitCrossing Follow.RouteProf
 Follow.RescueSurfaceLane Follow.RescueWaypoints Follow.RescueStaleEntry Follow.RescuePathIndex Follow.RescueBodyClear Follow.OwnedLaneClear Follow.ActiveEscape Follow.RescueLocalLane Follow.PlanStep Follow.RescueJumpRoute Follow.RescueJumpLane Follow.RescueShortcut
 Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalGround Follow.GoalOnFloor
 Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
-Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
+AR.Loop Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 Follow.RescueDoorState Follow.RescueDoorDir Follow.RescueRouteReturns Follow.RescueDoorKind Follow.RescueDoorCrossed
 Follow.DoorOpening Follow.PassDoor Follow.ActiveDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold
 FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing

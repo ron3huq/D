@@ -1,3 +1,32 @@
+# Stop regression in 549dc8e — 2026-11-08
+
+Base: `549dc8e6308964225b642138fc5951baaf3070d6`, fetched from `main` before this repair. The user reports that the last revision made stopping worse. This follow-up fixes concrete regressions in that revision rather than treating the previous simulation pass as evidence against the live report.
+
+## Reproduced defects
+
+1. **A cross-owner geometry query could throw a type error.** `RescueFailedPart` used a short-circuit expression that returns `false` when the active coordinator belongs to another token. The code checked only `~= nil` and then compared that boolean with `os.clock()`. The timestamp comparison now requires a number. Other owners can query geometry without inheriting rescue's failed-part memory or throwing; the owning rescue still sees its own unexpired failure marks.
+2. **An ownership predicate could cancel valid carried movement.** `RescueControlled` released motion after 1.2 seconds since the last `Move`, even when `CarryMotion` was actively renewing a verified leg. Ownership inspection is now read-only. Completion, cancellation and the actual error handlers release movement explicitly. AutoHelp and Follow error cleanup now remove the failed token's lease/coordinator/intent before their existing retry backoff, while retaining the error warning.
+3. **Tight-corner admission contradicted the render stop radius.** The prior body-clearance guard could require the actual waypoint before advancing, but ground/flight steering stopped within 0.5 stud. A valid native corner could therefore remain stationary until the 0.9-second progress guard discarded it. Only a rescue leg aiming at its current sharp corner now requests precise arrival. The render delta is passed through to native analog `Humanoid:Move` so the final frame reaches the point without overshooting/reversing. Ordinary movement and interaction stop behavior retain their existing default. WalkSpeed, jump properties and velocity are not edited.
+4. **Exact-clearance tangency looked like entering a wall.** A swept box touching a valid native corridor boundary could report a hit even while moving along it. Rescue queries now use a 0.001-stud skin per horizontal side for this distinction. Actual character collision and pathfinding radius remain unchanged. A separate contact case verifies that moving into the wall is still blocked.
+
+## Human recording cross-check
+
+Re-read Nuclear Power Plant 5.1–7.9 seconds, Library 393–396.3 seconds and Facility_0 16–19.3 seconds from the local archive. In the Nuclear example, horizontal input continues across rising support and jump/landing transitions until computer contact. In the Library example, headings change through the approach while horizontal travel continues; the stationary frames begin at the selected ComputerTrigger3 and actual hacking progress. That is the continuity criterion used here: reaching each intermediate point must not insert a timer-length stand before the next leg. These are behavior examples, not coordinates/routes copied into D. A short hacking interval remains evidence of contact/start, not completion or a reason to abandon the PC.
+
+The recordings are of the user's play, not an internal trace of the failing AutoHelp. They do not identify every live failure or establish full map coverage. Raw samples and inspection output remain local under untracked `work/`.
+
+## Verification
+
+**121 scenarios / 261 assertions pass.** The expanded suite exposes **9 failures against 549dc8e**, including the changed ownership contract, cross-owner type error, tight/exact-clearance corners, 60/30/10-fps scheduling, error cleanup and tangency. Unlike the old fixed-step-only fixture, the frame-rate cases round coroutine waits to the configured frame duration and pass that actual duration into the production render dispatcher.
+
+The same synthetic tight-corner route changes from **2.73 to 0.96 simulated seconds**; the previous **0.9-second stationary interval** is absent. The 60/30/10-fps versions finish in approximately 0.97/0.97/1.1 seconds without unnecessary jumps. Tests also distinguish valid carried movement from explicit cancellation and run the actual AutoHelp error loop with a failing geometry task.
+
+D compiles and `git diff --check` passes. PC interaction, native jump-input, AutoHide, chat and Fly functions compare unchanged. Follow.Main changes only in its error cleanup. The separate recorder is unchanged; no raw recording or coordinate table is committed.
+
+**No live Roblox Player/Studio run was performed.** These results demonstrate the specific regressions above, not that every real-map pause has been eliminated or that the controller matches all of the user's human movement. Executor delivery, custom rig response and live mesh/streaming behavior remain unverified.
+
+---
+
 # Rescue ownership, physical support and completed crossings — 2026-11-08
 
 Base: `628b72e173527baa20ac072bd42a6867f49201f7`, fetched again before committing. Live reports still describe frequent stalls and stair/door reversals; the previous passing fixtures did not establish smooth gameplay. Chat integration was explicitly cancelled and no chat code is changed. Fly remains at its existing level-1 setting.

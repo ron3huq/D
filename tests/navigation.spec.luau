@@ -116,6 +116,7 @@ function Players:GetPlayers() return world and world.players or { LocalPlayer } 
 local Computers = {}
 local Doors, DoorFail, DoorTries, DoorOpenedAt, ExitDoors = {}, {}, {}, {}, {}
 local function IsInWorld(item) return item and item.Parent ~= nil end
+local warn = function(...) if world then world.warning = tostring(...) end end
 local unloaded = false
 local remoteHackActive, remoteHackEvent = false, nil
 local REMOTE_HACK_RANGE = 20
@@ -146,6 +147,11 @@ function task.delay(dt, f) table.insert(scheduled, { at = now + dt, fn = f }) en
 function task.wait(dt)
     dt = dt or 0.03
     if coroutine.running() ~= mainCoroutine then return coroutine.yield(dt) end
+    if world and world.frameStep then
+        local started, deadline = now, now + dt
+        while now < deadline - 1e-7 do step(world.frameStep) end
+        return now - started
+    end
     local left = dt
     while left > 1e-7 do
         local d = math.min(left, 0.01)
@@ -233,6 +239,7 @@ function AH.Eval()
         dist = world.threat and Flat(world.threat - root.Position).Magnitude or math.huge,
     }
 end
+function AR.SetBusy(value) AR.BusyFlag = value end
 function AR.Pending() return world.pending == true end
 function AR.Pods() return world.pods or {} end
 function AR.Release()
@@ -522,7 +529,7 @@ step = function(dt)
         hum.FloorMaterial = "Ground"
         hum.State = world.vy > 0 and "Jumping" or "Freefall"
     end
-    FH.MotionStep()
+    FH.MotionStep(dt)
     hum.FloorMaterial = actualFloor
     if world.airReport then hum.State = actualState end
     local before = root.Position
@@ -2116,17 +2123,21 @@ scenario("a preempted rescue cannot change AutoHide's airborne classification", 
     if Follow.RescueGrounded then check(not Follow.RescueGrounded(hum,root),"stale rescue claimed support after AutoHide took over") end
     check(Follow.Airborne(hum,root),"rescue contact proof changed an evade owner's flight state")
 end)
-scenario("a rescue task without a heartbeat releases its movement and intent", function()
+scenario("a carried valid rescue leg is not stopped by ownership inspection", function()
     if not Follow.RescueControlled then return end
     local token=rescueToken()
-    Follow.RescueControl={token=token,hum=hum,root=root,seen=now}
-    FH.Move(token,hum,Vec.new(20,3,0))
-    Follow.RescueControl.seen=now-2
-    check(not Follow.RescueControlled(token,hum,root),"dead rescue retained coordinator authority")
-    check(Follow.RescueControl==nil and FH.Motion.token==nil and FH.StallIntent==nil,
-        "dead rescue left a movement lease or replayable stall intent")
-    task.wait(0.3)
-    check(root.Position.X<0.1 and world.jumps==0,"dead rescue continued walking or jumping")
+    local control={token=token,hum=hum,root=root,seen=now}
+    Follow.RescueControl=control
+    FH.Move(token,hum,Vec.new(80,3,0))
+    local continued=true
+    for _=1,20 do
+        continued=FH.CarryMotion(token,hum,root,0.75) and continued
+        task.wait(0.07)
+    end
+    check(continued and root.Position.X>20,"an aged coordinator cancelled an actively carried safe leg")
+    check(Follow.RescueControl==control and FH.MotionActive(),"ownership inspection revoked an active movement lease")
+    FH.ReleaseMotion(token,false)
+    check(Follow.RescueControl==nil and FH.Motion.token==nil and FH.StallIntent==nil,"explicit cancellation left a replayable rescue intent")
 end)
 scenario("a delayed long-distance native detour cannot pull rescue back through its cleared window", function()
     box("HighWindow", Vec.new(3,0,-20), Vec.new(3.5,5.4,20))
@@ -2174,6 +2185,63 @@ scenario("a silently ignored takeoff on reported Air is confirmed only from real
     check(result == "arrived" and now < 103.8, "reported airborne state stranded rescue on actual stair support")
     check(world.ignoredSpace and world.engineJumps == 1, "a successful API call suppressed confirmation of the missing supported first takeoff")
     check(hum.JumpPower == 36 and hum.JumpHeight == 7.2, "support recovery changed native jump properties")
+end)
+scenario("another movement owner can probe geometry while rescue retains its scope", function()
+    local rescue=rescueToken()
+    local wall=box("ProbeWall",Vec.new(2,0,-4),Vec.new(3,12,4))
+    Follow.RescueControl={token=rescue,hum=hum,root=root,seen=now,failedObstacles={[wall]=now+5}}
+    local ok, blocked=pcall(Follow.RescueFailedPart,7,wall)
+    check(ok and blocked==false,"another owner's geometry query compared a boolean with a timestamp")
+    local probed, safe=pcall(FH.TraversalLane,7,hum,root,Vec.new(6,0,0),0,6,true,true)
+    check(probed and safe==false,"geometry probing threw while another rescue context existed")
+    check(Follow.RescueFailedPart(rescue,wall)==true,"owner-specific failure memory was lost")
+end)
+local function tightCorner(frameStep, clearance)
+    world.frameStep=frameStep
+    box("Partition",Vec.new(4,0,-10),Vec.new(5,12,3))
+    world.route=function(from,to)
+        return {{Position=Vec.new(from.X,0,from.Z),Action="Walk"},{Position=Vec.new(2.8,0,clearance),Action="Walk"},
+            {Position=Vec.new(6.2,0,clearance),Action="Walk"},{Position=to,Action="Walk"}}
+    end
+    local idle,longest=0,0
+    world.frameSample=function(dt)
+        if now>100.12 and Flat(root.Position-Vec.new(12,3,0)).Magnitude>3 then
+            idle=Flat(root.AssemblyLinearVelocity).Magnitude<0.1 and idle+dt or 0
+            longest=math.max(longest,idle)
+        end
+    end
+    local goal=Vec.new(12,3,0)
+    local result=Follow.WalkTo(rescueToken(),function()return goal end,0.8,nil,{noDoor=true,maxTime=3,rescueJuke=goal})
+    check(result=="arrived", "tight-corner rescue stopped before the goal")
+    check(longest<math.max(0.09,(frameStep or 0.01)*1.1),"corner arrival tolerance inserted a stationary interval: "..longest)
+    check(world.jumps==0,"walking corner recovery injected an unnecessary jump")
+end
+scenario("rescue does not wait at tight native corners before continuing", function()tightCorner(nil,4.05)end)
+scenario("rescue clears a tight corner at exact native clearance",function()tightCorner(nil,4.0)end)
+scenario("rescue corner steering remains continuous at 60 fps",function()tightCorner(1/60,4.05)end)
+scenario("rescue corner steering remains continuous at 30 fps",function()tightCorner(1/30,4.05)end)
+scenario("rescue corner steering remains continuous at 10 fps",function()tightCorner(0.1,4.05)end)
+scenario("an AutoHelp task error releases its own movement before retrying", function()
+    local oldStep=AR.Step
+    AR.Active,AR.Token=true,1
+    AR.Step=function(token)
+        Follow.RescueControl={token=token,hum=hum,root=root,seen=now}
+        FH.Move(token,hum,Vec.new(20,3,0))
+        error("synthetic geometry failure")
+    end
+    task.delay(0.15,function() AR.Active=false end)
+    AR.Loop(1)
+    AR.Step=oldStep
+    check(FH.Motion.token==nil and Follow.RescueControl==nil and FH.StallIntent==nil,"failed rescue task retained movement ownership")
+    check(root.Position.X<0.1 and world.warning~=nil,"failed rescue kept walking or swallowed its error")
+end)
+scenario("corner query skin allows tangency but still blocks entry into a wall", function()
+    box("SolidWall",Vec.new(4,0,-10),Vec.new(5,12,3))
+    root.Position=Vec.new(3,3,0);updateParts()
+    check(not Follow.RescueBodyClear(hum,root,Vec.new(6,3,0),0,3),"query skin admitted movement into solid geometry")
+    root.Position=Vec.new(3,3,4);updateParts()
+    check(Follow.RescueBodyClear(hum,root,Vec.new(6,3,4),0,3),"a valid tangent corridor was treated as a wall collision")
+    check(root.Size.X==2 and hum.WalkSpeed==16 and hum.JumpPower==36,"corner handling altered physical collision or movement strength")
 end)
 for _, problem in ipairs(failures) do print(problem) end
 print("Navigation scenarios", scenarios, "checks", checks, "failures", #failures)
