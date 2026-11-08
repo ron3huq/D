@@ -3471,8 +3471,16 @@ function FH.ComputerSlotTaken(comp, trig)
             local action = FH.Stat(player, FH.HACK_EVENT)
             local target = action and action.Value
             if root and math.abs(root.Position.Y - trig.Position.Y) < 4.5 then
-                if (target == trig or target and target.Parent == trig)
-                    and Flat(root.Position - trig.Position).Magnitude <= 3.6 then return true end
+                -- The game's selected slot is authoritative. A character can
+                -- stand nearer its neighbour while still hacking this one.
+                local selected
+                for _, slot in ipairs(all) do
+                    if target == slot or target and target.Parent == slot then selected = slot; break end
+                end
+                if selected and Flat(root.Position - selected.Position).Magnitude <= 3.6 then
+                    if selected == trig then return true end
+                    continue
+                end
                 local nearest, distance
                 for _, slot in ipairs(all) do
                     local d = Flat(slot.Position - root.Position).Magnitude
@@ -11573,7 +11581,6 @@ end
 function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRange)
     local trig, ev = info.trig, info.ev
     local pod = trig:FindFirstAncestor("FreezePod")
-    local closeContact = contactRange ~= nil
     local HR = math.min(contactRange or Follow.HelpDist + 1.6, 1.2)
     local holdRange = HR + 0.3
     local contactHeight = 4.5
@@ -11634,7 +11641,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
         if travel then travel(value) end
     end
     local function contactAdvance()
-        if not closeContact or stop() or near() then return near() end
+        if stop() or near() then return near() end
         local started, checked, anchor = os.clock(), 0, RootNow()
         anchor = anchor and anchor.Position
         local params = FH.PodRay(trig)
@@ -11686,7 +11693,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
             -- tolerance cannot strand us outside it. Native pod collision stays on.
             local goal = FH.ContactGoal(trig, root.Position, 0.55)
             FH.SetContactApproach(tok, hum, root, trig, pod, goal, "pod")
-            if not FH.Move(tok, hum, goal) then return finish(false) end
+            if not FH.Move(tok, hum, goal, false, nil, true) then return finish(false) end
             Follow.Beat = now
             if anchor and now - started > 0.45 and Flat(root.Position - anchor).Magnitude < 0.1 then
                 return finish(false)
@@ -11707,6 +11714,8 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
         Follow.Beat = os.clock()
         Ctl.Gate()
 
+        -- A valid last metre needs no new path job or tour of the capsule.
+        if not near() then contactAdvance() end
         if not near() then
             local root = RootNow()
             local cands = root and FH.PodApproach(trig, root.Position) or {}
@@ -12850,11 +12859,8 @@ function Follow.Main(token, player)
             end
             if best and bd <= 2.2 then taken[best] = true end
         end
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer then
-                local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-                if r then mark(r.Position) end
-            end
+        for _, t in ipairs(all) do
+            if FH.ComputerSlotTaken(comp, t) then taken[t] = true end
         end
         if avoid then mark(avoid) end
         local free = {}

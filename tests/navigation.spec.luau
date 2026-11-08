@@ -1216,6 +1216,53 @@ scenario("released farm typing cannot freeze the new rescue owner", function()
     check(root.Position.X < -1, "old farm acknowledgement froze rescue render input")
     check(not FH.Move(7, hum, Vec.new(4, 3, 0)), "farm overwrote rescue movement")
 end)
+scenario("selected PC slot does not also reserve the neighbouring keyboard", function()
+    local comp, middle = computer(8)
+    local left = part("ComputerTrigger2", Vec.new(8, 3, -3), Vec.new(1, 1, 0.6), comp, false)
+    node("Event", "RemoteEvent", left)
+    local other = { Character = node("Hacker", "Model", map.Parent), stats = {} }
+    part("HumanoidRootPart", Vec.new(8, 3, -1.7), Vec.new(2, 2, 1), other.Character, false)
+    other.stats.ActionEvent = { Value = middle:FindFirstChild("Event") }
+    world.players = { LocalPlayer, other }
+    check(FH.ComputerSlotTaken(comp, middle), "game-selected keyboard was not occupied")
+    check(not FH.ComputerSlotTaken(comp, left), "one hacker incorrectly reserved two keyboards")
+end)
+scenario("real farm wrapper selects free neighbouring PC slot", function()
+    local comp, middle = computer(4)
+    local left = part("ComputerTrigger2", Vec.new(4, 3, -3), Vec.new(1, 1, 0.6), comp, false)
+    local leftEvent = node("Event", "RemoteEvent", left)
+    local other = { Character = node("Hacker", "Model", map.Parent), stats = {} }
+    part("HumanoidRootPart", Vec.new(4, 3, -1.7), Vec.new(2, 2, 1), other.Character, false)
+    other.stats.ActionEvent = { Value = middle:FindFirstChild("Event") }
+    world.players = { LocalPlayer, other }
+    root.Position = Vec.new(0, 3, -3)
+    world.trigger, world.event, world.completeAt = left, leftEvent, 0.02
+    Follow.TestMainContact(7, LocalPlayer)(comp)
+    check(comp.done, "farm skipped an available keyboard beside an occupied one")
+    check(now - 100 < 3, "farm delayed the free-slot handoff")
+end)
+scenario("farm rescue closes the last contact gap without a new path job", function()
+    local info = pod(5.65)
+    -- Capsule contact is 1.65 studs away, beyond rescue admission but visible.
+    world.planDelay = 10
+    local walkTo, calls = Follow.WalkTo, 0
+    -- Model a completed path that stops 1.35 studs outside the trigger:
+    -- 0.55 contact goal + 0.8 waypoint tolerance. Interaction physics stays real.
+    Follow.WalkTo = function()
+        calls += 1
+        root.Position = Vec.new(0.3, 3, 0)
+        return "arrived"
+    end
+    local firstPress
+    local result = FH.RescuePod(7, function() return true end, info, nil,
+        function() firstPress = firstPress or now; nativeKey(0x45, true) end,
+        function() nativeKey(0x45, false) end)
+    Follow.WalkTo = walkTo
+    check(result == "done", "numeric farm owner did not start rescue from the final gap")
+    check(calls == 0, "last metre unnecessarily restarted routing")
+    check(firstPress and firstPress - 100 < 0.12, "waited for pathfinding before pressing rescue")
+    check(world.blocked == 0, "contact advance rammed the capsule")
+end)
 scenario("three PC slots are checked independently and update during travel", function()
     if not FH.ComputerSlotTaken then return end -- Helper was introduced after the baseline.
     local comp, middle = computer(8)

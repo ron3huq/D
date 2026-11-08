@@ -1,3 +1,17 @@
+# PC slot ownership and rescue contact handoff — 2026-11-08
+
+Base: `83722eddbc7ac806b9453d9a00ed608d9d9e369f`, freshly fetched from main.
+
+- PC occupancy had two inconsistent implementations. The initial Main filter inferred the nearest slot from position, while contact also used the game-selected trigger. An offset hacker could reserve two neighbouring slots and leave no candidate even though one keyboard was free. Both now use the same live predicate: a nearby game-selected slot takes precedence; otherwise physical proximity reserves only the nearest slot. A stale target beyond 3.6 studs does not suppress the physical fallback. Existing real-progress protection remains in place.
+- The numeric Follow/farm rescue owner skipped contactAdvance because it does not supply contactRange. Both rescue owners now use the same checked final approach. When already within a clear last metre, contactAdvance runs before starting another path job. It checks body-width obstacle rays and supported floor; failed contact still routes normally. Its motion requests precise native arrival, removing the default half-stud render stop from this short interaction leg. It still requires valid pod contact before holding E and actual CapturedTorso release for completion.
+- Added three regressions: selected slot versus nearest neighbouring slot; the actual Main wrapper selecting that free keyboard; and a last-metre rescue with a path-boundary stub returning 1.35 studs outside the trigger (0.55 contact goal plus 0.8 waypoint tolerance). The latter isolates the navigation-to-contact handoff; movement, input and capsule release use the existing simulated physics, not a successful-interaction stub. Old source fails all three; revised source passes. In that rescue fixture, the first input occurs within 0.12 seconds without another route call.
+
+Re-read the raw local Library 485.65–487.1-second stairs interval and Nuclear 5.1–7.9-second PC approach. Library retains horizontal travel while support rises; the PC example retains travel until the selected keyboard and subsequent input. Neither interval justifies an intermediate idle timer. No raw coordinates or recording files are included here; Shift/crawl is not used as a navigation model. Pod departures remain ambiguous and are not treated as failed rescue examples.
+
+Validation: 124 simulated scenarios / 269 assertions pass, full Luau compilation and diff whitespace checks pass. Existing stair/door/corner cases remain green. This change addresses interaction handoff and slot selection; it does not establish that all reported stair, obstacle, wall or long-route stalls are resolved. No live Roblox Player/Studio session is available here, and the recorder does not contain the map collision meshes or a run of this revised script.
+
+---
+
 # Stop regression in 549dc8e — 2026-11-08
 
 Base: `549dc8e6308964225b642138fc5951baaf3070d6`, fetched from `main` before this repair. The user reports that the last revision made stopping worse. This follow-up fixes concrete regressions in that revision rather than treating the previous simulation pass as evidence against the live report.
