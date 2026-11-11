@@ -119,11 +119,11 @@ local AH = {
     SafeTime = 1.2,
     AvoidRange = 22,
     ContactRange = 8, -- Beast trong 8 studs, hướng mặt về mình, không cách tường (cửa vẫn tính) => trốn ngay
-    IdleSafeTime = 15, -- Beast đứng yên nhìn mình 15s mà không đánh => coi là an toàn
-    AfkTime = 40, -- Beast không di chuyển 40s => an toàn
-    FleeSpeed = 18.5, -- chạy khi bị Beast đuổi (18-19)
+    IdleSafeTime = 20, -- Beast đứng yên nhìn mình 20s mà không đánh => coi là an toàn
+    AfkTime = 50, -- Beast không di chuyển 50s => an toàn
+    FleeSpeed = 17, -- chạy khi bị Beast đuổi (17s)
     FreeRoundTime = 210, -- 3m30s chưa ai bị bắt => free round
-    FreeMeetTime = 10, -- Beast gặp mình 10s không đánh => free round
+    FreeMeetTime = 20, -- Beast gặp mình 20s không đánh => free round
     MeetRange = 12,
     JukeRange = 26, -- beast đang áp sát: lách ngắn theo một lối trống rồi tiếp tục chạy
     Dir = nil,
