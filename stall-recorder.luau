@@ -336,6 +336,44 @@ local function step()
         writeLine({ k = "round", n = R.round, map = mapName, t = num(now, 2), utc = os.date("!%H:%M:%S") })
     end
 
+    -- Lobby scan (once per lobby phase): where are the map vote spots/buttons?
+    if not map and R.lobbyScanned ~= R.round then
+        R.lobbyScanned = R.round
+        pcall(function()
+            local found = {}
+            local words = { "shopping", "prison", "zoo", "arctic", "arcade", "nuclear", "spaceship",
+                "facility", "library", "airport", "mansion", "homestead", "vote", "map" }
+            local function interesting(text)
+                local t = string.lower(text or "")
+                for _, w in ipairs(words) do if string.find(t, w, 1, true) then return true end end
+                return false
+            end
+            for _, top in ipairs(World:GetChildren()) do
+                if not Players:GetPlayerFromCharacter(top) then
+                    for _, o in ipairs(top:GetDescendants()) do
+                        if #found >= 120 then break end
+                        if (o:IsA("TextLabel") or o:IsA("TextButton")) and interesting(o.Text) then
+                            local gui = o:FindFirstAncestorWhichIsA("SurfaceGui") or o:FindFirstAncestorWhichIsA("BillboardGui")
+                            local part = gui and (gui.Adornee or gui.Parent)
+                            found[#found + 1] = { text = o.Text, path = o:GetFullName(),
+                                pos = part and part:IsA("BasePart") and vec(part.Position) or nil }
+                        elseif o:IsA("BasePart") and interesting(o.Name) then
+                            found[#found + 1] = { part = o:GetFullName(), pos = vec(o.Position), size = vec(o.Size) }
+                        end
+                    end
+                end
+            end
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            for _, o in ipairs(pg and pg:GetDescendants() or {}) do
+                if #found >= 160 then break end
+                if (o:IsA("TextLabel") or o:IsA("TextButton")) and interesting(o.Text) then
+                    found[#found + 1] = { gui = o:GetFullName(), text = o.Text, visible = o.Visible }
+                end
+            end
+            writeLine({ k = "lobbyScan", round = R.round, t = num(now, 2), me = vec(root.Position), found = found })
+        end)
+    end
+
     local active = not (s.cap or s.rag or s.esc or s.sit)
     -- 1) Standing still.
     if active and s.v < CFG.STILL_SPEED and math.abs(s.vy or 0) < 2 then

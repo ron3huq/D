@@ -1,3 +1,32 @@
+# Live stall-recorder data — 2026-11-11 (4)
+
+Source: 13 recorder files from the user (110 incidents: 82 stalls, 20 pacing, 8 jitter, on 12 maps plus the lobby). Raw files and coordinates are not stored in this repo.
+
+## What the data showed and what changed
+
+| Finding (from the D snapshot in each incident) | Change |
+|---|---|
+| 27 stalls with **no movement owner**: AutoFarm and Follow were both off (only AutoHide/AutoHelp idle), at round start and in the lobby | On load D now enables AutoFarm, AutoHide, AutoHelp and Player ESP. `Follow.StartAutoFarm(true)` may start in the lobby. |
+| Path mode, **aim 0.0–0.4 studs flat but 1.2–1.8 studs above the feet**, waypoint index frozen; stalls of 5, 15, 21, 25, 28 and 94 s on escalators, ledges and curbs | Under a raised waypoint, keep heading along the route (3 studs toward the next waypoint) so the jump/obstacle logic sees the step. Before, input was zero because the flat distance was < 0.5. |
+| Follow/rescue to a target on another floor: planner results repeatedly **unusable** (`fails` 1→2→0…), mode stays `none`, stall or pacing | `setPath` no longer discards a complete native route when no waypoint passes the strict body-width entry test (beside a wall or rail); it follows the route's first leg. Diag now names why a plan was rejected. |
+| ~1.9 s at each pod with E held. The user's own recordings free a pod with E held **0.1–0.2 s** (no progress bar) | Pod contact re-presses every 0.35 s after 0.3 s instead of holding up to 1.2 s before a retry. |
+| AutoHide jitter in a corner (11 reversals / 3 s) | Hysteresis: keep a still-clear heading that leads away from the Beast instead of flipping. |
+| User: running into a Beast that faces us | AutoHide alarm when the Beast faces us (≥ 0.7) within 22 studs and we move toward it. |
+
+## Other requests in this round
+
+- **Flee speed:** 18.5.
+- **Fly + Speed:** flying at 3.5× speed.
+- **AutoHide door closing:** taps E immediately (re-tapping until the doorway is blocked) when we have just crossed an open door with the Beast on the other side. The blind once-per-second tap remains as a fallback.
+- **Lobby vote:** spots are found by labels showing a preferred map name, anywhere outside the current map. The recorder logs a lobby scan of map/vote labels and GUI buttons, because the actual lobby objects are still unknown.
+
+## Verification and limits
+
+- Harness: 138 scenarios / 305 checks pass with Luau 0.700, and D compiles.
+- The head-on alarm test fails on the previous commit and passes now.
+- The raised-waypoint and wall-entry tests pass on both versions: the harness does not reproduce the live navmesh/collision height mismatch. Those two fixes rest on the recorded state, not on a reproducing test.
+- Nothing was run in Roblox.
+
 # Follow-up — 2026-11-11 (3): live report "worse than before"
 
 User report after playing `8500c8a`:

@@ -1387,6 +1387,42 @@ scenario("a bumped stair entrance does not remove the only route to an upper flo
         "one rejected stair lane left no route to the upper floor")
     if native then native:Destroy() end
 end)
+scenario("a raised waypoint directly overhead does not freeze the route", function()
+    -- Live data (escalators, ledges): native waypoints 1.2-1.8 studs above the
+    -- walked collision surface, flat 0.3 away, left the avatar with zero input
+    -- for 5-94 s. Model a route whose points hover 1.8 above the real floor,
+    -- along an L-shaped walkway (no direct line to the goal).
+    world.void = function(x, z) return not (math.abs(z) <= 3 and x <= 33 or x >= 27 and x <= 33) end
+    root.Position = Vec.new(-0.2, 3, 0); updateParts()
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(0.1, 1.8, 0), Action = "Walk" },
+            { Position = Vec.new(15, 0, 0), Action = "Walk" },
+            { Position = Vec.new(30, 0, 0), Action = "Walk" },
+            { Position = Vec.new(30, 0, 20), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local goal = Vec.new(30, 3, 30)
+    local result = Follow.WalkTo(7, function() return goal end, 1, nil, { noDoor = true, maxTime = 7 })
+    check(result == "arrived" and root.Position.Z > 28,
+        "avatar stood under a raised waypoint: " .. tostring(result) .. " at " .. tostring(root.Position.X) .. "," .. tostring(root.Position.Z))
+end)
+scenario("a native route that starts against a wall is followed, not discarded", function()
+    -- Live data: beside walls/rails no waypoint passed the strict body-width
+    -- entry test, every result was discarded and the avatar stood replanning.
+    box("HugWall", Vec.new(-5, 0, 1.15), Vec.new(40, 10, 4))
+    FH.BanDirect, FH.GridBan = now + 20, now + 20
+    world.route = function(from, to)
+        local result = { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" } }
+        for x = 4, 32, 4 do table.insert(result, { Position = Vec.new(x, 0, 0), Action = "Walk" }) end
+        table.insert(result, { Position = to, Action = "Walk" })
+        return result
+    end
+    local goal = Vec.new(34, 3, 0)
+    local result = Follow.WalkTo(7, function() return goal end, 1.5, nil, { noDoor = true, maxTime = 5 })
+    check(result == "arrived" and root.Position.X > 31,
+        "route beside a wall was discarded: " .. tostring(result) .. " x=" .. tostring(root.Position.X))
+end)
 scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
     local nearPod = pod(8)
     local farPod = pod(-18)
@@ -1877,6 +1913,18 @@ scenario("eight-stud AutoHide contact alarm needs a facing Beast; walls block it
     motion.idleAnchor, motion.idleAt = br.Position, now - 41
     task.wait(0.06)
     check(not AH.TestEval().danger, "Beast that has not moved for 40s was still treated as a threat")
+end)
+scenario("running head-on into a Beast that faces us raises the AutoHide alarm", function()
+    local beast, br = actor("Beast", Vec.new(15, 3, 0), true, Vec.new(-1, 0, 0), Vec.new())
+    world.players = { LocalPlayer, beast }
+    root.AssemblyLinearVelocity = Vec.new(-16, 0, 0)
+    check(not AH.TestEval().danger, "running away from a facing Beast raised a head-on alarm")
+    -- Force a fresh evaluation without letting the physics tick reset velocity.
+    root.AssemblyLinearVelocity = Vec.new(16, 0, 0); AH.EvalAt = -math.huge
+    check(AH.TestEval().danger, "running head-on into a facing Beast did not raise the alarm")
+    br.CFrame = cf(br.Position, Vec.new(1, 0, 0)); AH.EvalAt = -math.huge
+    check(not AH.TestEval().danger, "a Beast facing away triggered the head-on alarm")
+    root.AssemblyLinearVelocity = Vec.new()
 end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()
     box("ThinShelfEdge", Vec.new(0.99, 8.2, -3), Vec.new(1.4, 8.4, 3))

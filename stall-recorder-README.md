@@ -32,6 +32,7 @@
 | `incident` kind `pacing` | Trong 8 s đi ≥ 24 stud nhưng chỉ dời được ≤ 6 stud |
 | `incident` kind `jitter` | Trong 3 s đổi chiều ≥ 4 lần, dời ≤ 3 stud |
 | `resume` | Đứng yên bao lâu thì đi tiếp |
+| `lobbyScan` | Ở sảnh: các nhãn chữ / part / nút có tên map hoặc chữ vote (để tìm chỗ bầu map) |
 
 Mỗi `incident` gồm:
 

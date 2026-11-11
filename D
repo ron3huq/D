@@ -121,7 +121,7 @@ local AH = {
     ContactRange = 8, -- Beast trong 8 studs, hướng mặt về mình, không cách tường (cửa vẫn tính) => trốn ngay
     IdleSafeTime = 15, -- Beast đứng yên nhìn mình 15s mà không đánh => coi là an toàn
     AfkTime = 40, -- Beast không di chuyển 40s => an toàn
-    FleeSpeed = 17,
+    FleeSpeed = 18.5, -- chạy khi bị Beast đuổi (18-19)
     FreeRoundTime = 210, -- 3m30s chưa ai bị bắt => free round
     FreeMeetTime = 10, -- Beast gặp mình 10s không đánh => free round
     MeetRange = 12,
@@ -2053,7 +2053,8 @@ function Fly.Start()
             if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, 1, 0) end
         end
         if dir.Magnitude > 1 then dir = dir.Unit end
-        Fly.BV.Velocity = dir * Fly.Speed
+        -- Fly + Speed cùng bật: bay nhanh gấp 3.5 lần.
+        Fly.BV.Velocity = dir * Fly.Speed * ((speedActive and Speed.Level > 0) and 3.5 or 1)
         local _, camY = cam.CFrame:ToOrientation()
         Fly.BG.CFrame = CFrame.new(r.Position) * CFrame.fromOrientation(0, camY, 0)
     end)
@@ -2203,9 +2204,11 @@ function Follow.StopAutoFarm()
     Follow.ResetButton()
     Follow.Refresh()
 end
-function Follow.StartAutoFarm()
+function Follow.StartAutoFarm(anyPhase)
     if unloaded or Follow.Target or Follow.AutoFarm then return false end
-    if not FH.MatchOn() or FH.AmBeast() then return false end
+    -- anyPhase: start from the lobby too (auto-enable on load). The main loop
+    -- itself waits in Beast rounds and strolls/votes in the lobby.
+    if not anyPhase and (not FH.MatchOn() or FH.AmBeast()) then return false end
     Follow.StopRandom()
     Follow.StopAutoBeast()
     Follow.AutoFarm = true
@@ -10203,12 +10206,23 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 end
             end
         end
+        if physicalRoute and hum and root and index == nil and w[2] then
+            -- No waypoint passed the strict body-width entry test (typical when
+            -- standing against a wall or rail). The native route itself was
+            -- computed for our agent size from this position: follow its first
+            -- leg instead of discarding the route and standing still, which
+            -- replanned into the same rejection indefinitely (live data).
+            local first = w[2].Position
+            if FH.Line(root.Position, first, FH.Feet(hum, root), first.Y, 1.5) then index = 2 end
+            if FH.Diag then FH.Diag("walk", index and "entry-relaxed" or "entry-rejected") end
+        end
         if physicalRoute and hum and root and index == nil then
             if path then path:Destroy() end
             return false
         end
         if opts.rescueJuke and index and hum and root
             and Follow.RescueStaleEntry(pendingSteer, root, w[index].Position, acceptingPlanAt) then
+            if FH.Diag then FH.Diag("plan", "stale-entry") end
             if path then path:Destroy() end
             return false
         end
@@ -10589,9 +10603,13 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     or nav.Map ~= res.navMeta.map
                     or nav.Map ~= GetCurrentMap()
                 then
+                    if FH.Diag then FH.Diag("plan", "atlas-outdated") end
                     return nil
                 end
-                if res.navMeta.laneRevision and FH.LaneRevision() ~= res.navMeta.laneRevision then return nil end
+                if res.navMeta.laneRevision and FH.LaneRevision() ~= res.navMeta.laneRevision then
+                    if FH.Diag then FH.Diag("plan", "lane-revision") end
+                    return nil
+                end
             end
             if res.clearBad then table.clear(FH.Bad) end
             local accepted = setPath(res.wps, res.full, res.path)
@@ -10991,6 +11009,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 if res then
                     fails = 0
                 else
+                    if FH.Diag then FH.Diag("plan", "result-unusable:" .. tostring(j.res and j.res.mode)) end
                     fails = fails + 1
                     if mode ~= "path" then mode = nil end
                     nextPlan = os.clock() + math.min(0.15 * fails, 0.6)
@@ -11000,6 +11019,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     end
                 end
             else
+                if FH.Diag then FH.Diag("plan", j.gen == gen and "stale-moving-goal" or "superseded") end
                 dispose(j.res)
                 if j.gen == gen then
                     planAt, nextPlan = 0, 0
@@ -11254,6 +11274,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 end
             end
             aim = wp.Position
+            if not flying and wpi < #wps and wp.Action ~= Enum.PathWaypointAction.Jump then
+                local raised = wp.Position.Y - feetY
+                if Flat(wp.Position - rp).Magnitude <= 1 and raised > 1.2 and raised <= 4.5 then
+                    -- Standing right under a raised waypoint (step/ledge/escalator
+                    -- surface): its flat distance gives no input, so the avatar
+                    -- stood for 5-94 s in live data. Keep heading along the
+                    -- route so the obstacle/jump logic sees the step ahead.
+                    local onward = Flat(wps[wpi + 1].Position - rp)
+                    if onward.Magnitude < 0.5 and wpi > 1 then onward = Flat(wp.Position - wps[wpi - 1].Position) end
+                    if onward.Magnitude >= 0.5 then
+                        aim = Vector3.new(rp.X, wp.Position.Y, rp.Z) + onward.Unit * 3
+                        if FH.Diag then FH.Diag("walk", "under-raised-waypoint") end
+                    end
+                end
+            end
             if wp.Action == Enum.PathWaypointAction.Jump then
                 if Flat(wp.Position - rp).Magnitude < 4.5 then waypointJump(wpi, hum, root, now) end
             elseif routeProgress then
@@ -11936,7 +11971,9 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
             end
         end
         if near() and not stop() then
-            local retryAt, lost, contactStopped = os.clock() + 1.2, nil, false
+            -- A pod frees on a single press (player recordings: E held 0.1-0.2 s,
+            -- no progress bar). Re-press quickly instead of holding 1.2 s.
+            local retryAt, lost, contactStopped = os.clock() + 0.3, nil, false
             local contactProgressAt = os.clock()
             while not stop() and os.clock() - t0 < 75 do
                 Follow.Beat = os.clock()
@@ -11966,13 +12003,12 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                         end
                         -- Refresh a missed E at the same contact point. The
                         -- game-selected trigger keeps one uninterrupted hold.
-                        if now >= retryAt and ack ~= true then
+                        if now >= retryAt then
                             release()
                             -- Give InputEnded a frame before the next E press.
-                            -- Keep an acknowledged rescue held without pulses.
                             task.wait(0.04)
                             if stop() or not near() then break end
-                            retryAt = os.clock() + 1.2
+                            retryAt = os.clock() + 0.35
                         end
                         hold(ev)
                     end
@@ -13772,6 +13808,55 @@ function AH.ReleaseTap()
     end
 end
 function AH.RedAlert() return AH.Active and not FH.AmBeast() and AH.State ~= "idle" end
+-- A door is worth closing when we have just crossed it (1.5-8 studs past its
+-- plane), the Beast is on the other side, the passage is still open and our
+-- side's trigger is in reach. Returns the per-door state while taps remain.
+function AH.DoorCloseTarget(now)
+    local root, threat = RootNow(), AH.Last
+    local bp = threat and threat.pos
+    if not root or not bp or (threat.dist or math.huge) > 60 then return nil end
+    AH.DoorClose = AH.DoorClose or setmetatable({}, { __mode = "k" })
+    if now < (AH.DoorScanAt or 0) then
+        local current = AH.DoorCurrent
+        if current and current.taps < 5 and now >= current.nextAt and now < current.untilAt then return current end
+        return nil
+    end
+    AH.DoorScanAt, AH.DoorCurrent = now + 0.1, nil
+    local rp = root.Position
+    for _, door in ipairs(Doors) do
+        if door.Parent and not (ExitDoors and table.find(ExitDoors, door)) then
+            local center = FH.DoorBounds(door)
+            if center and Flat(center - rp).Magnitude <= 10 and math.abs(center.Y - rp.Y) <= 8 then
+                local g = FH.DoorGeom(door, rp)
+                if g then
+                    local n = g.Dir
+                    local mine, theirs = n:Dot(Flat(rp - g.Center)), n:Dot(Flat(bp - g.Center))
+                    local trigger = g.NearTrig
+                    local state = AH.DoorClose[door]
+                    if state and now >= state.untilAt then state = nil; AH.DoorClose[door] = nil end
+                    if
+                        (mine >= 0) ~= (theirs >= 0)
+                        and math.abs(mine) >= 1.5
+                        and math.abs(mine) <= 8
+                        and trigger
+                        and (trigger.Position - rp).Magnitude <= 8
+                        and not FH.DoorBlocked(g)
+                    then
+                        state = state or { taps = 0, nextAt = 0, untilAt = now + 2.5 }
+                        AH.DoorClose[door] = state
+                        if state.taps < 5 and now >= state.nextAt then
+                            AH.DoorCurrent = state
+                            return state
+                        end
+                    elseif state and FH.DoorBlocked(g) then
+                        state.taps = 99 -- closed: done with this door
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
 function AH.TapStep()
     local now = os.clock()
     if AH.TapDown and (now >= AH.TapUntil or AH.TapCharacter ~= LocalPlayer.Character) then AH.ReleaseTap() end
@@ -13809,6 +13894,13 @@ function AH.TapStep()
         AH.ReleaseTap()
         return
     end
+    -- Close a door we just ran through with the Beast on the other side:
+    -- tap at once and re-tap until the doorway is actually blocked.
+    local closing = not AH.TapDown and AH.DoorCloseTarget(now)
+    if closing then
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) then return end
+        AH.NextTapAt = 0
+    end
     if not AH.TapDown and now >= AH.NextTapAt then
         -- Walking or a movement command is not an E owner. Only a physical E
         -- hold, text input or a live interaction pauses these independent taps.
@@ -13826,6 +13918,10 @@ function AH.TapStep()
             if ok then backend = "vim" end
         end
         AH.NextTapAt = now + (ok and 1 or 0.25)
+        if ok and closing then
+            closing.taps = closing.taps + 1
+            closing.nextAt = now + 0.2
+        end
         if ok then
             AH.TapDown, AH.TapUntil, AH.TapBackend = true, now + 0.06, backend
             AH.TapCharacter = LocalPlayer.Character
@@ -14026,6 +14122,19 @@ function AH.Eval()
                         local vis = emergency == true
                         -- Preserve directional detection; a facing Beast in
                         -- contact range is an immediate alarm.
+                        if not vis and sameFloor and d <= 22 then
+                            -- Head-on: the Beast faces us and we are moving toward
+                            -- it. Turn away instead of running into its swing.
+                            local toMe = Flat(mr.Position - position)
+                            local look = Flat(br.CFrame.LookVector)
+                            local mine = Flat(mr.AssemblyLinearVelocity)
+                            if toMe.Magnitude > 0.5 and look.Magnitude > 0.1 and mine.Magnitude > 4
+                                and look.Unit:Dot(toMe.Unit) >= 0.7 and mine.Unit:Dot(-toMe.Unit) >= 0.6 then
+                                local o = position + Vector3.new(0, 1.5, 0)
+                                local hit = Workspace:Raycast(o, (mr.Position + Vector3.new(0, 1, 0)) - o, rayParams)
+                                vis = hit == nil or FH.DoorOf(hit.Instance) ~= nil
+                            end
+                        end
                         if not vis and sameFloor and pursuing and d <= seeRange then
                             local o = position + Vector3.new(0, 1.5, 0)
                             local hit = Workspace:Raycast(o, (mr.Position + Vector3.new(0, 1, 0)) - o, rayParams)
@@ -14996,6 +15105,18 @@ function AH.Go(tok)
             lastSteer = now
             every = 0.15
             local a, _, trapped = AH.Steer(rp, e.pos, e.vel, feetY, false)
+            -- Hysteresis: keep a still-clear heading that still leads away
+            -- from the Beast instead of flipping between near-equal picks
+            -- (live data: 11 reversals in 3 s in a corner).
+            if a and aim and not trapped then
+                local old, new = Flat(aim - rp), Flat(a - rp)
+                local away = Flat(rp - e.pos)
+                if old.Magnitude > 3 and new.Magnitude > 0.5 and away.Magnitude > 0.5
+                    and old.Unit:Dot(new.Unit) < 0 and old.Unit:Dot(away.Unit) > 0.1
+                    and AH.LaneClear(rp, aim, feetY) then
+                    a = aim
+                end
+            end
             if a then aim = a end
             if trapped then
                 trapN = trapN + 1
@@ -20917,28 +21038,26 @@ end
 function Follow.LobbyVotePads()
     local now = os.clock()
     local cache = Follow.LobbyPadCache
-    if cache and now - cache.at < 3 then return cache.pads end
+    if cache and now - cache.at < 4 then return cache.pads end
     local pads, map = {}, GetCurrentMap()
+    -- Lobby vote spots show the map name as text (SurfaceGui/BillboardGui).
+    -- Find those labels outside the current map and stand on the floor under
+    -- the labelled part (or its Adornee).
     for _, top in ipairs(Workspace:GetChildren()) do
-        local topName = string.lower(top.Name)
-        if top ~= map and (string.find(topName, "lobby", 1, true) or string.find(topName, "vot", 1, true)) then
-            for _, part in ipairs(top:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    local name = string.lower(part.Name)
-                    local parent = part.Parent and string.lower(part.Parent.Name) or ""
-                    if string.find(name, "vot", 1, true) or string.find(name, "pad", 1, true)
-                        or string.find(parent, "vot", 1, true) then
-                        local rank
-                        for _, holder in ipairs({ part, part.Parent }) do
-                            for _, label in ipairs(holder and holder:GetDescendants() or {}) do
-                                if (label:IsA("TextLabel") or label:IsA("TextBox")) and label.Text ~= "" then
-                                    rank = Follow.MapPreferenceRank(label.Text)
-                                    if rank then break end
-                                end
-                            end
-                            if rank then break end
+        local skip = top == map or Players:GetPlayerFromCharacter(top) ~= nil
+        if not skip then
+            for _, label in ipairs(top:GetDescendants()) do
+                if (label:IsA("TextLabel") or label:IsA("TextButton")) and label.Text ~= "" then
+                    local rank = Follow.MapPreferenceRank(label.Text)
+                    if rank then
+                        local gui = label:FindFirstAncestorWhichIsA("SurfaceGui")
+                            or label:FindFirstAncestorWhichIsA("BillboardGui")
+                        local part = gui and (gui.Adornee or gui.Parent)
+                        if part and part:IsA("Model") then part = part.PrimaryPart or part:FindFirstChildWhichIsA("BasePart", true) end
+                        if part and part:IsA("BasePart") then
+                            local ground = FH.Ground(part.Position)
+                            pads[#pads + 1] = { part = part, rank = rank, point = ground, label = label.Text }
                         end
-                        if rank then pads[#pads + 1] = { part = part, rank = rank } end
                     end
                 end
             end
@@ -20953,12 +21072,15 @@ function Follow.LobbyStep(token)
         state = { token = token, votedKey = nil, wanderAt = 0 }
         Follow.Lobby = state
     end
+    local now = os.clock()
+    -- A new intermission (after a round) is a new ballot.
+    if state.seenAt and now - state.seenAt > 15 then state.padVoted, state.votedKey = nil, nil end
+    state.seenAt = now
     local hum, root = GetHumanoid(), RootNow()
     if not (hum and root) or hum.Health <= 0 or Ctl.On() or Fly.Active or (FH.Prio and FH.Prio()) then
         task.wait(0.3)
         return
     end
-    local now = os.clock()
     -- 1) Visible lobby vote buttons.
     local ok, buttons = pcall(Cmd.MapButtons)
     if ok and type(buttons) == "table" and #buttons > 0 and VIM and not UserInputService:GetFocusedTextBox() then
@@ -20986,18 +21108,22 @@ function Follow.LobbyStep(token)
     end
     local padKey = pick and pick.part
     if pick and state.padVoted ~= padKey then
-        local target = pick.part.Position
+        local target = pick.point
         local function onPad()
             local live = RootNow()
             if not live then return false end
-            local offset = pick.part.CFrame:PointToObjectSpace(live.Position)
-            local half = pick.part.Size * 0.5
-            return math.abs(offset.X) <= half.X + 0.5 and math.abs(offset.Z) <= half.Z + 0.5
-                and offset.Y > -1 and offset.Y < half.Y + 6
+            if Flat(live.Position - target).Magnitude <= 2.5 and math.abs(live.Position.Y - target.Y) <= 6 then return true end
+            local ok, inside = pcall(function()
+                local offset = pick.part.CFrame:PointToObjectSpace(live.Position)
+                local half = pick.part.Size * 0.5
+                return math.abs(offset.X) <= half.X + 0.5 and math.abs(offset.Z) <= half.Z + 0.5
+                    and offset.Y > -1 and offset.Y < half.Y + 6
+            end)
+            return ok and inside == true
         end
         if not onPad() then
-            Follow.WalkTo(token, function() return target end, 1, function() return onPad() or GetCurrentMap() ~= nil and FH.MatchOn() end,
-                { maxTime = 15, nearOk = 1 })
+            Follow.WalkTo(token, function() return target end, 1.5,
+                function() return onPad() or FH.MatchOn() end, { maxTime = 20, nearOk = 2 })
         end
         if onPad() then
             local started = os.clock()
@@ -21007,13 +21133,16 @@ function Follow.LobbyStep(token)
             end
             state.padVoted = padKey
             -- Step back off the pad before strolling.
-            local back = Flat(root.Position - target)
+            local back = Flat(root.Position - pick.part.Position)
             if back.Magnitude < 0.5 then back = Flat(root.CFrame.LookVector) * -1 end
             if back.Magnitude > 0.1 then
                 local point = root.Position + back.Unit * 7
                 Follow.WalkTo(token, function() return point end, 1.5, nil, { maxTime = 3, nearOk = 2 })
             end
             state.anchor, state.wanderAt = root.Position, os.clock() + 0.5 + math.random() * 1.5
+        else
+            -- Could not reach this pad: try again later, stroll meanwhile.
+            state.padVoted = padKey
         end
         return
     end
@@ -24325,3 +24454,15 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
 end))
 -- Mapping runs independently of movement and stops with the script.
 FH.Nav.Start()
+-- Bật sẵn khi nạp script: AutoFarm, AutoHide, AutoHelp, ESP Player.
+task.delay(1, function()
+    if unloaded then return end
+    pcall(function() if not espPlayerActive then TogglePlayerESP() end end)
+    pcall(function() if not AH.Active then AH.Toggle() end end)
+    pcall(function() if not AR.Active then AR.Toggle() end end)
+    pcall(function()
+        if not Follow.Target and not Follow.AutoFarm and not Follow.RandomActive and not Follow.AutoBeastActive then
+            Follow.StartAutoFarm(true)
+        end
+    end)
+end)
