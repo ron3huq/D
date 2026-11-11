@@ -1809,7 +1809,6 @@ local buttonDefs = {
     { "FPS", "Boost FPS [L]", ToggleFPSBoost, 19 },
     { "Chat", "Ai Bot [5]", function() CB.Toggle() end, 20 },
     { "LockUI", "Lock UI [P]", ToggleLockUI, 21 },
-    { "Diag", "Diag Ket", function() if DG.Toggle then DG.Toggle() end end, 22 },
 }
 for _, d in ipairs(buttonDefs) do
     Btn[d[1]] = CreateButtonInContainer(Tab1Container, d[2], d[3], d[4])
@@ -23962,17 +23961,14 @@ TrackConnection(UserInputService.JumpRequest:Connect(function()
         if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
     end
 end))
--- ================= DIAG: NHẬN DIỆN VÌ SAO ĐỨNG YÊN =================
--- Bật nút "Diag Ket" rồi chơi bình thường. Mỗi lần nhân vật đứng yên
--- quá 1.2s trong khi AutoFarm/Follow/AutoHide/AutoHelp đang bật, Diag ghi:
--- tính năng nào đang giữ quyền di chuyển, lệnh cuối, lý do bị từ chối,
--- trạng thái tìm đường, vật cản xung quanh (tên part, khoảng cách, pháp tuyến).
--- Tự bật khi nạp script. File: thư mục Workspace của executor, tên
--- D_stall_<thời gian>.json (gửi file này để phân tích). Nút Diag Ket tắt/bật.
--- Chỉ đọc trạng thái, không điều khiển; không gửi gì ra mạng.
+-- ================= DIAG: TRẠNG THÁI DI CHUYỂN (CHỈ ĐỌC) =================
+-- D không ghi file. Script ghi riêng stall-recorder.luau đọc trạng thái nội bộ
+-- qua getgenv().D_Snapshot(): tính năng giữ quyền di chuyển, điểm nhắm, lệnh
+-- bị từ chối, chế độ tìm đường... Không điều khiển, không gửi gì ra mạng.
 DG.Samples, DG.Incidents, DG.Notes, DG.SampleAt = {}, {}, {}, 0
 DG.MaxSamples, DG.MaxIncidents, DG.StillSpeed, DG.StillTime = 40, 80, 0.8, 1.2
 function DG.Round(v, n)
+    if type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return nil end
     local m = 10 ^ (n or 1)
     return math.floor(v * m + 0.5) / m
 end
@@ -24107,96 +24103,23 @@ function DG.Classify(sample)
     if sample.moveDir > 0.1 then return "pushing-but-blocked (body collides)" end
     return "aim-set-but-no-input"
 end
-function DG.Save()
-    if type(writefile) ~= "function" then return false end
-    local ok = pcall(function()
-        local payload = {
-            schema = "d-stall-diag",
-            version = 1,
-            started = DG.StartedUtc,
-            place = game.PlaceId,
-            incidents = DG.Incidents,
-        }
-        writefile(DG.File, HttpService:JSONEncode(payload))
-    end)
-    return ok
-end
-function DG.Step()
-    if not DG.Active or unloaded then return end
-    local now = os.clock()
-    if now - DG.SampleAt < 0.1 then return end
-    DG.SampleAt = now
-    local ok, sample = pcall(DG.Snapshot, now)
-    if not ok or not sample then return end
-    table.insert(DG.Samples, sample)
-    if #DG.Samples > DG.MaxSamples then table.remove(DG.Samples, 1) end
-    local featureOn = Follow.AutoFarm or Follow.Target ~= nil or AH.Active or AR.Active or TR.Active
-    local still = sample.v < DG.StillSpeed and math.abs(sample.vy or 0) < 2
-    local episode = DG.Episode
-    if still and featureOn then
-        if not episode then
-            DG.Episode = { since = now, logged = false }
-        elseif not episode.logged and now - episode.since >= DG.StillTime and #DG.Incidents < DG.MaxIncidents then
-            episode.logged = true
-            local hum, root = GetHumanoid(), RootNow()
-            local m = FH.Motion
-            local probeOk, probe = false, nil
-            if hum and root then probeOk, probe = pcall(DG.Probe, hum, root, m and m.aim) end
-            local history = {}
-            for i = math.max(1, #DG.Samples - 24), #DG.Samples do history[#history + 1] = DG.Samples[i] end
-            local incident = {
-                n = #DG.Incidents + 1,
-                at = sample.t,
-                reason = DG.Classify(sample),
-                map = GetCurrentMap() and GetCurrentMap().Name or "lobby",
-                now = sample,
-                probe = probeOk and probe or nil,
-                history = history,
-            }
-            episode.incident = incident
-            DG.Incidents[#DG.Incidents + 1] = incident
-            DG.Save()
-            warn(("[Diag] ket #%d: %s"):format(incident.n, incident.reason))
-            if Btn.Diag then Btn.Diag.Text = "Diag Ket: " .. #DG.Incidents end
-        end
-    elseif episode then
-        if episode.incident then
-            episode.incident.duration = DG.Round(now - episode.since, 2)
-            episode.incident.resumedBy = sample.owner
-            DG.Save()
-        end
-        DG.Episode = nil
+-- Always collect the lightweight notes; the separate recorder reads them.
+DG.Active = true
+FH.DiagWalk = DG.Walk
+pcall(function()
+    local env = _G
+    if type(getgenv) == "function" then
+        local ok, result = pcall(getgenv)
+        if ok and type(result) == "table" then env = result end
     end
-end
-function DG.Toggle()
-    DG.Active = not DG.Active
-    SetOn(Btn.Diag, DG.Active)
-    if DG.Active then
-        DG.Samples, DG.Incidents, DG.Notes, DG.Episode, DG.LastWalk = {}, {}, {}, nil, nil
-        DG.StartedUtc = os.date("!%Y-%m-%dT%H:%M:%SZ")
-        -- Workspace root of the executor (e.g. Delta/Workspace), no subfolder.
-        DG.File = "D_stall_" .. os.date("!%Y%m%d_%H%M%S") .. ".json"
-        FH.DiagWalk = DG.Walk
-        if not DG.Conn then DG.Conn = RunService.Heartbeat:Connect(function() pcall(DG.Step) end) end
-        if Btn.Diag then Btn.Diag.Text = "Diag Ket: 0" end
-        DG.Save() -- create the file at once so it is visible
-        warn("[Diag] bat. File: " .. DG.File .. (type(writefile) == "function" and "" or " (executor khong co writefile)"))
-    else
-        FH.DiagWalk = nil
-        if DG.Conn then DG.Conn:Disconnect(); DG.Conn = nil end
-        local saved = DG.Save()
-        if Btn.Diag then Btn.Diag.Text = "Diag Ket" end
-        warn(("[Diag] tat. %d lan ket. %s"):format(#DG.Incidents, saved and ("Da luu " .. DG.File) or "Khong luu duoc file"))
-        if not saved and type(setclipboard) == "function" and #DG.Incidents > 0 then
-            pcall(function()
-                setclipboard(HttpService:JSONEncode({ schema = "d-stall-diag", incidents = DG.Incidents }))
-                warn("[Diag] Da copy JSON vao clipboard")
-            end)
-        end
+    DG.Env = env
+    env.D_Snapshot = function()
+        if unloaded then return nil end
+        local snapshot = DG.Snapshot(os.clock())
+        if snapshot then snapshot.reason = DG.Classify(snapshot) end
+        return snapshot
     end
-end
--- Diag records automatically from load; the "Diag Ket" button turns it off/on.
-task.defer(function() if not DG.Active then pcall(DG.Toggle) end end)
+end)
 -- ================= UNLOAD =================
 local function UnloadHack()
     if unloaded then return end
@@ -24217,7 +24140,8 @@ local function UnloadHack()
     pcall(Fly.Stop)
     pcall(Follow.Stop)
     pcall(Follow.Release)
-    if DG.Active then pcall(DG.Toggle) end
+    DG.Active, FH.DiagWalk = false, nil
+    if DG.Env then DG.Env.D_Snapshot = nil end
     pcall(AH.Stop)
     pcall(AR.Stop)
     pcall(TR.Stop)
