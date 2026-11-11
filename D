@@ -12185,12 +12185,78 @@ function Follow.Chase(token, getGoal, stopDist, abort, keep)
 end
 
 -- Exit readiness and waiting share one movement owner; opening does not imply escaping.
+-- Lateral half-extent of a part across a lane, relative to the lane origin.
+function FH.ExitSpan(part, origin, across)
+    local frame, size = part.CFrame, part.Size
+    local half = math.abs(frame.RightVector:Dot(across)) * size.X * 0.5
+        + math.abs(frame.UpVector:Dot(across)) * size.Y * 0.5
+        + math.abs(frame.LookVector:Dot(across)) * size.Z * 0.5
+    local mid = Flat(part.Position - origin):Dot(across)
+    return mid - half, mid + half
+end
+-- Find a body-wide lane from a room-side trigger into the escape volume.
+-- Some exits keep one leaf of a double gate permanently barred, so the
+-- trigger -> volume centre line can graze that static barrier while the real
+-- opening is beside it. Only lanes the trigger fronts (and that end inside the
+-- escape volume) count: space beside the gate model can be ordinary wall that
+-- this include-only probe cannot see.
+function FH.ExitLane(trigger, center, area, params)
+    local delta = Flat(center - trigger.Position)
+    local length = delta.Magnitude
+    if length < 1 then return nil end
+    local across = Vector3.new(-delta.Unit.Z, 0, delta.Unit.X)
+    local origin = trigger.Position
+    local lo, hi = FH.ExitSpan(trigger, origin, across)
+    if area and area.Parent then
+        local alo, ahi = FH.ExitSpan(area, origin, across)
+        lo, hi = math.max(lo, alo), math.min(hi, ahi)
+    end
+    lo, hi = math.clamp(math.min(lo, 0), -12, 0), math.clamp(math.max(hi, 0), 0, 12)
+    local step, reach = 0.325, 2
+    local first, last = math.floor((lo - reach) / step), math.ceil((hi + reach) / step)
+    local blocked = {}
+    for k = first, last do
+        for _, height in ipairs({ -1, 1 }) do
+            local hit = Workspace:Raycast(origin + Vector3.new(0, height, 0) + across * (k * step), delta, params)
+            if hit and hit.Instance.CanCollide and hit.Normal.Y < 0.6 then
+                blocked[k] = true
+                break
+            end
+        end
+    end
+    -- A lane needs +/-0.65 studs clear (the former centre test). Prefer the
+    -- nearest lane with shoulder clearance, else the most clearance available.
+    local best, bestClear, bestComfort
+    for k = math.ceil(lo / step), math.floor(hi / step) do
+        if not (blocked[k - 2] or blocked[k - 1] or blocked[k] or blocked[k + 1] or blocked[k + 2]) then
+            local clear = reach
+            for j = 3, math.floor(reach / step) do
+                if blocked[k - j] or blocked[k + j] then
+                    clear = j * step
+                    break
+                end
+            end
+            local comfort = clear >= 1.6
+            local better = not best
+                or comfort and not bestComfort
+                or comfort == bestComfort and (
+                    comfort and math.abs(k) < math.abs(best)
+                    or not comfort and (clear > bestClear + 1e-6
+                        or math.abs(clear - bestClear) <= 1e-6 and math.abs(k) < math.abs(best))
+                )
+            if better then best, bestClear, bestComfort = k, clear, comfort end
+        end
+    end
+    if not best then return nil end
+    return best * step, across
+end
 function FH.ExitDoorOpen(door, center, triggers)
     if not door or not IsInWorld(door) then return false end
     center = center or FH.ExitArea(door)
     triggers = triggers or (door:IsA("Model") and FH.Triggers(door) or {})
     if not center or #triggers == 0 then return false end
     FH.ExitDoorParams = FH.ExitDoorParams or setmetatable({}, { __mode = "k" })
+    FH.ExitLanes = FH.ExitLanes or setmetatable({}, { __mode = "k" })
     local cached, now = FH.ExitDoorParams[door], os.clock()
     if not cached or now - cached.at >= 0.25 then
         local params = RaycastParams.new()
@@ -12210,30 +12276,30 @@ function FH.ExitDoorOpen(door, center, triggers)
         end
         params.FilterDescendantsInstances = solids
         pcall(function() params.RespectCanCollide = true end)
-        cached = { params = params, at = now }
+        cached = { params = params, at = now, area = area }
         FH.ExitDoorParams[door] = cached
     end
+    local result = cached.result
+    if result and now - result.at < 0.1 and (result.center - center).Magnitude < 0.05 then return result.open end
     local params = cached.params
-    local tested = false
+    local tested, open, lanes = false, true, {}
     for _, trigger in ipairs(triggers) do
-        if trigger.Parent then
-            local delta = Flat(center - trigger.Position)
-            if delta.Magnitude >= 1 then
-                tested = true
-                local across = Vector3.new(-delta.Unit.Z, 0, delta.Unit.X)
-                -- A second trigger can lie beyond a closed gate. Its clear
-                -- outside segment must not override a blocked room-side lane.
-                for _, offset in ipairs({ 0, 0.65, -0.65 }) do
-                    for _, height in ipairs({ -1, 1 }) do
-                        local from = trigger.Position + Vector3.new(0, height, 0) + across * offset
-                        local hit = Workspace:Raycast(from, delta, params)
-                        if hit and hit.Instance.CanCollide and hit.Normal.Y < 0.6 then return false end
-                    end
-                end
+        if trigger.Parent and Flat(center - trigger.Position).Magnitude >= 1 then
+            tested = true
+            -- A second trigger can lie beyond a closed gate. Its clear
+            -- outside segment must not override a blocked room-side lane.
+            local offset, across = FH.ExitLane(trigger, center, cached.area, params)
+            if not offset then
+                open = false
+                break
             end
+            lanes[trigger] = { offset = offset, across = across }
         end
     end
-    return tested
+    open = tested and open
+    FH.ExitLanes[door] = open and lanes or nil
+    cached.result = { at = now, center = center, open = open }
+    return open
 end
 -- The escape volume may end at the map boundary, beyond the navigation mesh.
 -- Commit only the short, physically clear lane from the exit's room-side trigger.
@@ -12253,13 +12319,45 @@ end
 function FH.ExitTraverse(token, state, stopped)
     local root, hum = RootNow(), GetHumanoid()
     if not (root and hum and state.center) then return false end
-    local aim = Vector3.new(state.center.X, root.Position.Y, state.center.Z)
-    if Flat(aim - root.Position).Magnitude > 18 then return false end
+    local base = Vector3.new(state.center.X, root.Position.Y, state.center.Z)
+    if Flat(base - root.Position).Magnitude > 18 then return false end
+    -- Follow the gate's measured clear lane: beside a barred leaf the
+    -- volume centre line is not walkable even though the exit is open.
+    local legs = {}
+    local lanes = FH.ExitLanes and state.door and FH.ExitLanes[state.door]
+    local lane = lanes and state.stand and lanes[state.stand]
+    local aim = base
+    if lane and math.abs(lane.offset) > 0.05 then
+        aim = base + lane.across * lane.offset
+        local stand = state.stand.Position
+        local entry = Vector3.new(stand.X, root.Position.Y, stand.Z) + lane.across * lane.offset
+        local inward = Flat(base - entry)
+        -- Line up with the gap first unless we are already in line with it.
+        if
+            inward.Magnitude > 0.5
+            and math.abs(Flat(root.Position - entry):Dot(lane.across)) > 0.5
+            and Flat(root.Position - entry):Dot(inward.Unit) < 0.5
+        then
+            legs[#legs + 1] = entry
+        end
+    end
+    legs[#legs + 1] = aim
+    -- Escape registers on entering the volume; if it has not after a short
+    -- hold at the aim, press on deeper inside instead of walking back out.
+    local deep
+    if state.areaSize then
+        local inward = Flat(base - (state.stand and state.stand.Position or root.Position))
+        if inward.Magnitude > 0.5 then
+            local direction = state.area and state.area.CFrame:VectorToObjectSpace(inward.Unit) or inward.Unit
+            local depth = math.abs(direction.X) * state.areaSize.X * 0.5 + math.abs(direction.Z) * state.areaSize.Z * 0.5
+            if depth > 2 then deep = aim + inward.Unit * math.min(depth - 1.5, 4) end
+        end
+    end
     local crossing = {
         token = token,
         hum = hum,
         root = root,
-        aim = aim,
+        aim = legs[1],
         door = state.door,
         center = state.center,
         triggers = state.triggers,
@@ -12267,14 +12365,28 @@ function FH.ExitTraverse(token, state, stopped)
         untilAt = os.clock() + 3,
     }
     FH.ExitTraversal = crossing
+    local leg, heldAt = 1, nil
     local anchor, progressedAt = root.Position, os.clock()
     while not stopped() and os.clock() < crossing.untilAt do
-        if RootNow() ~= root or GetHumanoid() ~= hum or not FH.ExitTraversalClear(token, hum, root, aim) then break end
+        local point = crossing.aim
+        if RootNow() ~= root or GetHumanoid() ~= hum or not FH.ExitTraversalClear(token, hum, root, point) then break end
         Follow.Beat = os.clock()
-        if Flat(aim - root.Position).Magnitude <= 0.45 then
-            FH.Move(token, hum, root.Position)
+        if Flat(point - root.Position).Magnitude <= 0.45 then
+            if leg < #legs then
+                leg = leg + 1
+                crossing.aim = legs[leg]
+                anchor, progressedAt = root.Position, os.clock()
+            elseif deep and heldAt and os.clock() - heldAt > 0.35 then
+                legs[#legs + 1], deep = deep, nil
+                leg = #legs
+                crossing.aim = legs[leg]
+                anchor, progressedAt = root.Position, os.clock()
+            else
+                heldAt = heldAt or os.clock()
+                FH.Move(token, hum, root.Position)
+            end
         else
-            FH.Move(token, hum, aim)
+            FH.Move(token, hum, point)
         end
         if Flat(root.Position - anchor).Magnitude >= 0.3 then
             anchor, progressedAt = root.Position, os.clock()
@@ -12459,7 +12571,9 @@ function FH.ExitRoute(token, state, abort)
         end
         if type(token) == "table" and token.owner == "evade" then AH.SetState(AH.Eval().danger and "flee" or "idle") end
         if state.map == GetCurrentMap() and state.character == LocalPlayer.Character then
-            if state.solo == false then
+            -- Becoming the last survivor repicks only a pending approach/opening.
+            -- An escape already committed through an open gate must not restart.
+            if state.solo == false and not state.escaping and not state.waiting then
                 local _, active = FH.ExitPolicy()
                 if active == 1 and FH.ActiveSurvivor(LocalPlayer) then
                     state.solo = true
@@ -12512,7 +12626,14 @@ function FH.ExitRoute(token, state, abort)
     local now = os.clock()
     local _, active = FH.ExitPolicy()
     local solo = active == 1 and FH.ActiveSurvivor(LocalPlayer)
-    if solo and state.solo ~= true then state.door = nil end
+    -- Going solo repicks a pending closed-gate plan, never an open selected gate.
+    if
+        solo
+        and state.solo ~= true
+        and not (state.door and IsInWorld(state.door) and FH.ExitDoorOpen(state.door, state.center, state.triggers))
+    then
+        state.door = nil
+    end
     state.solo = solo
     if not state.door or not IsInWorld(state.door) then
         local best, score, chosenCenter, chosenTriggers, chosenSize, chosenArea, threatened
@@ -12530,7 +12651,10 @@ function FH.ExitRoute(token, state, abort)
                             stand, standDistance = trigger.Position, d
                         end
                     end
-                    local rank = distance + ((solo or open) and 0 or 10000)
+                    -- Solo, a nearer closed gate may beat a far open one, but only
+                    -- by more than the time spent holding it open.
+                    local rank = distance
+                        + (open and 0 or solo and math.max(hum.WalkSpeed or 16, 8) * 8 or 10000)
                     local danger = stand and FH.ExitThreat(center, stand, root.Position, door)
                     threatened = threatened or danger
                     if stand and (open or not danger) and (not score or rank < score) then
@@ -12584,7 +12708,17 @@ function FH.ExitRoute(token, state, abort)
     state.escaping = directEscape or nil
     state.waiting = open and not directEscape or nil
     local goal = (directEscape or not open) and state.stand and state.stand.Position or state.waitPos
-    if Flat(goal - root.Position).Magnitude > 3.5 or math.abs(goal.Y - root.Position.Y) > Follow.MaxDY then
+    -- Already between the trigger and the escape volume: cross from here
+    -- instead of walking back out to the trigger after a short traversal.
+    local inDoorway = directEscape
+        and state.stand ~= nil
+        and math.abs(state.stand.Position.Y - root.Position.Y) <= Follow.MaxDY
+        and Flat(center - root.Position).Magnitude <= math.min(Flat(center - state.stand.Position).Magnitude + 1, 16)
+        and FH.ApproachClear(root.Position, Vector3.new(center.X, root.Position.Y, center.Z), state.area)
+    if
+        not inDoorway
+        and (Flat(goal - root.Position).Magnitude > 3.5 or math.abs(goal.Y - root.Position.Y) > Follow.MaxDY)
+    then
         local travelTime =
             math.clamp((goal - root.Position).Magnitude / math.max(hum.WalkSpeed or 16, 4) * 2 + 8, 8, 45)
         local result = Follow.WalkTo(
@@ -12640,7 +12774,16 @@ function FH.ExitRoute(token, state, abort)
         state.waiting, state.escaping = nil, true
         local crossed = FH.ExitTraverse(token, state, stopped)
         if stopped() then return interrupted() end
-        return crossed and "escaped" or "retry"
+        if crossed then return "escaped" end
+        -- Do not shuttle between trigger and volume on the same failed gate.
+        state.crossFails = state.crossFails or {}
+        local fails = (state.crossFails[door] or 0) + 1
+        state.crossFails[door] = fails
+        if fails >= 2 then
+            state.crossFails[door] = 0
+            state.fail[door], state.door = os.clock() + 3, nil
+        end
+        return "retry"
     end
     root, hum = RootNow(), GetHumanoid()
     if root and hum then

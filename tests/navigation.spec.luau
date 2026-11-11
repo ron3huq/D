@@ -1579,6 +1579,52 @@ scenario("exit waits for multiple far teammates then leaves when only one remain
     check(result == "escaped" and stats.Escaped.Value and now - started < 1.5,
         "one remaining teammate did not trigger immediate native exit traversal")
 end)
+scenario("last survivor waiting at an open exit leaves through it instead of a nearer closed gate", function()
+    local exit = openExit(20)
+    local closed = openExit(4)
+    closed.open, closed.center = false, Vec.new(11, 3, 7)
+    local a, b = exitPlayers()
+    local state = {}
+    check(FH.ExitRoute(7, state) == "waiting" and state.door == exit, "did not establish open-exit waiting state")
+    a.stats.Escaped.Value, b.stats.Escaped.Value = true, true
+    local started = now
+    local result = FH.ExitRoute(7, state)
+    if result == "redirect" then task.wait(0.03); result = FH.ExitRoute(7, state) end
+    check(result == "escaped" and state.door == exit and stats.Escaped.Value and now - started < 2,
+        "last survivor abandoned the open exit for a nearer closed gate: " .. tostring(result))
+end)
+scenario("solo survivor prefers a reachable open exit over holding a nearer closed gate", function()
+    local far = openExit(30)
+    local near = openExit(-8)
+    near.open = false
+    local a, b = exitPlayers()
+    a.stats.Escaped.Value, b.stats.Escaped.Value = true, true
+    local state = {}
+    local result = FH.ExitRoute(7, state)
+    check(result == "escaped" and state.door == far and stats.Escaped.Value,
+        "solo exit stood at a closed gate instead of leaving through the open one: " .. tostring(result))
+end)
+scenario("exit lane passes beside a permanently barred leaf of an open double gate", function()
+    if not FH.ExitLane then return end -- New helper absent from baseline.
+    local trigger = part("ExitDoorTrigger", Vec.new(0, 3, 0), Vec.new(7, 3, 3), map, false)
+    local area = part("ExitArea", Vec.new(10, 3, 0), Vec.new(20, 10, 8), map, false)
+    box("BarredLeaf", Vec.new(2.5, 0, 0), Vec.new(3.5, 10, 9))
+    local gate = box("GateLeaf", Vec.new(2.5, 0, -9), Vec.new(3.5, 10, 0))
+    local params = RaycastParams.new()
+    check(FH.ExitLane(trigger, area.Position, area, params) == nil, "closed gate exposed a lane")
+    gate.CanCollide = false
+    check(Workspace:Raycast(trigger.Position + Vec.new(0, 1, 0), Vec.new(10, 0, 0), params) ~= nil,
+        "fixture centre line does not graze the barred leaf")
+    local offset, across = FH.ExitLane(trigger, area.Position, area, params)
+    check(offset ~= nil and offset <= -0.65 and offset >= -3.5,
+        "open leaf beside a barred leaf was not found: " .. tostring(offset))
+    for _, side in ipairs({ -0.65, 0, 0.65 }) do
+        for _, height in ipairs({ -1, 1 }) do
+            local from = trigger.Position + Vec.new(0, height, 0) + across * (offset + side)
+            check(Workspace:Raycast(from, Vec.new(10, 0, 0), params) == nil, "chosen exit lane is not body-wide clear")
+        end
+    end
+end)
 scenario("all surviving teammates within 15 studs authorize leaving", function()
     openExit(20)
     local a, b = exitPlayers()

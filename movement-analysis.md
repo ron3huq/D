@@ -1,3 +1,19 @@
+# AutoExit: barred gate leaf, solo repick and failed crossings — 2026-11-11
+
+Base: `bcbb5e51218f61ff7967fe229e60b420ca854060` (still `main` HEAD when fetched).
+
+## Causes found
+
+- **A physically open exit could read as closed for the whole round.** `FH.ExitDoorOpen` and the crossing lane only tested a body-wide line from the room-side trigger to the escape-volume centre. In the supplied recordings (18 JSONL, 48,755 frames, 19 segments, 13 maps) one Haunted Mansion exit is a double gate whose second leaf is a permanent collidable barrier inside the exit model. The centre line grazes that barrier, so the old test reports "closed" even after the gate opens. The recorded escape passes through the gap beside it, about four studs off the centre line. The script then walked to the trigger and held E for up to 12 s at an already-open gate. It marked the gate failed, moved to the other gate and repeated. It never entered the wait/escape branch at that exit. An offline model of both tests on the recorded exit boxes confirms this: with the gate leaf removed, the old test stays closed and the new lane search finds a lane about 1.6 studs off centre. On the other recorded exits both tests agree. `FH.ExitLane` now samples lanes within the trigger's own footprint, intersected with the escape volume. It does not look into open space beside the model, where walls are invisible to this include-only probe. It prefers the centre lane when that lane has shoulder clearance. `FH.ExitTraverse` lines up with the chosen lane before crossing.
+- **Becoming the last survivor could drop an open exit for a nearer closed one.** On the first solo turn `ExitRoute` cleared the selected door and ranked all doors by distance alone, ignoring whether they were open. The `stopped()` solo check also interrupted a committed escape. When the other survivors left, the bot could abandon an open gate and stand at a nearer closed gate holding E. Solo mode now keeps a selected open gate. It only interrupts a pending approach/opening. A closed gate wins only when it is nearer by more than about eight seconds of walking, roughly the time spent holding it open.
+- **A failed crossing shuttled between volume and trigger.** When escape was not registered at the volume centre, every retry walked back out to the trigger and tried the same gate again indefinitely. The crossing now presses deeper into the volume after a short hold. A retry starting between trigger and volume crosses from there. Two failed crossings of the same gate put it on the existing 3 s failure list.
+
+Unchanged: wait policy (at most one other Survivor, or at least half of the remaining Survivors within 15 studs of one exit, Beast excluded), the 22-stud Exit Beast escape, the 6-stud AutoHide emergency, PC slots, Fly level 1, no chat integration. No JumpPower/JumpHeight/velocity writes.
+
+## Verification and limits
+
+New spec scenarios cover: waiting at an open exit, then both teammates escape with a nearer closed gate present; a solo start with a far open and a near closed gate; the lane search beside a barred leaf. The Luau test runner could **not** be executed in this session: the environment blocked downloading or building a Luau binary. The modified functions and new scenarios were only parsed with a Lua syntax parser. The geometry claim rests on an offline model of the recorded boxes. Neither the harness nor Roblox gameplay has run these changes. Run `python3 tests/run-navigation.py /path/to/luau` before relying on them.
+
 # Rescue perch arrival and physically open exit retention — 2026-11-08
 
 Base: `ce4d085f1f61e4f06ff254d3ecc6516c00ce8a6b`, fetched before this repair.
