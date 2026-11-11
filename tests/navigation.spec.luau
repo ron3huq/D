@@ -1834,19 +1834,26 @@ scenario("rescue chooses the shorter window route over a slightly longer open ro
     check(FH.RouteCost(path, length, true) < 18.3, "jump penalty made the shorter window lose distance ranking")
     if native then native:Destroy() end
 end)
-scenario("six-stud AutoHide emergency does not require Beast to face toward us", function()
-    local beast, br = actor("Beast", Vec.new(5.5, 3, 0), true, Vec.new(1, 0, 0), Vec.new(16, 0, 0))
+scenario("eight-stud AutoHide contact alarm needs a facing Beast; walls block it, doors do not", function()
+    local beast, br = actor("Beast", Vec.new(5.5, 3, 0), true, Vec.new(1, 0, 0), Vec.new())
     world.players = { LocalPlayer, beast }
-    check(AH.TestEval().danger, "exposed Beast inside six studs did not trigger emergency")
-    br.Position = Vec.new(6.5, 3, 0); task.wait(0.06)
-    check(not AH.TestEval().danger, "six-stud exception broadened normal directional detection")
-    br.Position = Vec.new(5.5, 3, 0)
-    AH.BeastMotion[beast].anchor = br.Position
-    AH.BeastMotion[beast].movedAt = now - 41
+    check(not AH.TestEval().danger, "Beast facing away inside eight studs raised the contact alarm")
+    br.CFrame = cf(br.Position, Vec.new(-1, 0, 0)); task.wait(0.06)
+    check(AH.TestEval().danger, "facing Beast inside eight studs did not trigger the contact alarm")
+    br.Position = Vec.new(8.6, 3, 0); br.CFrame = cf(br.Position, Vec.new(-1, 0, 0)); task.wait(0.06)
+    check(not AH.TestEval().danger, "contact alarm reached beyond eight studs")
+    br.Position = Vec.new(7.5, 3, 0); br.CFrame = cf(br.Position, Vec.new(-1, 0, 0)); task.wait(0.06)
+    check(AH.TestEval().danger, "facing Beast at 7.5 studs did not trigger the contact alarm")
+    local wall = box("SeparatingWall", Vec.new(2, 0, -5), Vec.new(3, 10, 5)); task.wait(0.06)
+    check(not AH.TestEval().danger, "contact alarm reached through a solid wall")
+    wall.door = true; task.wait(0.06)
+    check(AH.TestEval().danger, "a door between us suppressed the contact alarm")
+    wall.door, wall.CanCollide = nil, false
+    local motion = AH.BeastMotion[beast]
+    motion.anchor, motion.movedAt = br.Position, now - 41
+    motion.idleAnchor, motion.idleAt = br.Position, now - 41
     task.wait(0.06)
-    check(AH.TestEval().danger, "AFK exemption suppressed the six-stud emergency")
-    box("SeparatingWall", Vec.new(2, 0, -5), Vec.new(3, 10, 5)); task.wait(0.06)
-    check(not AH.TestEval().danger, "close-range emergency reached through a solid room wall")
+    check(not AH.TestEval().danger, "Beast that has not moved for 40s was still treated as a threat")
 end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()
     box("ThinShelfEdge", Vec.new(0.99, 8.2, -3), Vec.new(1.4, 8.4, 3))

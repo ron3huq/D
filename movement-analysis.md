@@ -1,3 +1,30 @@
+# Stall diagnostics, wall slides, AutoHide/AutoHelp/AutoExit/lobby updates — 2026-11-11 (2)
+
+Base: `32dcc7d`. User report after live play: still standing still often, especially pressed against walls, on props, and in front of obstacles. A pause of a few seconds usually ends in movement again. AutoHelp panics, backtracks and hits walls when the Pod is upstairs. AutoExit sometimes stands at an exit without opening or leaving.
+
+## Stall causes found in code (not yet confirmed on live data)
+
+- **Holding position while a route is computed.** In `Follow.WalkTo`, with no current plan, only `Follow.PlanStep` local steering moved the avatar. When it found nothing, the controller ordered a stand (`Move(root)`) until the native plan arrived, for up to 8 s. Now the last verified leg is carried first (`FH.CarryMotion`), then a wall slide is tried; the bot stands only after both fail.
+- **Pressed against a wall near a corner.** When the next route point lay just past a wall edge, the route profile read "wall". The lane was rejected, the route reset, and a failed local step became a stand. Replanning then returned the same corner point, so the bot looped against the wall. `Follow.WallSlide` now slides along the wall surface, with a small push off it, on a verified short lane, and keeps the route. This runs on the wall branch, the lost-lookahead branch and the no-plan fallback. It is bounded and resets on real progress.
+- **Narrow corridors / props.** Local side lanes were tested only at 8 studs, which a narrow corridor or a prop top never clears. Lanes are now tried at 8, 4.5 and 2.5 studs, plus straight ahead. The surface/drop lane search (`Follow.RescueLocalLane`) is used by every owner, not only rescue.
+- **Target on another floor.** Non-rescue owners stood still while the connector route was computed. They now explore a verified local lane too. For any owner, that search no longer scores horizontal closeness to an upstairs/downstairs target as progress, because that led under the target floor into its walls. It prefers surfaces that rise toward an upper target, or descend toward a lower one.
+- **Exit trigger not reachable by WalkTo's arrival test.** The trigger centre may sit against the gate or above a prop. WalkTo then kept pushing until its long timeout and never started holding E. Within 2.5 studs of the trigger volume it now hands over immediately. The hold range is measured to the trigger volume, not its centre.
+
+## Behaviour changes requested by the user
+
+- AutoHide contact alarm: Beast within 8 studs **and facing us**, not behind a wall (a door between still counts). This replaces the previous 6-stud facing-agnostic emergency. A Beast that has not moved for 40 s, or that has stood still for 15 s without hitting us, is safe. Free round: no capture 3 min 30 s into the round, or the Beast met us within 12 studs for 10 s without hitting us. A later capture or hit revokes it. While fleeing, walking speed is 17 (only a normal walking speed is raised). Flee targets get a small random jitter.
+- AutoHelp: a visible Beast ahead on the rescue route that faces us triggers a sidestep. It also marks a short-lived planner cost around the Beast and requests a replan, so the native route search returns the shortest way around it.
+- AutoExit: an already opened gate is preferred. A nearer closed gate wins only by more than its opening time, and one opened gate is enough. Gates that most teammates, or one nearby teammate, are at or heading to attract us. "Within 15 studs of one exit" is measured from the gate (trigger), not the escape volume centre outside. Previously people waiting in front of the gate could be counted as not near, which kept everybody waiting.
+- AutoFarm lobby: vote for Shopping Center > Abandoned Prison > Sanctuary Zoo > Arctic Station > Arcade > Nuclear Power Plant > Spaceship. It uses a visible vote button, or walks onto a lobby vote pad found by name. It then steps back and strolls with random pauses. Other maps are not voted for. Lobby pad object names are not known from data; the GUI path reuses the existing vote-button reader.
+
+## Diagnostics
+
+`Diag Ket [T]` (see `stall-diag-README.md`) logs every standstill longer than 1.2 s while a movement feature is on. It records the owner, lease, aim distance, refused-move reason, WalkTo mode/plan wait, and surrounding ray hits to `workspace/D_diag/stall-*.json`. It is read-only. These fixes are code-level hypotheses; the diag file is what will confirm or refute them on real maps.
+
+## Verification and limits
+
+Whole-file syntax parses (Lua parser after a mechanical Luau→Lua rewrite of compound assignment/continue), as does the base file. Luau itself and the regression harness could not be executed in this environment. The harness function list and one outdated AutoHide test were updated for the new rules but have not been run. Nothing was tried in Roblox.
+
 # AutoExit: barred gate leaf, solo repick and failed crossings — 2026-11-11
 
 Base: `bcbb5e51218f61ff7967fe229e60b420ca854060` (still `main` HEAD when fetched).
