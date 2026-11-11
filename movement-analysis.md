@@ -1,3 +1,24 @@
+# Follow-up — 2026-11-11 (3): live report "worse than before"
+
+User report after playing `8500c8a`:
+- standing still far more often;
+- AutoHelp paces on the lower floor instead of climbing to an upstairs pod;
+- jitter beside the pod without rescuing.
+
+They also could not find the diag file, because **T is the script's unload key**, so Diag never ran.
+
+- **Reverted** the unverified movement-core changes of `8500c8a`:
+  - `Follow.WalkTo`, `Follow.PlanStep` and `Follow.RescueLocalLane` are back to `32dcc7d`;
+  - the wall slide is removed.
+
+  Only the read-only diag hook stays in WalkTo.
+- **Diag** no longer uses T. It starts automatically on load. It writes `D_stall_<time>.json` to the executor's Workspace root and creates the file at start.
+- **Reproduced and fixed: one bumped stair entrance removed every route upstairs.** `FH.RejectLane` marks a bumped lane for 8 s, and `FH.PathAny` discarded every native path crossing it. After one bump at the only stair entrance, no route to the upper floor existed; local steering paced below, bumped again and renewed the rejection. For a target on another floor, a complete route crossing a rejected lane is now kept as a last resort. New scenario: it fails on `32dcc7d` and passes now.
+- **Real bug found by running the harness:** `FH.ExitPolicy`'s new gate/centre check used `ipairs({ gate, center })`. That loop ends at a nil gate, so nobody counted as near and the exit wait never released. Fixed.
+- Considered but not changed: limiting `FH.PreciseMove` (analog approach used for all rescue legs since `bcbb5e5`) as the possible pod jitter. Doing so re-breaks the prop-edge scenario. Diag now records `precise` and the aim distance so live data can decide.
+
+Verification: Luau 0.700 was built in this session. The harness is `python3 tests/run-navigation.py <luau>`: 135 scenarios / 300 checks pass, and D compiles. Nothing was run in Roblox.
+
 # Stall diagnostics, wall slides, AutoHide/AutoHelp/AutoExit/lobby updates — 2026-11-11 (2)
 
 Base: `32dcc7d`. User report after live play: still standing still often, especially pressed against walls, on props, and in front of obstacles. A pause of a few seconds usually ends in movement again. AutoHelp panics, backtracks and hits walls when the Pod is upstairs. AutoExit sometimes stands at an exit without opening or leaving.

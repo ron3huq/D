@@ -1809,7 +1809,7 @@ local buttonDefs = {
     { "FPS", "Boost FPS [L]", ToggleFPSBoost, 19 },
     { "Chat", "Ai Bot [5]", function() CB.Toggle() end, 20 },
     { "LockUI", "Lock UI [P]", ToggleLockUI, 21 },
-    { "Diag", "Diag Ket [T]", function() if DG.Toggle then DG.Toggle() end end, 22 },
+    { "Diag", "Diag Ket", function() if DG.Toggle then DG.Toggle() end end, 22 },
 }
 for _, d in ipairs(buttonDefs) do
     Btn[d[1]] = CreateButtonInContainer(Tab1Container, d[2], d[3], d[4])
@@ -6279,6 +6279,10 @@ end
 function FH.PathAny(rp, goal, startIdx, alts, alive, firstValid, liveLanes, rescue, offer)
     local gp = FH.Ground(goal)
     local partial, best, bestLength, bestCost, bestPath
+    -- A complete route that crosses a recently rejected lane is kept as a last
+    -- resort. Discarding it outright made a bumped stair entrance the reason
+    -- no route upstairs existed for 8 s, so the bot paced on the lower floor.
+    local rejectedW, rejectedPath
     local directLength = rescue and Flat(gp - rp).Magnitude or (gp - rp).Magnitude
     for i = math.clamp(startIdx or 1, 1, #PATH_SPECS), #PATH_SPECS do
         local w, full, path = FH.Path(rp, gp, PATH_SPECS[i][1], PATH_SPECS[i][2], alive)
@@ -6286,7 +6290,11 @@ function FH.PathAny(rp, goal, startIdx, alts, alive, firstValid, liveLanes, resc
             local hum, root = GetHumanoid(), RootNow()
             local feet = hum and root and (FH.Feet(hum, root) + rp.Y - root.Position.Y) or rp.Y
             if FH.PathLaneRejected(w, feet) then
-                if path then path:Destroy() end
+                if full and not rejectedW and math.abs(gp.Y - rp.Y) > Follow.MaxDY then
+                    rejectedW, rejectedPath = w, path
+                elseif path then
+                    path:Destroy()
+                end
                 w, path = nil, nil
             end
         end
@@ -6312,6 +6320,12 @@ function FH.PathAny(rp, goal, startIdx, alts, alive, firstValid, liveLanes, resc
             if bestPath then bestPath:Destroy() end
             return nil
         end
+    end
+    if not best and rejectedW then
+        best, bestLength, bestPath = rejectedW, FH.Len(rejectedW), rejectedPath
+        rejectedPath = nil
+    elseif rejectedPath then
+        rejectedPath:Destroy()
     end
     if best then
         if alive and not alive() then
@@ -9028,7 +9042,7 @@ function Follow.ActiveEscape(token, hum, root)
         and recovery.escape ~= nil
         and os.clock() < (recovery.escapeUntil or 0)
 end
-function Follow.RescueLocalLane(token, hum, root, goal, feetY, state, dropOnly, blockedDirection, vertical)
+function Follow.RescueLocalLane(token, hum, root, goal, feetY, state, dropOnly, blockedDirection)
     local rp = root.Position
     local toward = Flat(goal - rp)
     local forward = state.dir or (toward.Magnitude > 0.1 and toward.Unit) or Flat(root.CFrame.LookVector)
@@ -9075,16 +9089,6 @@ function Follow.RescueLocalLane(token, hum, root, goal, feetY, state, dropOnly, 
                             and dir:Dot(toward.Unit) > 0.995 then return point, landing, crossing end
                         local score = before - after + dir:Dot(forward) * 2 + length * (retreat and 1.4 or 0.2)
                         if dropOnly and blockedDirection then score -= dir:Dot(blockedDirection) * 12 end
-                        if vertical then
-                            -- Target on another floor: horizontal closeness is not
-                            -- progress (it leads under the floor into its walls).
-                            -- Prefer surfaces that change height toward it.
-                            local rise = floor - feetY
-                            local need = goal.Y - feetY
-                            score = score - (before - after) * 0.7
-                            if need > 0 then score += math.clamp(rise, -2, 3) * 6 else score -= math.clamp(rise, -3, 2) * 4 end
-                            if after < 6 and math.abs(need) > 4 then score -= 10 end
-                        end
                         for _, visit in ipairs(state.trail or {}) do
                             if (point.X - visit.x)^2 + (point.Z - visit.z)^2 < 9 then score -= 8 end
                         end
@@ -9154,7 +9158,7 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
     if rescueGoal and Follow.ActiveDoor(token, hum, root) then return FH.Move(token, hum, Follow.DoorTraversal.aim) end
     if Follow.ActiveCrossing(token, hum, root) then return FH.Move(token, hum, Follow.CrossingTraversal.aim) end
     if Follow.ActiveDrop(token, hum, root) then return FH.Move(token, hum, Follow.DropTraversal.aim) end
-    if state.verticalLane and state.goal and (goal - state.goal).Magnitude < 1 then
+    if rescueGoal and state.verticalLane and state.goal and (goal - state.goal).Magnitude < 1 then
         local lane = state.verticalLane
         if Flat(rp - lane.anchor).Magnitude >= 0.5 then lane.anchor, lane.progressAt = rp, now end
         if now >= lane.checkAt then
@@ -9199,8 +9203,7 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
             state.aim, state.dir = nil, nil
             FH.VerticalRouteWait =
                 { token = token, hum = hum, root = root, goal = goal, floorY = floorY, untilAt = now + 0.2 }
-            -- Every owner (not only rescue) explores a verified local lane
-            -- while the connector route is computed, instead of standing.
+            if not rescueGoal then return false end
             state.verticalSince = state.verticalSince or now
             -- Give the first fast native plan a few frames to establish its
             -- connector before exploring sideways beneath another floor.
@@ -9212,7 +9215,7 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
         state.verticalSince = nil
         if FH.VerticalRouteWait and FH.VerticalRouteWait.token == token then FH.VerticalRouteWait = nil end
     end
-    if verticalBlocked then
+    if verticalBlocked and rescueGoal then
         local lane = state.verticalLane
         if lane then
             if Flat(rp - lane.anchor).Magnitude >= 0.5 then lane.anchor, lane.progressAt = rp, now end
@@ -9229,7 +9232,7 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
             state.verticalLane, state.aim = nil, nil
         end
         if now >= (state.verticalRetryAt or 0) then
-            local aim, landing, hop = Follow.RescueLocalLane(token, hum, root, goal, feetY, state, nil, nil, true)
+            local aim, landing, hop = Follow.RescueLocalLane(token, hum, root, goal, feetY, state)
             state.verticalRetryAt = now + 0.15
             if aim then
                 state.aim, state.goal = aim, goal
@@ -9357,7 +9360,6 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
             local side = Vector3.new(-forward.Z, 0, forward.X)
             local bestScore, bestDir
             for _, dir in ipairs({
-                forward,
                 (forward + side).Unit,
                 (forward - side).Unit,
                 side,
@@ -9366,26 +9368,20 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
                 (-forward - side).Unit,
                 -forward,
             }) do
-                -- Narrow corridors and props leave no 8-stud side lane; a
-                -- shorter verified lane still beats standing in place.
-                for _, length in ipairs({ 8, 4.5, 2.5 }) do
-                    local candidate = rp + dir * length
-                    if useful(candidate) and not failed(candidate) and clearLane(rp, candidate, feetY) then
-                        local score = -Flat(goal - candidate).Magnitude + dir:Dot(forward) * 4 - (8 - length) * 0.5
-                        for _, visited in ipairs(state.trail) do
-                            if (candidate.X - visited.x) ^ 2 + (candidate.Z - visited.z) ^ 2 < 16 then score = score - 4 end
-                        end
-                        if not bestScore or score > bestScore then
-                            aim, bestDir, bestScore = candidate, dir, score
-                        end
-                        break
+                local candidate = rp + dir * 8
+                if useful(candidate) and not failed(candidate) and clearLane(rp, candidate, feetY) then
+                    local score = -Flat(goal - candidate).Magnitude + dir:Dot(forward) * 4
+                    for _, visited in ipairs(state.trail) do
+                        if (candidate.X - visited.x) ^ 2 + (candidate.Z - visited.z) ^ 2 < 16 then score = score - 4 end
+                    end
+                    if not bestScore or score > bestScore then
+                        aim, bestDir, bestScore = candidate, dir, score
                     end
                 end
             end
             if bestDir then state.dir = bestDir end
         end
-        if not aim then
-            -- Surfaces, drops off props and short lanes for every owner.
+        if not aim and rescueGoal then
             local landing, crossing
             aim, landing, crossing = Follow.RescueLocalLane(token, hum, root, goal, feetY, state)
             if aim then
@@ -10063,56 +10059,6 @@ function Follow.GoalOnFloor(hum, root, goal, ignoreModel)
     local ground, hit = Follow.GoalGround(goal, ignoreModel)
     return hit ~= nil and hit.Normal.Y > 0.6 and math.abs(ground.Y - 0.5 - FH.Feet(hum, root)) <= 1.5
 end
--- Body pressed against a wall while its aim lies past the wall's edge:
--- slide along the wall surface (with a small push off it) on a verified
--- short lane instead of rejecting the route and standing in place.
-function Follow.WallSlide(token, hum, root, aim, feetY, goal)
-    if not (hum and root and aim) or hum.FloorMaterial == Enum.Material.Air then return nil end
-    local rp = root.Position
-    local dir = Flat(aim - rp)
-    if dir.Magnitude < 0.5 then return nil end
-    dir = dir.Unit
-    local across = Vector3.new(-dir.Z, 0, dir.X)
-    local normal
-    for _, height in ipairs({ 1.2, 3 }) do
-        for _, side in ipairs({ 0, 1, -1 }) do
-            local origin = Vector3.new(rp.X, feetY + height, rp.Z) + across * (side * 0.9)
-            local hit = Workspace:Raycast(origin, dir * 3, rayParams)
-            if hit and hit.Normal.Y < 0.6 and Flat(hit.Normal).Magnitude > 0.1 then
-                normal = Flat(hit.Normal).Unit
-                break
-            end
-        end
-        if normal then break end
-    end
-    if not normal then return nil end
-    local tangent = dir - normal * dir:Dot(normal)
-    local tangents = {}
-    if tangent.Magnitude >= 0.2 then
-        tangents = { tangent.Unit, -tangent.Unit }
-    else
-        -- Head-on wall: try the side that leads toward the goal first.
-        local side = Vector3.new(-normal.Z, 0, normal.X)
-        local toward = goal and Flat(goal - rp) or dir
-        if toward.Magnitude > 0.1 and side:Dot(toward) < 0 then side = -side end
-        tangents = { side, -side }
-    end
-    for _, t in ipairs(tangents) do
-        for _, push in ipairs({ 0.35, 0.8 }) do
-            local slide = (t + normal * push).Unit
-            for _, length in ipairs({ 3, 1.8 }) do
-                local candidate = rp + slide * length
-                if
-                    not FH.LaneRejected(rp, candidate, feetY)
-                    and Follow.OwnedLaneClear(token, hum, root, rp, candidate, feetY, length, true)
-                then
-                    return candidate
-                end
-            end
-        end
-    end
-    return nil
-end
 function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     opts = opts or {}
     local previousRescue, rescueControl = Follow.RescueControl, nil
@@ -10139,19 +10085,6 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local mode, wps, wpi, wpFull = nil, nil, 1, true
     local planAt, planGoal, chkAt, nextPlan = 0, nil, 0, 0
     local lastPos, lastCheck, stuck = nil, os.clock(), 0
-    local slideN = 0
-    -- Stand only when no local lane, carried leg or wall slide exists.
-    local function holdOrSlide(hum, root, target, feetY, goal)
-        local slide = slideN < 12 and Follow.WallSlide(token, hum, root, target, feetY, goal)
-        if slide then
-            slideN = slideN + 1
-            if FH.Diag then FH.Diag("walk", "wall-slide") end
-            return FH.Move(token, hum, slide)
-        end
-        if FH.CarryMotion(token, hum, root, 0.4) then return true end
-        if FH.Diag then FH.Diag("walk", "hold-no-lane") end
-        return FH.Move(token, hum, root.Position, false, goal)
-    end
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
     local fails, doorTries, radIdx, escTries = 0, 0, 1, 0
@@ -11001,7 +10934,6 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             or opts.rescueJuke and not flying and rp.Y - progressPosition.Y >= 0.5
                 and Follow.RescueGrounded(hum, root, true)) then
             progressPosition, progressAt = rp, now
-            slideN = 0
         elseif not progressPosition then
             progressPosition, progressAt = rp, now
         end
@@ -11159,9 +11091,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if
                 not Follow.PlanStep(token, hum, root, goal, feetY, pendingSteer, opts.rescueJuke, opts.approachModel)
             then
-                -- Only stop if every locally scanned direction, the last
-                -- verified leg and a wall slide are all unavailable.
-                holdOrSlide(hum, root, goal, feetY, goal)
+                -- Only stop if every locally scanned direction is obstructed.
+                FH.Move(token, hum, rp, false, goal)
             end
             task.wait(0.03)
             continue
@@ -11398,7 +11329,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                                 opts.approachModel
                             )
                         then
-                            holdOrSlide(hum, root, wp.Position, feetY, goal)
+                            FH.Move(token, hum, rp, false, goal)
                         end
                         task.wait(0.03)
                         continue
@@ -11516,18 +11447,6 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 continue
             end
         end
-        if routeProgress and not flying and kind == "wall" and slideN < 12 then
-            -- Hugging a wall near a corner: the route point is usually just
-            -- past the wall edge. Slide off the wall and keep this route.
-            local slide = Follow.WallSlide(token, hum, root, aim, feetY, goal)
-            if slide then
-                slideN = slideN + 1
-                if FH.Diag then FH.Diag("walk", "wall-slide") end
-                FH.Move(token, hum, slide)
-                task.wait(0.03)
-                continue
-            end
-        end
         if routeProgress and not flying and (kind == "wall" or kind == "door") then
             FH.RejectLane(token, hum, aim)
             -- Native paths can become blocked without a Path.Blocked signal.
@@ -11538,7 +11457,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if
                 not Follow.PlanStep(token, hum, root, goal, feetY, pendingSteer, opts.rescueJuke, opts.approachModel)
             then
-                holdOrSlide(hum, root, aim, feetY, goal)
+                FH.Move(token, hum, rp, false, goal)
             end
             task.wait(0.03)
             continue
@@ -12729,7 +12648,8 @@ function FH.ExitPolicy(center, stand, gate)
     -- the escape volume centre that lies outside; people waiting in front of
     -- the gate are then counted. The volume centre stays a fallback.
     local function near(position)
-        for _, point in ipairs({ gate, center }) do
+        -- Not ipairs({ gate, center }): a nil gate would end that loop early.
+        for _, point in pairs({ gate or false, center or false }) do
             if point and (position - point).Magnitude <= Follow.ExitTeamRange
                 and math.abs(position.Y - point.Y) <= Follow.MaxDY then
                 return point
@@ -24043,11 +23963,12 @@ TrackConnection(UserInputService.JumpRequest:Connect(function()
     end
 end))
 -- ================= DIAG: NHẬN DIỆN VÌ SAO ĐỨNG YÊN =================
--- Bật nút "Diag Ket [T]" rồi chơi bình thường. Mỗi lần nhân vật đứng yên
+-- Bật nút "Diag Ket" rồi chơi bình thường. Mỗi lần nhân vật đứng yên
 -- quá 1.2s trong khi AutoFarm/Follow/AutoHide/AutoHelp đang bật, Diag ghi:
 -- tính năng nào đang giữ quyền di chuyển, lệnh cuối, lý do bị từ chối,
 -- trạng thái tìm đường, vật cản xung quanh (tên part, khoảng cách, pháp tuyến).
--- File: workspace/D_diag/stall-<thời gian>.json (gửi file này để phân tích).
+-- Tự bật khi nạp script. File: thư mục Workspace của executor, tên
+-- D_stall_<thời gian>.json (gửi file này để phân tích). Nút Diag Ket tắt/bật.
 -- Chỉ đọc trạng thái, không điều khiển; không gửi gì ra mạng.
 DG.Samples, DG.Incidents, DG.Notes, DG.SampleAt = {}, {}, {}, 0
 DG.MaxSamples, DG.MaxIncidents, DG.StillSpeed, DG.StillTime = 40, 80, 0.8, 1.2
@@ -24189,9 +24110,6 @@ end
 function DG.Save()
     if type(writefile) ~= "function" then return false end
     local ok = pcall(function()
-        if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder("D_diag") then
-            makefolder("D_diag")
-        end
         local payload = {
             schema = "d-stall-diag",
             version = 1,
@@ -24239,7 +24157,7 @@ function DG.Step()
             DG.Incidents[#DG.Incidents + 1] = incident
             DG.Save()
             warn(("[Diag] ket #%d: %s"):format(incident.n, incident.reason))
-            if Btn.Diag then Btn.Diag.Text = "Diag Ket [T]: " .. #DG.Incidents end
+            if Btn.Diag then Btn.Diag.Text = "Diag Ket: " .. #DG.Incidents end
         end
     elseif episode then
         if episode.incident then
@@ -24256,16 +24174,18 @@ function DG.Toggle()
     if DG.Active then
         DG.Samples, DG.Incidents, DG.Notes, DG.Episode, DG.LastWalk = {}, {}, {}, nil, nil
         DG.StartedUtc = os.date("!%Y-%m-%dT%H:%M:%SZ")
-        DG.File = "D_diag/stall-" .. os.date("!%Y%m%d-%H%M%S") .. ".json"
+        -- Workspace root of the executor (e.g. Delta/Workspace), no subfolder.
+        DG.File = "D_stall_" .. os.date("!%Y%m%d_%H%M%S") .. ".json"
         FH.DiagWalk = DG.Walk
         if not DG.Conn then DG.Conn = RunService.Heartbeat:Connect(function() pcall(DG.Step) end) end
-        if Btn.Diag then Btn.Diag.Text = "Diag Ket [T]: 0" end
+        if Btn.Diag then Btn.Diag.Text = "Diag Ket: 0" end
+        DG.Save() -- create the file at once so it is visible
         warn("[Diag] bat. File: " .. DG.File .. (type(writefile) == "function" and "" or " (executor khong co writefile)"))
     else
         FH.DiagWalk = nil
         if DG.Conn then DG.Conn:Disconnect(); DG.Conn = nil end
         local saved = DG.Save()
-        if Btn.Diag then Btn.Diag.Text = "Diag Ket [T]" end
+        if Btn.Diag then Btn.Diag.Text = "Diag Ket" end
         warn(("[Diag] tat. %d lan ket. %s"):format(#DG.Incidents, saved and ("Da luu " .. DG.File) or "Khong luu duoc file"))
         if not saved and type(setclipboard) == "function" and #DG.Incidents > 0 then
             pcall(function()
@@ -24275,6 +24195,8 @@ function DG.Toggle()
         end
     end
 end
+-- Diag records automatically from load; the "Diag Ket" button turns it off/on.
+task.defer(function() if not DG.Active then pcall(DG.Toggle) end end)
 -- ================= UNLOAD =================
 local function UnloadHack()
     if unloaded then return end
@@ -24363,7 +24285,6 @@ local Keybinds = {
     [Enum.KeyCode.Z] = ToggleInvisUI,
     [Enum.KeyCode.N] = function() TR.Toggle() end,
     [Enum.KeyCode.K] = HideTP.Report,
-    [Enum.KeyCode.T] = function() if DG.Toggle then DG.Toggle() end end,
 }
 TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
     local keyCode = input.KeyCode

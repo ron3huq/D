@@ -1364,6 +1364,29 @@ scenario("AutoHelp reaches an upstairs pod through the real stair connector", fu
         "rescue failed on actual upper floor: " .. tostring(result))
     check(now < 108, "rescue wasted time underneath the upper pod")
 end)
+scenario("a bumped stair entrance does not remove the only route to an upper floor", function()
+    for i = 1, 24 do
+        box("Stair", Vec.new(8 + (i - 1) * 0.5, 0, 6), Vec.new(8 + i * 0.5, i * 0.35, 10))
+    end
+    box("UpperLanding", Vec.new(20, 8.2, -2), Vec.new(30, 8.4, 10))
+    world.route = function(from, to)
+        local points = { Vec.new(from.X, 0, from.Z), Vec.new(4, 0, 8), Vec.new(8, 0, 8) }
+        for i = 4, 24, 4 do table.insert(points, Vec.new(8 + i * 0.5, i * 0.35, 8)) end
+        table.insert(points, to)
+        local result = {}
+        for _, q in ipairs(points) do table.insert(result, { Position = q, Action = "Walk" }) end
+        return result
+    end
+    -- The avatar bumped the stair entrance once: that lane is rejected.
+    root.Position = Vec.new(4, 3, 8); updateParts()
+    check(FH.Move(7, hum, Vec.new(8, 3, 8)) and FH.RejectLane(7, hum, Vec.new(8, 3, 8), 8),
+        "fixture could not reject the stair entrance lane")
+    local goal = Vec.new(25, 11.4, 2)
+    local path, length, _, native = FH.PathAny(root.Position, goal, 1, false, function() return true end, false, true, true)
+    check(path ~= nil and path[#path].Position.Y > 8,
+        "one rejected stair lane left no route to the upper floor")
+    if native then native:Destroy() end
+end)
 scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
     local nearPod = pod(8)
     local farPod = pod(-18)
