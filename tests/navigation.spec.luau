@@ -2049,6 +2049,17 @@ scenario("a Beast walking in through a closed door raises the alarm; a solid wal
     panel.door = true; AH.EvalAt = -math.huge
     check(AH.TestEval().danger, "a Beast approaching behind a door did not raise the alarm")
 end)
+scenario("rescue running head-on into a facing Beast within 12 studs yields to AutoHide", function()
+    AH.Active = true
+    local beast = actor("Beast", Vec.new(10, 3, 0), true, Vec.new(-1, 0, 0), Vec.new())
+    world.players = { LocalPlayer, beast }
+    world.threat = Vec.new(10, 3, 0)
+    root.AssemblyLinearVelocity = Vec.new(16, 0, 0)
+    check(AR.ThreatPreempts(), "rescue kept running into a facing Beast 10 studs ahead")
+    root.AssemblyLinearVelocity = Vec.new(-16, 0, 0)
+    check(not AR.ThreatPreempts(), "moving away from the Beast still abandoned the rescue")
+    root.AssemblyLinearVelocity = Vec.new()
+end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()
     box("ThinShelfEdge", Vec.new(0.99, 8.2, -3), Vec.new(1.4, 8.4, 3))
     root.Position = Vec.new(0, 9.4, 0); updateParts()

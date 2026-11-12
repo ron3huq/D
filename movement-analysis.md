@@ -1,3 +1,18 @@
+# Live recorder data, fifth batch — 2026-11-12 (4)
+
+Source: 3 recorder files (52 incidents, mostly Airport).
+
+| Finding | Change | Test |
+|---|---|---|
+| AutoHide jitter in room corners: the aim alternated every 0.1–0.2 s between a ~20 stud steer into the wall and a ~4 stud opposite retreat (13 reversals, 1.6 studs net) | Oscillation guard in `AH.Go`: 3 reversals within 1.5 s run `AH.PathEscape`, a real route (through doorways, windows allowed) to an open flee point, for up to 4 s | not in harness (AH.Go is not extracted) |
+| AutoHelp ran into a facing Beast. The ahead-avoidance ran only before the alarm, and rescue yielded to AutoHide only at 6 studs | Avoidance runs while chased too. Within 12 studs, a facing Beast we are running at preempts the rescue (unless already in pod contact) | fails on `b2f0e1e`, passes now |
+| User: lobby "face to face" means in front of the other player's facing direction | Stand 3–5 studs along their LookVector (small side offset), then turn to them | — |
+
+## Verification
+
+- Harness: 148 scenarios / 322 checks pass. D compiles.
+- Nothing was run in Roblox.
+
 # Live recorder data, fourth batch — 2026-11-12 (3)
 
 Source: 3 recorder files (47 incidents). 44 of them are one School exit wait: a 0.4 s step followed by about 3 s of standing, repeated, drifting up to 50 studs from the open exit. The user also reported that every other survivor had already escaped.

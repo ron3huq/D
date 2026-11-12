@@ -11760,7 +11760,10 @@ function FH.RescueJuke(tok, root, aim, podGoal, feetY)
         AR.Juke = nil
         return aim
     end
-    local aheadBeast = not AH.Eval().danger and not AH.Eval().free and FH.RescueBeastAhead(tok, root, aim, podGoal)
+    -- Route around a facing Beast ahead whether or not it is already
+    -- chasing (it used to apply only before the alarm, so chased rescues
+    -- ran straight into it).
+    local aheadBeast = not AH.Eval().free and FH.RescueBeastAhead(tok, root, aim, podGoal)
     if not AH.Eval().danger and not aheadBeast then AR.Juke = nil; return aim end
     local now = os.clock()
     local state = AR.Juke
@@ -15103,8 +15106,8 @@ function AH.PathEscape(tok)
         tok,
         function() return goal end,
         3.5,
-        function() return not tok.ok() or os.clock() - t0 > 2.5 or AH.Down() or AH.PodsPending() end,
-        { noDoor = true, maxTime = 3, nearOk = 6, evade = true }
+        function() return not tok.ok() or os.clock() - t0 > 3.5 or AH.Down() or AH.PodsPending() end,
+        { noDoor = true, maxTime = 4, nearOk = 6, evade = true, windows = true }
     )
 end
 function AH.DropLane(hum, root, point, feetY)
@@ -15324,6 +15327,7 @@ function AH.Go(tok)
     local lastPos, lastChk, stuckN = nil, os.clock(), 0
     local trapForward, deadEndState = nil, {}
     local jukeState, vaultState, doorState, wasJuking = {}, {}, {}, false
+    local oscFlips, oscDir = {}, nil
     -- Keep the previous flight heading across a quick restart (danger can
     -- blink off/on); a fresh pick every restart ran back and forth in the open.
     local kept = AH.KeepDir
@@ -15448,6 +15452,30 @@ function AH.Go(tok)
                                 trapN, trapForward = 1, dir
                             end
                         end
+                    end
+                end
+            end
+            -- Oscillation guard (live data: aim flipped every 0.1-0.2 s between
+            -- a far steer into the wall and a short opposite retreat in room
+            -- corners). Three reversals in 1.5 s -> leave by a real route
+            -- (through the doorway to open space) instead of shaking in place.
+            if aim and not (drop or vault or door) then
+                local heading = Flat(aim - rp)
+                if heading.Magnitude > 0.5 then
+                    heading = heading.Unit
+                    if oscDir and heading:Dot(oscDir) < -0.3 then
+                        oscFlips[#oscFlips + 1] = now
+                    end
+                    oscDir = heading
+                    while #oscFlips > 0 and now - oscFlips[1] > 1.5 do table.remove(oscFlips, 1) end
+                    if #oscFlips >= 3 then
+                        table.clear(oscFlips)
+                        oscDir = nil
+                        if FH.Diag then FH.Diag("evade", "oscillation-path-escape") end
+                        AH.PathEscape(tok)
+                        aim, lastSteer = nil, os.clock()
+                        trapN, stuckN = 0, 0
+                        lastPos, lastChk = nil, os.clock()
                     end
                 end
             end
@@ -16079,7 +16107,23 @@ function AR.ThreatPreempts()
         if captive and captive.Value and FH.PodContactReady(info.trig, hum, root) then return false end
     end
     local delta = threat.pos - root.Position
-    if math.abs(delta.Y) > 4.5 or Flat(delta).Magnitude > 6 then return false end
+    if math.abs(delta.Y) > 4.5 then return false end
+    local flatDelta = Flat(delta)
+    if flatDelta.Magnitude > 6 then
+        -- Head-on within 12 studs: the Beast faces us and we run at it (or it
+        -- stands on our way). Let AutoHide take over instead of colliding.
+        if flatDelta.Magnitude > 12 then return false end
+        local beastLook
+        for _, player in ipairs(Players:GetPlayers()) do
+            local br = player ~= LocalPlayer and FH.True(player, FH.BEASTN) and player.Character
+                and player.Character:FindFirstChild("HumanoidRootPart")
+            if br and (br.Position - threat.pos).Magnitude < 3 then beastLook = Flat(br.CFrame.LookVector) end
+        end
+        local mine = Flat(root.AssemblyLinearVelocity)
+        local facing = beastLook and beastLook.Magnitude > 0.1 and beastLook.Unit:Dot(-flatDelta.Unit) >= 0.6
+        local closing = mine.Magnitude > 4 and mine.Unit:Dot(flatDelta.Unit) >= 0.5
+        if not (facing and closing) then return false end
+    end
     FH.RefreshFilter()
     return delta.Magnitude < 0.1 or Workspace:Raycast(root.Position, delta, rayParams) == nil
 end
@@ -21569,15 +21613,22 @@ function Follow.LobbyStep(token)
             return
         end
         local their = buddy.root.Position
-        state.buddyOffset = state.buddyOffset or (function()
-            local angle = math.random() * math.pi * 2
-            return Vector3.new(math.cos(angle), 0, math.sin(angle)) * (3 + math.random() * 2)
-        end)()
-        local spot = FH.Ground(their + state.buddyOffset)
-        if Flat(root.Position - their).Magnitude > 6.5 or Flat(root.Position - spot).Magnitude > 2.5
-            and Flat(root.Position - their).Magnitude > 5.5 then
-            Follow.WalkTo(token, function() return FH.Ground(buddy.root.Position + state.buddyOffset) end, 1.5,
-                function() return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) end, { maxTime = 6, nearOk = 2 })
+        -- Face to face: stand in front of them along the way THEY face
+        -- (3-5 studs, a slight random side offset), then face them.
+        state.buddyOffset = state.buddyOffset or { dist = 3 + math.random() * 2, side = (math.random() - 0.5) * 1.2 }
+        local function frontSpot()
+            local r = buddy.root
+            local look = Flat(r.CFrame.LookVector)
+            if look.Magnitude < 0.1 then look = Flat(root.Position - r.Position) end
+            if look.Magnitude < 0.1 then look = Vector3.new(1, 0, 0) end
+            look = look.Unit
+            local side = Vector3.new(-look.Z, 0, look.X)
+            return FH.Ground(r.Position + look * state.buddyOffset.dist + side * state.buddyOffset.side)
+        end
+        local spot = frontSpot()
+        if Flat(root.Position - spot).Magnitude > 2 then
+            Follow.WalkTo(token, frontSpot, 1.2,
+                function() return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) end, { maxTime = 6, nearOk = 1.5 })
         end
         -- Face them: a short step toward them turns the character naturally.
         local live = RootNow()
