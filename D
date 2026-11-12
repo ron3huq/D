@@ -12588,8 +12588,8 @@ function FH.ExitTraversalClear(token, hum, root, point)
         and Flat(point - crossing.aim).Magnitude < 0.2
         and math.abs(point.Y - crossing.aim.Y) <= 0.2
         and math.abs(root.Position.Y - crossing.aim.Y) <= Follow.MaxDY
-        and FH.ExitDoorOpen(crossing.door, crossing.center, crossing.triggers)
-        and FH.ApproachClear(root.Position, point, crossing.area)
+        and (crossing.force or FH.ExitDoorOpen(crossing.door, crossing.center, crossing.triggers)
+            and FH.ApproachClear(root.Position, point, crossing.area))
 end
 function FH.ExitTraverse(token, state, stopped)
     local root, hum = RootNow(), GetHumanoid()
@@ -12687,6 +12687,45 @@ function FH.ExitTraverse(token, state, stopped)
         end
         task.wait(0.03)
     end
+    -- The gate was open when we started: run on into the escape volume the
+    -- way a player would, without the strict clearance probe (live data:
+    -- the crossing stopped at the volume's edge and the bot turned away).
+    if not FH.True(LocalPlayer, FH.ESC) and not stopped() and RootNow() == root and GetHumanoid() == hum then
+        local inward = Flat(base - (state.stand and state.stand.Position or root.Position))
+        if inward.Magnitude < 0.5 then inward = Flat(base - root.Position) end
+        if inward.Magnitude > 0.1 then
+            local far = base + inward.Unit * 6
+            local inside = Vector3.new(far.X, root.Position.Y, far.Z)
+            local outsideBase = state.stand and state.stand.Position or (base - inward.Unit * 8)
+            local outside = Vector3.new(outsideBase.X, root.Position.Y, outsideBase.Z)
+            local function runTo(point, seconds)
+                crossing.aim, crossing.force, crossing.untilAt = point, true, os.clock() + seconds
+                FH.ExitTraversal = crossing
+                local start, lastPos, lastAt = os.clock(), root.Position, os.clock()
+                while not stopped() and os.clock() - start < seconds and not FH.True(LocalPlayer, FH.ESC) do
+                    if RootNow() ~= root then return end
+                    Follow.Beat = os.clock()
+                    if Flat(point - root.Position).Magnitude <= 0.8 then return end
+                    FH.Move(token, hum, point, true)
+                    if Flat(root.Position - lastPos).Magnitude > 0.3 then
+                        lastPos, lastAt = root.Position, os.clock()
+                    elseif os.clock() - lastAt > 1.2 then
+                        return
+                    end
+                    task.wait(0.03)
+                end
+            end
+            -- Game bug: sometimes the volume does not register us. Like a
+            -- player: walk back out in front of the gate, then run in again.
+            for attempt = 1, 3 do
+                if FH.Diag then FH.Diag("exit", "forced-run-in:" .. attempt) end
+                runTo(inside, 2.5)
+                if FH.True(LocalPlayer, FH.ESC) or stopped() or RootNow() ~= root or attempt == 3 then break end
+                runTo(outside, 2)
+                if FH.True(LocalPlayer, FH.ESC) or stopped() or RootNow() ~= root then break end
+            end
+        end
+    end
     if FH.ExitTraversal == crossing then FH.ExitTraversal = nil end
     return FH.True(LocalPlayer, FH.ESC)
 end
@@ -12783,7 +12822,7 @@ function FH.ExitPriority()
         if
             IsInWorld(door)
             and door:IsDescendantOf(map)
-            and not (failures and failures[door] and failures[door] > now)
+            and (not (failures and failures[door] and failures[door] > now) or FH.ExitDoorOpen(door))
         then
             local center = FH.ExitArea(door)
             local triggers = door:IsA("Model") and FH.Triggers(door) or {}
@@ -15106,8 +15145,8 @@ function AH.PathEscape(tok)
         tok,
         function() return goal end,
         3.5,
-        function() return not tok.ok() or os.clock() - t0 > 3.5 or AH.Down() or AH.PodsPending() end,
-        { noDoor = true, maxTime = 4, nearOk = 6, evade = true, windows = true }
+        function() return not tok.ok() or os.clock() - t0 > 2.5 or AH.Down() or AH.PodsPending() end,
+        { noDoor = true, maxTime = 3, nearOk = 6, evade = true, windows = true }
     )
 end
 function AH.DropLane(hum, root, point, feetY)
@@ -15471,9 +15510,23 @@ function AH.Go(tok)
                     if #oscFlips >= 3 then
                         table.clear(oscFlips)
                         oscDir = nil
-                        if FH.Diag then FH.Diag("evade", "oscillation-path-escape") end
-                        AH.PathEscape(tok)
-                        aim, lastSteer = nil, os.clock()
+                        -- Cornered: a drop or a window/rail vault beats any
+                        -- ground route; take one if it exists.
+                        local leap = AH.DropAim(tok, hum, root, e.pos, e.vel, feetY, AH.Dir, true)
+                        if leap then
+                            drop = leap
+                        else
+                            leap = AH.VaultAim(rp, e.pos, e.vel, feetY, vaultState, AH.Dir, true)
+                            if leap then vault = leap end
+                        end
+                        if leap then
+                            if FH.Diag then FH.Diag("evade", "oscillation-leap") end
+                            aim, lastSteer = leap, now
+                        else
+                            if FH.Diag then FH.Diag("evade", "oscillation-path-escape") end
+                            AH.PathEscape(tok)
+                            aim, lastSteer = nil, os.clock()
+                        end
                         trapN, stuckN = 0, 0
                         lastPos, lastChk = nil, os.clock()
                     end
@@ -15538,15 +15591,22 @@ end
 
 function AH.ExitGo(tok)
     AH.ExitState = AH.ExitState or {}
-    local outcome
+    local outcome, retriesUnderThreat = nil, 0
     while TokOK(tok) and FH.ExitPriority() and not AH.PodsPending() and not FH.True(LocalPlayer, FH.ESC) do
         if Ctl.On() or Fly.Active or FH.Prio() or AH.Down() or not FH.MotionAvailable(tok) then break end
         local danger = AH.Eval().danger
         AH.SetState(danger and "flee" or "idle")
         local result = FH.ExitRoute(tok, AH.ExitState, function() return not FH.ExitOpen() or AH.PodsPending() end)
         if AH.Eval().danger and (result == "evade" or result == "retry") then
-            AH.ExitRetryAt, outcome = os.clock() + 0.7, "evade"
-            break
+            -- An open exit right here is the escape: keep at it (3 tries)
+            -- instead of running off to some other door.
+            retriesUnderThreat = retriesUnderThreat + 1
+            if result == "evade" or not FH.AnyExitOpen() or retriesUnderThreat > 3 then
+                AH.ExitRetryAt, outcome = os.clock() + 0.7, "evade"
+                break
+            end
+        elseif result ~= "retry" then
+            retriesUnderThreat = 0
         end
         if result == nil or result == "escaped" then break end
         task.wait(result == "retry" and 0.1 or 0.02)

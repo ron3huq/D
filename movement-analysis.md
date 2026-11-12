@@ -1,3 +1,17 @@
+# Live recorder data, sixth batch — 2026-11-12 (5)
+
+Source: 1 recorder file (Arcade, 17 incidents).
+
+| Finding | Change | Test |
+|---|---|---|
+| Chased toward an open exit, the bot centred, walked in, stopped at the volume's edge without escaping, and stood about 3 s. The exit was then failed, AutoHide no longer saw it as a priority, and the bot fled elsewhere when the Beast arrived. The strict clearance probe ended the crossing | A crossing that started at an open gate ends with a forced run into the volume. For the game bug where an entry is ignored, it steps back out in front of the gate and re-enters, up to 3 entries. Open exits are never removed from AutoHide's exit priority. While chased with an exit open, `AH.ExitGo` keeps trying it (3 retries) instead of fleeing elsewhere | re-entry scenario fails on `8c004c8`, passes now (2.8 s) |
+| Corner oscillation guard ran a 4 s ground-route escape and skipped drops and vaults, so AutoHide "no longer jumps" | A cornered bot first takes a drop or a window/rail vault if one exists; the ground route escape lasts at most 2.5 s | not in harness |
+
+## Verification
+
+- Harness: 149 scenarios / 323 checks pass. D and the recorder compile.
+- Nothing was run in Roblox.
+
 # Live recorder data, fifth batch — 2026-11-12 (4)
 
 Source: 3 recorder files (52 incidents, mostly Airport).

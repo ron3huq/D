@@ -631,7 +631,11 @@ step = function(dt)
     if world.cancelAt and now >= world.cancelAt then world.manual = true end
     if world.exitsEnabled then
         for _, exit in ipairs(ExitDoors) do
-            if exit.open and (root.Position - exit.center).Magnitude < 1 then stats.Escaped.Value = true end
+            if exit.open and (root.Position - exit.center).Magnitude < 1 then
+                -- needReentry: the game bug where the first entry is ignored.
+                if exit.needReentry and not exit.left then exit.touched = true else stats.Escaped.Value = true end
+            end
+            if exit.touched and (root.Position - exit.center).Magnitude > 4 then exit.left = true end
         end
     end
 end
@@ -1753,6 +1757,20 @@ scenario("waiting at an open exit for a minute with nobody escaping leaves anywa
     end
     check(stats.Escaped.Value and now - started >= 58 and now - started < 68,
         "minute-long wait did not end in an escape: " .. tostring(result) .. " after " .. tostring(now - started))
+end)
+scenario("an exit that ignores the first entry is left and re-entered", function()
+    local exit = openExit(20)
+    exit.needReentry = true
+    local a, b = exitPlayers()
+    a.stats.Escaped.Value, b.stats.Escaped.Value = true, true
+    local state, started = {}, now
+    for _ = 1, 8 do
+        FH.ExitRoute(7, state)
+        if stats.Escaped.Value then break end
+        task.wait(0.05)
+    end
+    check(stats.Escaped.Value and exit.left and now - started < 15,
+        "did not step out and re-enter an exit that ignored the first entry")
 end)
 scenario("solo survivor prefers a reachable open exit over holding a nearer closed gate", function()
     local far = openExit(30)
