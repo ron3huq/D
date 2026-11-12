@@ -16433,7 +16433,7 @@ function AR.ThreatPreemptsRaw()
         headOn = beastLook.Magnitude > 0.1 and mine.Magnitude > 0.1
             and beastLook.Unit:Dot(toMe) >= 0.85 and mine.Unit:Dot(-toMe) >= 0.85
     end
-    local reach = headOn and 16 or 6
+    local reach = headOn and 12 or 6
     if flatDelta.Magnitude > math.max(8, reach) then return false end
     FH.RefreshFilter()
     if delta.Magnitude < 0.1 then return true end
