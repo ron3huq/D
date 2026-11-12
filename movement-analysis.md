@@ -1,3 +1,17 @@
+# Seventh round — 2026-11-12 (6): rescue head-on shaking
+
+The user reported violent shaking when a rescue met a Beast head-on. The recorder file had no incident near the Beast (shaking faster than the 10 Hz sampling does not register as a reversal), so the cause was found in code.
+
+| Cause | Change | Test |
+|---|---|---|
+| The previous round's 12-stud head-on hand-over (rescue → AutoHide) depended on our own velocity. AutoHide turned away, so the condition cleared, the higher-priority rescue reclaimed and turned back toward the Beast, and the cycle repeated: ownership flipped every frame | Hand-over back to immediate contact only (6 studs). The rescue itself veers around a facing Beast ahead: 6 studs to one side, held 0.7 s, same side while the Beast stays ahead. The avoidance ring makes the planner take the shortest way around | flip scenario fails on `5445241`, passes now. The veer scenario also fails on `5445241` and passes now |
+| Possible "going backwards" on stairs: the vertical-waypoint advance accepted waypoints up to 6 studs **above** the feet, skipping an upper stair flight overhead | Upward limit 2 studs (step / hovering navmesh, as in the original live cases); downward limit 6 studs is kept | — |
+
+## Verification
+
+- Harness: 150 scenarios / 327 checks pass. D compiles.
+- Nothing was run in Roblox.
+
 # Live recorder data, sixth batch — 2026-11-12 (5)
 
 Source: 1 recorder file (Arcade, 17 incidents).

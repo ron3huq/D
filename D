@@ -11293,7 +11293,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 if not flying and current.Action ~= Enum.PathWaypointAction.Jump
                     and Flat(current.Position - rp).Magnitude <= 1
                     and math.abs(current.Position.Y - feetY) > 0.5
-                    and math.abs(current.Position.Y - feetY) <= 6 then
+                    -- Up to a small step above (hovering navmesh / curb); never
+                    -- a stair flight overhead (that skipped routes upstairs).
+                    and current.Position.Y - feetY <= 2
+                    and feetY - current.Position.Y <= 6 then
                     if FH.Diag then FH.Diag("walk", "vertical-waypoint-advanced") end
                     wpi = wpi + 1
                     if not routeProgress or not laIdx or laIdx < wpi then laIdx = nil end
@@ -11844,8 +11847,11 @@ function FH.RescueJuke(tok, root, aim, podGoal, feetY)
     end
     local side = Vector3.new(-forward.Z, 0, forward.X)
     local choices = {}
+    -- Head-on with a facing Beast: a wide, committed veer (one side, held),
+    -- not a quick alternating juke that read as shaking in place.
+    local headOn = aheadBeast and true or false
     for _, sign in ipairs({ 1, -1 }) do
-        local candidate = rp + forward * 4 + side * (3.5 * sign)
+        local candidate = headOn and (rp + forward * 3 + side * (6 * sign)) or (rp + forward * 4 + side * (3.5 * sign))
         if clearStep(candidate) then
             choices[#choices + 1] = { aim = candidate, sign = sign, clearance = Flat(candidate - beastPos).Magnitude }
         end
@@ -11853,7 +11859,10 @@ function FH.RescueJuke(tok, root, aim, podGoal, feetY)
     local pick = choices[1]
     if #choices == 2 then
         local other = choices[2]
-        if math.abs(pick.clearance - other.clearance) > 2.5 then
+        if headOn and state and state.sign then
+            -- Keep veering the same way while the Beast stays ahead.
+            if other.sign == state.sign then pick = other end
+        elseif math.abs(pick.clearance - other.clearance) > 2.5 then
             if other.clearance > pick.clearance then pick = other end
         else
             -- When both lanes are equally safe, vary the first dodge and alternate the next.
@@ -11868,8 +11877,8 @@ function FH.RescueJuke(tok, root, aim, podGoal, feetY)
         podGoal = podGoal,
         aim = pick and pick.aim or nil,
         sign = pick and pick.sign or (state and state.sign),
-        untilAt = pick and now + 0.22 or 0,
-        nextAt = now + (pick and 0.85 or 0.3),
+        untilAt = pick and now + (headOn and 0.7 or 0.22) or 0,
+        nextAt = now + (pick and (headOn and 0.75 or 0.85) or 0.3),
     }
     return pick and pick.aim or aim
 end
@@ -16169,21 +16178,11 @@ function AR.ThreatPreempts()
     local delta = threat.pos - root.Position
     if math.abs(delta.Y) > 4.5 then return false end
     local flatDelta = Flat(delta)
-    if flatDelta.Magnitude > 6 then
-        -- Head-on within 12 studs: the Beast faces us and we run at it (or it
-        -- stands on our way). Let AutoHide take over instead of colliding.
-        if flatDelta.Magnitude > 12 then return false end
-        local beastLook
-        for _, player in ipairs(Players:GetPlayers()) do
-            local br = player ~= LocalPlayer and FH.True(player, FH.BEASTN) and player.Character
-                and player.Character:FindFirstChild("HumanoidRootPart")
-            if br and (br.Position - threat.pos).Magnitude < 3 then beastLook = Flat(br.CFrame.LookVector) end
-        end
-        local mine = Flat(root.AssemblyLinearVelocity)
-        local facing = beastLook and beastLook.Magnitude > 0.1 and beastLook.Unit:Dot(-flatDelta.Unit) >= 0.6
-        local closing = mine.Magnitude > 4 and mine.Unit:Dot(flatDelta.Unit) >= 0.5
-        if not (facing and closing) then return false end
-    end
+    -- Only immediate contact range hands the rescue to AutoHide. A wider,
+    -- velocity-based hand-over flipped ownership every frame (rescue turns
+    -- toward the Beast, AutoHide turns away) and shook the avatar; the
+    -- rescue now veers around a facing Beast itself (FH.RescueJuke).
+    if flatDelta.Magnitude > 6 then return false end
     FH.RefreshFilter()
     return delta.Magnitude < 0.1 or Workspace:Raycast(root.Position, delta, rayParams) == nil
 end

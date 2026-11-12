@@ -2067,16 +2067,32 @@ scenario("a Beast walking in through a closed door raises the alarm; a solid wal
     panel.door = true; AH.EvalAt = -math.huge
     check(AH.TestEval().danger, "a Beast approaching behind a door did not raise the alarm")
 end)
-scenario("rescue running head-on into a facing Beast within 12 studs yields to AutoHide", function()
+scenario("rescue ownership does not flip with our own heading near a facing Beast", function()
+    -- A velocity-based hand-over flipped rescue/AutoHide ownership every frame
+    -- (live report: violent shaking head-on with the Beast). The decision at
+    -- 10 studs must not depend on which way we are currently moving.
     AH.Active = true
     local beast = actor("Beast", Vec.new(10, 3, 0), true, Vec.new(-1, 0, 0), Vec.new())
     world.players = { LocalPlayer, beast }
     world.threat = Vec.new(10, 3, 0)
     root.AssemblyLinearVelocity = Vec.new(16, 0, 0)
-    check(AR.ThreatPreempts(), "rescue kept running into a facing Beast 10 studs ahead")
+    local toward = AR.ThreatPreempts()
     root.AssemblyLinearVelocity = Vec.new(-16, 0, 0)
-    check(not AR.ThreatPreempts(), "moving away from the Beast still abandoned the rescue")
+    local away = AR.ThreatPreempts()
+    check(toward == away and not toward, "rescue hand-over flipped with our own heading")
     root.AssemblyLinearVelocity = Vec.new()
+end)
+scenario("rescue veers one way around a facing Beast ahead and keeps that side", function()
+    local beast = actor("Beast", Vec.new(12, 3, 0), true, Vec.new(-1, 0, 0), Vec.new())
+    world.players = { LocalPlayer, beast }
+    local tok = rescueToken()
+    local first = FH.RescueJuke(tok, root, Vec.new(30, 3, 0), Vec.new(60, 3, 0), 0)
+    check(math.abs(first.Z) >= 4, "no real veer around a facing Beast ahead: z=" .. tostring(first.Z))
+    for _ = 1, 4 do
+        task.wait(0.15)
+        local again = FH.RescueJuke(tok, root, Vec.new(30, 3, 0), Vec.new(60, 3, 0), 0)
+        check(again.Z * first.Z > 0, "veer flipped sides while the Beast stayed ahead")
+    end
 end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()
     box("ThinShelfEdge", Vec.new(0.99, 8.2, -3), Vec.new(1.4, 8.4, 3))
