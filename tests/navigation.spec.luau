@@ -1423,6 +1423,40 @@ scenario("a native route that starts against a wall is followed, not discarded",
     check(result == "arrived" and root.Position.X > 31,
         "route beside a wall was discarded: " .. tostring(result) .. " x=" .. tostring(root.Position.X))
 end)
+scenario("a bumped doorway frame does not remove the only route through the opening", function()
+    -- Live data: brushing a door frame rejected the lane, the only route
+    -- through the opening was discarded and the avatar shook and backed out.
+    box("WallLeft", Vec.new(10, 0, -30), Vec.new(11, 10, -2.5))
+    box("WallRight", Vec.new(10, 0, 2.5), Vec.new(11, 10, 30))
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" },
+            { Position = Vec.new(8, 0, 0), Action = "Walk" }, { Position = Vec.new(13, 0, 0), Action = "Walk" },
+            { Position = to, Action = "Walk" } }
+    end
+    root.Position = Vec.new(6, 3, 0); updateParts()
+    check(FH.Move(7, hum, Vec.new(10, 3, 0)) and FH.RejectLane(7, hum, Vec.new(10, 3, 0)),
+        "fixture could not reject the doorway lane")
+    local path, _, _, native = FH.PathAny(root.Position, Vec.new(20, 3, 0), 1, false, function() return true end, false, true, false)
+    check(path ~= nil and path[#path].Position.X > 15, "one rejected doorway lane left no route through the opening")
+    if native then native:Destroy() end
+end)
+scenario("standing on a prop above the current waypoint continues the route", function()
+    -- Live data: on a table/rail with the next waypoint 3-4.5 studs below the
+    -- feet and flat <1 stud away the avatar stood for up to 28 s.
+    box("SmallProp", Vec.new(-1.5, 0, -1.5), Vec.new(1.5, 3, 1.5))
+    root.Position = Vec.new(0, 6, 0); updateParts()
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 3, from.Z), Action = "Walk" },
+            { Position = Vec.new(0.3, 0, 0), Action = "Walk" },
+            { Position = Vec.new(15, 0, 0), Action = "Walk" },
+            { Position = Vec.new(30, 0, 0), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local goal = Vec.new(45, 3, 0)
+    local result = Follow.WalkTo(7, function() return goal end, 1, nil, { noDoor = true, maxTime = 6 })
+    check(result == "arrived" and root.Position.X > 43,
+        "avatar stood on a prop above its waypoint: " .. tostring(result) .. " x=" .. tostring(root.Position.X))
+end)
 scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
     local nearPod = pod(8)
     local farPod = pod(-18)
@@ -1924,6 +1958,18 @@ scenario("running head-on into a Beast that faces us raises the AutoHide alarm",
     check(AH.TestEval().danger, "running head-on into a facing Beast did not raise the alarm")
     br.CFrame = cf(br.Position, Vec.new(1, 0, 0)); AH.EvalAt = -math.huge
     check(not AH.TestEval().danger, "a Beast facing away triggered the head-on alarm")
+    root.AssemblyLinearVelocity = Vec.new()
+end)
+scenario("panic mode keeps a virtual chaser behind us unless mode 0 is on", function()
+    world.players = { LocalPlayer }
+    root.AssemblyLinearVelocity = Vec.new(16, 0, 0)
+    AH.Panic, Follow.AutoFarm = true, false
+    local e = AH.TestEval()
+    check(e.danger and e.pos and e.pos.X < root.Position.X and not e.afk,
+        "panic mode did not place a chaser behind the avatar")
+    Follow.AutoFarm, AH.EvalAt = true, -math.huge
+    check(not AH.TestEval().danger, "mode 0 (AutoFarm) did not override panic mode")
+    AH.Panic, Follow.AutoFarm, AH.PanicThreat = false, false, nil
     root.AssemblyLinearVelocity = Vec.new()
 end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()

@@ -1,3 +1,30 @@
+# Live recorder data, second batch — 2026-11-12
+
+Source: 15 recorder files (515 incidents: 353 stalls, 116 pacing, 46 jitter; 14 maps plus the lobby). Raw data stays out of the repo.
+
+| Finding | Change |
+|---|---|
+| Pacing/jitter at open doorways and windows. `lane-rejected` 531× and `plan result-unusable:door` 814× in those incidents: brushing a door frame rejected the lane for 8 s, the only route through the opening was discarded, local steering backed out, then retried | `FH.PathAny` keeps a complete route through a rejected lane as a last resort for any goal (previously only for another floor). Default lane rejection is 3 s instead of 8 s. New scenario fails on `2b86371`, passes now. |
+| AutoExit loop at Haunted Mansion: 0.5 s of walking then 3 s standing, repeated. Escape approach used `noDoor`, so a closed interior door meant "nopath", the exit was failed for 3 s, and so on | Exit approach may pass interior doors. An already open exit is never skipped after a failed approach, so the bot no longer runs to open the other gate. |
+| Round running but the avatar is in the lobby (after escape/death/joining late) at the same spot on every map, idle 10–57 s | The AutoFarm loop strolls/votes whenever the avatar is not in the match. |
+| Lobby scan: `Workspace.LobbyInteractiveObjects.MapVotingBoard` with `MapBoardA-D` (TitleLabel = map) and `VoteBoxA-D`. D walked under the board, not into the box, so no vote was cast | Pair each board with its VoteBox, step into it, then wait 3 studs in front. Without a preferred map, stroll near other players with varied points/pauses and no revisits. |
+| E held up to 70 s at a computer while the game never set ActionInput | 3 s without ActionInput rejects that slot for 10 s; the next free slot (or another PC) is tried. |
+| 21 path stalls (300 s) with the waypoint flat ≤ 1 stud but 1.6–4.5 studs above/below the feet (on props/rails, hovering navmesh). The previous "onward aim" did not clear them | Such a waypoint counts as reached and the route advances. |
+| AutoHide pacing in open areas (75–130 studs travelled, < 6 net) | The flight heading persists across quick AutoHide restarts (3 s). |
+
+## Controls
+
+- **0**: AutoFarm + AutoHide + AutoHelp. It is enabled with Player ESP on load.
+- **8**: Panic: a virtual chaser always behind us, so AutoHide flight runs continuously. Mode 0 overrides it.
+- **9**: free.
+
+## Verification
+
+- Harness: 141 scenarios / 310 checks pass; D compiles.
+- The doorway-rejection scenario fails on the previous commit and passes now.
+- The prop-above-waypoint scenario passes on both versions (the harness does not reproduce the live geometry).
+- Nothing was run in Roblox.
+
 # Live stall-recorder data — 2026-11-11 (4)
 
 Source: 13 recorder files from the user (110 incidents: 82 stalls, 20 pacing, 8 jitter, on 12 maps plus the lobby). Raw files and coordinates are not stored in this repo.
