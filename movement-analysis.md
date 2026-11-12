@@ -1,3 +1,21 @@
+# Live recorder data, eighth batch — 2026-11-12 (7)
+
+Source: 14 recorder files (348 incidents).
+
+| Finding | Change | Test |
+|---|---|---|
+| Exit opened by our own hold still read "closed" (`exit:still-closed-after-opening`): the gate was failed, the bot went to open the other exit, then repeated 1-step / 3 s stops | A gate counts as open when our hold reaches ≥ 98 % progress, or its panels lose collision / move compared with this round's first view (indicator transparency ignored). Valid per map | — |
+| 125 s standing on a prop whose top the down-ray cannot see (`ground` none). Planner and local lanes both gave up | WalkTo stall breaker: with no plan pending, 1.5 s without progress triggers a blind 0.7 s walk toward the goal, or the most open of 8 directions | existing "planner pending" scenario still holds still and times out |
+| E held 3.6 s without a hack, repeatedly at the same Ghost Town computer | Guard 2 s; a computer whose every slot refused is skipped for 30 s | — |
+| Lobby: 116 stalls / 543 s of pauses between strolls and chats | Continuous strolling with chained points (mostly no pause). Only ~30 % short face-to-face stops (2–3.5 s), with varied partners and spots | — |
+| User: waiting at a closed door during a rescue while the Beast opened it from the other side | A Beast within 8 studs behind a door preempts the rescue (a wall still does not) | fails on `600b5aa`, passes now |
+| User: the head-on veer shook / started too late | Head-on detection up to 40 studs; re-veer on the same side with no gap back toward the Beast | scenario extended |
+
+## Verification
+
+- Harness: 151 scenarios / 335 checks pass. D compiles.
+- Nothing was run in Roblox.
+
 # Seventh round — 2026-11-12 (6): rescue head-on shaking
 
 The user reported violent shaking when a rescue met a Beast head-on. The recorder file had no incident near the Beast (shaking faster than the 10 Hz sampling does not register as a reversal), so the cause was found in code.

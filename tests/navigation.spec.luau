@@ -937,6 +937,14 @@ scenario("ready pod gets its rescue action before evading", function()
     world.threat = Vec.new(2, 3, 0)
     check(not AR.ThreatPreempts(), "standing in real pod contact turned away instead of rescuing")
 end)
+scenario("a Beast just behind a closed door preempts the rescue; a solid wall does not", function()
+    AH.Active = true
+    world.threat = Vec.new(7, 3, 0)
+    local panel = box("DoorPanel", Vec.new(3, 0, -4), Vec.new(4, 10, 4))
+    check(not AR.ThreatPreempts(), "a solid wall still handed the rescue to AutoHide")
+    panel.door = true
+    check(AR.ThreatPreempts(), "rescue kept waiting at a door with the Beast right behind it")
+end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
     world.threat = Vec.new(3, 3, 0)
@@ -2088,10 +2096,12 @@ scenario("rescue veers one way around a facing Beast ahead and keeps that side",
     local tok = rescueToken()
     local first = FH.RescueJuke(tok, root, Vec.new(30, 3, 0), Vec.new(60, 3, 0), 0)
     check(math.abs(first.Z) >= 4, "no real veer around a facing Beast ahead: z=" .. tostring(first.Z))
-    for _ = 1, 4 do
+    for _ = 1, 10 do
         task.wait(0.15)
         local again = FH.RescueJuke(tok, root, Vec.new(30, 3, 0), Vec.new(60, 3, 0), 0)
-        check(again.Z * first.Z > 0, "veer flipped sides while the Beast stayed ahead")
+        -- No gap back toward the Beast between veers (zig-zag shake).
+        check(math.abs(again.Z) >= 4 and again.Z * first.Z > 0,
+            "veer flipped sides or snapped back toward the Beast: z=" .. tostring(again.Z))
     end
 end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()

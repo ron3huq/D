@@ -3614,7 +3614,7 @@ function FH.ComputerContact(token, comp, trig, stopped)
             noInputSince = now
         elseif inputAt then
             noInputSince = noInputSince or inputAt
-            if now - noInputSince >= 3.5 then
+            if now - noInputSince >= 2 then
                 FH.SlotRejected = FH.SlotRejected or setmetatable({}, { __mode = "k" })
                 FH.SlotRejected[trig] = now + 10
                 if FH.Diag then FH.Diag("hack", "slot-no-input") end
@@ -10102,6 +10102,25 @@ function Follow.GoalOnFloor(hum, root, goal, ignoreModel)
     local ground, hit = Follow.GoalGround(goal, ignoreModel)
     return hit ~= nil and hit.Normal.Y > 0.6 and math.abs(ground.Y - 0.5 - FH.Feet(hum, root)) <= 1.5
 end
+-- Direction for a blind stall-breaking walk: toward the goal unless a wall
+-- is right there, else the most open of 8 directions.
+function Follow.BreakerDirection(rp, goal, feetY)
+    local toward = Flat(goal - rp)
+    local base = toward.Magnitude > 0.1 and toward.Unit or Vector3.new(1, 0, 0)
+    local function free(dir)
+        local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + 2, rp.Z), dir * 6, rayParams)
+        return hit and hit.Distance or 6
+    end
+    if free(base) >= 4 then return base end
+    local best, bestFree = base, -1
+    for k = 1, 7 do
+        local a = k * math.pi / 4
+        local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
+        local f = free(dir) - (1 - math.cos(a)) * 0.5
+        if f > bestFree then best, bestFree = dir, f end
+    end
+    return best
+end
 -- Keep the body centred while passing a doorway, window or narrow gap:
 -- brushing one side was what rejected the lane and started the shake.
 function Follow.CenterAim(rp, aim, feetY)
@@ -10153,6 +10172,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local planAt, planGoal, chkAt, nextPlan = 0, nil, 0, 0
     local lastPos, lastCheck, stuck = nil, os.clock(), 0
     local dropShortcutAt = 0
+    local breaker, breakerAt
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
     local fails, doorTries, radIdx, escTries = 0, 0, 1, 0
@@ -11173,11 +11193,28 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         if not mode then
+            if breaker and now < breaker.untilAt then
+                FH.Move(token, hum, breaker.aim)
+                task.wait(0.03)
+                continue
+            end
             if
                 not Follow.PlanStep(token, hum, root, goal, feetY, pendingSteer, opts.rescueJuke, opts.approachModel)
             then
-                -- Only stop if every locally scanned direction is obstructed.
-                FH.Move(token, hum, rp, false, goal)
+                -- Stall breaker (live data: 125 s standing on a prop whose top
+                -- rays cannot see, so neither planner nor local lanes worked):
+                -- after 1.5 s without progress, walk out blind for 0.7 s.
+                if not job and now - progressAt > 1.5 and now - (breakerAt or 0) > 1.5
+                    and hum.FloorMaterial ~= Enum.Material.Air then
+                    local dir = Follow.BreakerDirection(rp, goal, feetY)
+                    breaker = { aim = rp + dir * 6, untilAt = now + 0.7 }
+                    breakerAt = now
+                    if FH.Diag then FH.Diag("walk", "stall-breaker") end
+                    FH.Move(token, hum, breaker.aim)
+                else
+                    -- Only stop if every locally scanned direction is obstructed.
+                    FH.Move(token, hum, rp, false, goal)
+                end
             end
             task.wait(0.03)
             continue
@@ -11729,7 +11766,7 @@ function FH.RescueBeastAhead(tok, root, aim, podGoal)
                 local look = Flat(br.CFrame.LookVector)
                 if
                     distance > 0.5
-                    and distance < AH.JukeRange
+                    and distance < 40 -- start veering early, not at the last moment
                     and look.Magnitude > 0.1
                     and toBeast:Dot(forward) > distance * 0.35
                     and look.Unit:Dot(-toBeast.Unit) >= 0.6
@@ -11782,7 +11819,7 @@ function FH.RescueJuke(tok, root, aim, podGoal, feetY)
             local br = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
             if br and math.abs(br.Position.Y - rp.Y) < Follow.MaxDY then
                 local dist = (br.Position - rp).Magnitude
-                if dist < AH.JukeRange and (not beastDist or dist < beastDist) then
+                if dist < (aheadBeast and 40 or AH.JukeRange) and (not beastDist or dist < beastDist) then
                     beast, beastPos, beastDist = player, br.Position, dist
                 end
             end
@@ -11843,7 +11880,9 @@ function FH.RescueJuke(tok, root, aim, podGoal, feetY)
     if state then
         if now < state.untilAt and clearStep(state.aim) then return state.aim end
         state.untilAt = 0
-        if now < state.nextAt then return aim end
+        -- Head-on: no gap back toward the Beast between veers (that gap was
+        -- the zig-zag shake); re-veer on the same side at once.
+        if now < state.nextAt and not aheadBeast then return aim end
     end
     local side = Vector3.new(-forward.Z, 0, forward.X)
     local choices = {}
@@ -12534,8 +12573,32 @@ function FH.ExitLane(trigger, center, area, params)
     if not best then return nil end
     return best * step, across
 end
+-- Gates proven open this round (our completed hold, or the gate's own parts
+-- changing since we first saw it closed). Keyed by door, valid per map.
+function FH.MarkExitOpened(door)
+    FH.ExitOpened = FH.ExitOpened or setmetatable({}, { __mode = "k" })
+    FH.ExitOpened[door] = GetCurrentMap()
+end
+function FH.ExitPanelsChanged(door)
+    if not (door and door:IsA("Model")) then return false end
+    FH.ExitPanelBase = FH.ExitPanelBase or setmetatable({}, { __mode = "k" })
+    local n, sum, tc = FH.DoorSig(door)
+    local base = FH.ExitPanelBase[door]
+    if not base or base.map ~= GetCurrentMap() then
+        FH.ExitPanelBase[door] = { n = n, sum = sum, tc = tc, map = GetCurrentMap() }
+        return false
+    end
+    -- Only collision turned off or panels moved; transparency can change
+    -- with indicator lights when the exits power up.
+    return n < base.n or (sum - base.sum).Magnitude > 2
+end
 function FH.ExitDoorOpen(door, center, triggers)
     if not door or not IsInWorld(door) then return false end
+    if FH.ExitOpened and FH.ExitOpened[door] ~= nil and FH.ExitOpened[door] == GetCurrentMap() then return true end
+    if FH.ExitOpen and FH.ExitOpen() and FH.ExitPanelsChanged(door) then
+        FH.MarkExitOpened(door)
+        return true
+    end
     center = center or FH.ExitArea(door)
     triggers = triggers or (door:IsA("Model") and FH.Triggers(door) or {})
     if not center or #triggers == 0 then return false end
@@ -13237,6 +13300,14 @@ function FH.ExitRoute(token, state, abort)
                 FH.Move(token, hum, state.stand.Position)
             end
             task.wait(0.04)
+            -- Our own hold completing is proof the gate opened, whatever its
+            -- panel geometry looks like (live data: "still closed after
+            -- opening", then the bot ran off to open the other exit).
+            local progress = FH.Stat(LocalPlayer, FH.HACK_PROGRESS)
+            if hold.on and progress and type(progress.Value) == "number" and progress.Value >= 0.98 then
+                FH.MarkExitOpened(door)
+                break
+            end
             if FH.ExitDoorOpen(door, center, state.triggers) then break end
         end
         Follow.Release(token)
@@ -13544,6 +13615,7 @@ function Follow.Main(token, player)
                 or FH.ExitOpen()
                 or (extraStop ~= nil and extraStop())
         end
+        local noInputSlots = 0
         for _, trig in ipairs(trigs) do
             if stop() then return end
             if FH.ComputerSlotTaken(comp, trig) then continue end
@@ -13575,8 +13647,11 @@ function Follow.Main(token, player)
             end
             -- Rejected input/contact tries the next actual keyboard trigger.
             -- It is neither a completed computer nor a 45-second work timeout.
+            if result == "unconfirmed" then noInputSlots = noInputSlots + 1 end
         end
-        hackSkip[comp] = os.clock() + (farmMode and 4 or 6)
+        -- Every slot refused to start a hack: leave this computer alone for
+        -- a while instead of returning to it every few seconds (live data).
+        hackSkip[comp] = os.clock() + (noInputSlots > 0 and 30 or (farmMode and 4 or 6))
     end
     local function farmWatch()
         local r = myRoot()
@@ -16182,9 +16257,14 @@ function AR.ThreatPreempts()
     -- velocity-based hand-over flipped ownership every frame (rescue turns
     -- toward the Beast, AutoHide turns away) and shook the avatar; the
     -- rescue now veers around a facing Beast itself (FH.RescueJuke).
-    if flatDelta.Magnitude > 6 then return false end
+    if flatDelta.Magnitude > 8 then return false end
     FH.RefreshFilter()
-    return delta.Magnitude < 0.1 or Workspace:Raycast(root.Position, delta, rayParams) == nil
+    if delta.Magnitude < 0.1 then return true end
+    local hit = Workspace:Raycast(root.Position, delta, rayParams)
+    -- A door between us is no protection: a Beast opening it from the other
+    -- side while we wait to open it ourselves catches us (live report).
+    if hit and FH.DoorOf(hit.Instance) ~= nil then return true end
+    return hit == nil and flatDelta.Magnitude <= 6
 end
 function AR.Step(tok)
     if not AR.Request and FH.ExitEscapePending() then
@@ -21653,6 +21733,17 @@ function Follow.LobbyStep(token)
             task.wait(0.2)
             return
         end
+        -- Mostly keep strolling around the players (continuous, varied);
+        -- only sometimes stop face to face for a short chat.
+        if math.random() < 0.7 then
+            local point = Follow.LobbyStrollPoint(state, root, board)
+            if point then
+                Follow.WalkTo(token, function() return point end, 2.5, function()
+                    return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)
+                end, { maxTime = 6, nearOk = 3 })
+            end
+            return
+        end
         local others = {}
         for _, other in ipairs(Players:GetPlayers()) do
             local r = other ~= LocalPlayer and other.Character and other.Character:FindFirstChild("HumanoidRootPart")
@@ -21702,8 +21793,8 @@ function Follow.LobbyStep(token)
         FH.ReleaseMotion(token, true)
         -- Occasionally drift a little or pick someone else, never a fixed loop.
         local roll = math.random()
-        if roll < 0.12 then state.buddy = nil elseif roll < 0.3 then state.buddyOffset = nil end
-        state.chatAt = os.clock() + 1.5 + math.random() * 4.5
+        if roll < 0.35 then state.buddy = nil elseif roll < 0.6 then state.buddyOffset = nil end
+        state.chatAt = os.clock() + 2 + math.random() * 1.5
         return
     end
     -- 4) No preferred map: stroll naturally near other players.
@@ -21715,12 +21806,12 @@ function Follow.LobbyStep(token)
     state.anchor = state.anchor or root.Position
     local point = Follow.LobbyStrollPoint(state, root, board)
     if point then
-        Follow.WalkTo(token, function() return point end, 1.5, function()
+        Follow.WalkTo(token, function() return point end, 2.5, function()
             return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)
-        end, { maxTime = 6, nearOk = 2 })
+        end, { maxTime = 6, nearOk = 3 })
     end
-    -- Human-like pauses: mostly short, sometimes long.
-    state.wanderAt = os.clock() + (math.random() < 0.3 and 4 + math.random() * 5 or 0.8 + math.random() * 2.2)
+    -- Keep walking; only occasionally a short natural pause.
+    state.wanderAt = os.clock() + (math.random() < 0.15 and 1.2 + math.random() * 2 or 0)
 end
 function Follow.AutoBeastVoteRoot(button)
     local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
