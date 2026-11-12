@@ -11051,7 +11051,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             and Follow.GoalOnFloor(hum, root, goal, opts.approachModel)
             and FH.ApproachClear(rp, goal, opts.approachModel)
         then
-            if not (keep and flatDist > 5 and keep()) then return finish("arrived", true) end
+            -- Keep momentum: the next leg starts at once (a full stop here was
+            -- the one-beat pause between legs). Contact code stops itself.
+            if not (keep and flatDist > 5 and keep()) then return finish("arrived", opts.stopAtEnd == true) end
         end
         if progressPosition and (Flat(rp - progressPosition).Magnitude >= 0.75
             or opts.rescueJuke and not flying and rp.Y - progressPosition.Y >= 0.5
@@ -11215,11 +11217,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- Target straight below/above (pod under a roof or floor): the flat
         -- direction to it is ~0 and flipped every frame (live report: shaking
         -- on top). Commit to one verified drop edge, else wait for the route.
-        if not mode and not flying and Flat(goal - rp).Magnitude < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY then
+        -- Also when a route ends right under our feet (standing on top of a
+        -- pod enclosure wall, live: goal 3.9 below, held in place + shaking).
+        local goalFlat = Flat(goal - rp).Magnitude
+        local below = goalFlat < 2.5 and goal.Y < feetY - 2.5
+        local overhead = goalFlat < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY or below
+        if (not mode or mode == "path" and below) and not flying and overhead then
             if not overheadDrop or now > overheadDrop.untilAt then
                 overheadDrop = nil
                 if goal.Y < rp.Y then
                     local base = Flat(root.CFrame.LookVector)
+                    -- Prefer stepping off toward the pod/target side.
+                    local toward = opts.rescueJuke and Flat(opts.rescueJuke - rp)
+                    if toward and toward.Magnitude > 0.5 then base = toward end
                     if base.Magnitude < 0.1 then base = Vector3.new(1, 0, 0) end
                     base = base.Unit
                     for k = 0, 7 do
@@ -12469,7 +12479,9 @@ function Follow.Chase(token, getGoal, stopDist, abort, keep)
             and Follow.GoalOnFloor(hum, root, goal)
             and (sd <= 3.5 or flatDist <= 2.5 or sd >= 20 or FH.Sight(rp, goal))
         then
-            if not (keep and flatDist > 5 and keep()) then return finish("arrived", true) end
+            -- Keep momentum: the next leg starts at once (a full stop here was
+            -- the one-beat pause between legs). Contact code stops itself.
+            if not (keep and flatDist > 5 and keep()) then return finish("arrived", opts.stopAtEnd == true) end
         end
 
         if escaping then
@@ -14596,6 +14608,7 @@ function AH.Eval()
                         local d = (position - mr.Position).Magnitude
                         if d < res.dist then
                             res.dist, res.pos, res.vel = d, position, br.AssemblyLinearVelocity
+                            res.look = br.CFrame.LookVector
                         end
                         local sameFloor = math.abs(position.Y - mr.Position.Y) <= Follow.MaxDY + 1.5
                         local pursuing = sameFloor and AH.Pursuing(br, mr, motion.observedVelocity)
@@ -15469,6 +15482,16 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
         elseif hum.FloorMaterial ~= Enum.Material.Air and feetY <= lane.landingY + 1.25 then
             AH.DropTraversal, AH.DropNextAt = nil, now + 0.5
         elseif AH.DropClear(token, hum, root, lane.point) then
+            -- Pressing into a lip/rail that never lets us fall stood the
+            -- avatar still with the Beast closing (live 1.8 s stall). Drop
+            -- the lane after 0.4 s on the ground without progress.
+            local gap = Flat(lane.point - rp).Magnitude
+            if not lane.bestGap or gap < lane.bestGap - 0.3 or hum.FloorMaterial == Enum.Material.Air then
+                lane.bestGap, lane.progressAt = math.min(gap, lane.bestGap or gap), now
+            elseif now - (lane.progressAt or now) > 0.4 then
+                AH.DropTraversal, AH.DropNextAt = nil, now + 1.5
+                return nil
+            end
             AH.Dir = lane.dir
             return lane.point
         else
@@ -16355,7 +16378,34 @@ function AR.Rescue(tok, info, alive)
     end
 end
 
+-- Hysteresis around the rescue -> AutoHide hand-over. Without it the
+-- 6-stud line flipped ownership as each side moved the avatar across it
+-- (rapid shaking + one-beat stalls head-on with the Beast). Once handed
+-- over, stay with AutoHide until the Beast is beyond 14 studs and 1.5 s
+-- passed (at most 4 s while it lingers), unless the pod contact is ready.
 function AR.ThreatPreempts()
+    local now, root = os.clock(), RootNow()
+    local raw = AR.ThreatPreemptsRaw()
+    local latch = AR.PreemptLatch
+    if latch and latch.root ~= root then latch, AR.PreemptLatch = nil, nil end
+    if raw then
+        AR.PreemptLatch = { root = root, since = latch and latch.since or now, last = now }
+        return true
+    end
+    if not latch or not AH.Active then return false end
+    local info = AR.Pick or AR.PendingPick
+    local hum = GetHumanoid()
+    if info and info.trig and info.trig.Parent and hum and root and FH.PodContactReady(info.trig, hum, root) then
+        AR.PreemptLatch = nil
+        return false
+    end
+    local threat = AH.Eval()
+    local near = threat.danger and threat.pos and root and Flat(threat.pos - root.Position).Magnitude <= 14
+    if now - latch.last < 1.5 or near and now - latch.since < 4 then return true end
+    AR.PreemptLatch = nil
+    return false
+end
+function AR.ThreatPreemptsRaw()
     if not AH.Active then return false end
     local threat, root, hum = AH.Eval(), RootNow(), GetHumanoid()
     if not threat.danger or not threat.pos or not root or not hum then return false end
@@ -16371,14 +16421,27 @@ function AR.ThreatPreempts()
     -- velocity-based hand-over flipped ownership every frame (rescue turns
     -- toward the Beast, AutoHide turns away) and shook the avatar; the
     -- rescue now veers around a facing Beast itself (FH.RescueJuke).
-    if flatDelta.Magnitude > 8 then return false end
+    -- Head-on on one straight line (Beast faces me AND I face/move toward
+    -- it, clear sight): hand over at 16 studs instead of 6. A Beast not
+    -- facing me keeps the 6-stud contact range.
+    local headOn = false
+    if flatDelta.Magnitude > 0.1 and threat.look then
+        local toMe = -flatDelta.Unit
+        local beastLook = Flat(threat.look)
+        local mine = Flat(root.AssemblyLinearVelocity)
+        if mine.Magnitude < 4 then mine = Flat(root.CFrame.LookVector) end
+        headOn = beastLook.Magnitude > 0.1 and mine.Magnitude > 0.1
+            and beastLook.Unit:Dot(toMe) >= 0.85 and mine.Unit:Dot(-toMe) >= 0.85
+    end
+    local reach = headOn and 16 or 6
+    if flatDelta.Magnitude > math.max(8, reach) then return false end
     FH.RefreshFilter()
     if delta.Magnitude < 0.1 then return true end
     local hit = Workspace:Raycast(root.Position, delta, rayParams)
     -- A door between us is no protection: a Beast opening it from the other
     -- side while we wait to open it ourselves catches us (live report).
-    if hit and FH.DoorOf(hit.Instance) ~= nil then return true end
-    return hit == nil and flatDelta.Magnitude <= 6
+    if hit and FH.DoorOf(hit.Instance) ~= nil and flatDelta.Magnitude <= 8 then return true end
+    return hit == nil and flatDelta.Magnitude <= reach
 end
 function AR.Step(tok)
     if not AR.Request and FH.ExitEscapePending() then

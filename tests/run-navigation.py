@@ -45,7 +45,7 @@ Follow.DropLane Follow.ActiveDrop Follow.DropClear Follow.StartDrop FH.BindNativ
 Follow.ActiveCrossing Follow.CrossingPlan Follow.CommitCrossing Follow.RouteProfile
 Follow.RescueSurfaceLane Follow.RescueWaypoints Follow.RescueStaleEntry Follow.RescuePathIndex Follow.RescueBodyClear Follow.OwnedLaneClear Follow.ActiveEscape Follow.RescueLocalLane Follow.PlanStep Follow.RescueJumpRoute Follow.RescueJumpLane Follow.RescueShortcut
 Follow.RecheckLane Follow.PathIndex Follow.Airborne Follow.AirClear Follow.GoalGround Follow.GoalOnFloor
-Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts
+Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePod AR.ThreatPreempts AR.ThreatPreemptsRaw
 AR.Loop Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 Follow.RescueDoorState Follow.RescueDoorDir Follow.RescueRouteReturns Follow.RescueDoorKind Follow.RescueDoorCrossed
 Follow.DoorOpening Follow.PassDoor Follow.ActiveDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold

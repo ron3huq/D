@@ -607,3 +607,18 @@ Run `python3 tests/run-navigation.py /path/to/luau`.
 The regression harness extracts the actual D functions, including the Main computer-contact wrapper, and exercises 39 scenarios / 58 assertions. It models physical contacts, delayed planning, native Space/E admission, real progress acknowledgement and manual cancellation. Cases include keyboard retries, partial hacks, single/double jumps, stairs, a separate upstairs connector, narrow passages, low decorations, walls/cliffs, delayed rescue travel, Pod contact and rescue priority. Door-route selection is tested with explicit portal geometry; full Roblox door execution is not simulated. All scenarios pass. D compiles, and formatting preserves compiled instructions.
 
 These tests are controlled simulations, not Roblox/Delta execution or proof of optimal routing on every map. The samples do not cover every map or threat situation. This change does not claim to resolve executor crashes; real gameplay validation remains necessary.
+
+## Round 9 (Workspace_8)
+
+- AutoHelp <-> AutoHide ping-pong head-on with the Beast: `AR.ThreatPreempts` is now latched
+  (stays with AutoHide for 1.5 s after the last trigger, up to 4 s while the Beast is within
+  14 studs; released at once if the pod contact is ready). The raw check is `AR.ThreatPreemptsRaw`.
+- Hand-over range: 6 studs normally; 16 studs when the Beast and I face each other on one
+  straight line (both facing dot >= 0.85, clear line of sight). A Beast looking away keeps 6.
+- One-beat pause between legs: `Follow.WalkTo`/`Follow.Chase` no longer stop the humanoid on
+  arrival (only with `opts.stopAtEnd`); contact code stops by itself.
+- AutoHide walk-into-drop lanes give up after 0.4 s on the ground without progress (1.5 s
+  cooldown) instead of pressing into a lip with the Beast closing.
+- Pod behind an enclosure wall (live: standing on the wall top, approach point 3.9 below the
+  feet, held in place and shaking): a path whose goal is right under the feet now uses the
+  step-off-edge branch, preferring the pod side.

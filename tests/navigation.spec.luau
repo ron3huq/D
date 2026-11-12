@@ -236,6 +236,7 @@ function AH.Eval()
     return {
         danger = world.threat ~= nil,
         pos = world.threat,
+        look = world.threatLook,
         dist = world.threat and Flat(world.threat - root.Position).Magnitude or math.huge,
     }
 end
@@ -945,6 +946,25 @@ scenario("a Beast just behind a closed door preempts the rescue; a solid wall do
     panel.door = true
     check(AR.ThreatPreempts(), "rescue kept waiting at a door with the Beast right behind it")
 end)
+scenario("mutual head-on line hands the rescue over at 16 studs; a Beast looking away does not", function()
+    AH.Active = true
+    root.CFrame = cf(root.Position, Vec.new(1, 0, 0))
+    world.threat, world.threatLook = Vec.new(14, 3, 0), Vec.new(0, 0, 1)
+    check(not AR.ThreatPreempts(), "a Beast not facing me preempted at 14 studs")
+    world.threatLook = Vec.new(-1, 0, 0)
+    check(AR.ThreatPreempts(), "mutual head-on Beast at 14 studs did not hand over")
+end)
+scenario("rescue/AutoHide hand-over holds instead of flipping at the line", function()
+    AH.Active = true
+    world.threat = Vec.new(5, 3, 0)
+    check(AR.ThreatPreempts(), "contact range did not hand over")
+    world.threat = Vec.new(7, 3, 0)
+    task.wait(0.2)
+    check(AR.ThreatPreempts(), "hand-over flipped back as soon as the Beast crossed 6 studs")
+    world.threat = Vec.new(30, 3, 0)
+    task.wait(1.6)
+    check(not AR.ThreatPreempts(), "hand-over stayed latched after the Beast left")
+end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
     world.threat = Vec.new(3, 3, 0)
@@ -1516,6 +1536,18 @@ scenario("a target straight below a roof leads off the roof edge, not shaking on
         if root.Position.Y < 6 or now - 100 > 5 then break end
     end
     check(root.Position.Y < 6 and now - 100 < 5, "stayed on the roof above a target below: y=" .. tostring(root.Position.Y))
+end)
+scenario("a route ending right under our feet on a wall top steps off instead of holding", function()
+    box("EnclosureWall", Vec.new(-2, 0, -20), Vec.new(2, 4, 20))
+    root.Position = Vec.new(0, 7, 0); updateParts()
+    local goal = Vec.new(0.3, 0, 0)
+    world.route = function(from) return { { Position = from, Action = "Walk" }, { Position = goal, Action = "Walk" } } end
+    for _ = 1, 10 do
+        Follow.WalkTo(7, function() return goal end, 0.8, function() return root.Position.Y < 5 end,
+            { maxTime = 4, nearOk = 0.25 })
+        if root.Position.Y < 5 or now - 100 > 5 then break end
+    end
+    check(root.Position.Y < 5 and now - 100 < 5, "stayed on the wall top over a goal below: y=" .. tostring(root.Position.Y))
 end)
 scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
     local nearPod = pod(8)
