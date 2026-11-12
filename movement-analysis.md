@@ -1,3 +1,31 @@
+# Live recorder data, fourth batch — 2026-11-12 (3)
+
+Source: 3 recorder files (47 incidents). 44 of them are one School exit wait: a 0.4 s step followed by about 3 s of standing, repeated, drifting up to 50 studs from the open exit. The user also reported that every other survivor had already escaped.
+
+| Finding | Change | Test |
+|---|---|---|
+| AutoFarm's anti-stuck watch (`farmWatch`, 3 s) treated a legitimate exit wait as stuck and pushed the avatar: one step, one beat, drifting | No anti-stuck while `exitState.waiting`. The bot stands at the wait spot | — |
+| Escaped players in the lobby could still count as in the match when a large map's bounding box reached the lobby, so the wait never released | `FH.InLobby`: players near `Workspace.LobbyInteractiveObjects` are never in the match | — |
+| User rule: leave after 1 minute if nobody escapes | `FH.ExitWaitExpired`: 60 s of waiting with no new escape. Latched per exit so the escape is not restarted | escapes at 60.75 s |
+| User: prefer jumping down over stairs | WalkTo drop shortcut: for a target more than 4 studs lower whose remaining route is longer than drop + straight + 6, a verified `Follow.DropLane` edge within 8 studs toward it is taken | fails on `1eaca2e` (7.2 s via stairs), 2.6 s now |
+| Doorway/window shake (body brushing a frame rejects the lane) | `Follow.CenterAim` keeps the body centred between close side walls ahead (dense sampling for thin frames) | passes now; no-op in the open |
+
+## Other changes
+
+**AutoHide**
+- Drops and window/rail vaults are considered during the whole flight (Beast within 70 studs instead of 32).
+- Drop edges are searched up to 8 studs away.
+- Flee picks weight long open runs over short ones ending in corners.
+
+**AutoHelp**
+- A facing Beast ahead gets an 8-point avoidance ring (4 studs, 2.5 s) and a replan every second.
+
+## Verification and limits
+
+- Harness: 147 scenarios / 320 checks pass with Luau 0.700.
+- D and the recorder compile.
+- The harness is a simplified model, and nothing was run in Roblox.
+
 # Live recorder data, third batch — 2026-11-12 (2)
 
 Source: 12 recorder files (262 incidents: 196 stalls, 44 pacing, 22 jitter).

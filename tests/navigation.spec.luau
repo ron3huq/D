@@ -1469,6 +1469,30 @@ scenario("standing on a prop above the current waypoint continues the route", fu
     check(result == "arrived" and root.Position.X > 43,
         "avatar stood on a prop above its waypoint: " .. tostring(result) .. " x=" .. tostring(root.Position.X))
 end)
+scenario("a lower target is reached by jumping off the ledge instead of the long stairs", function()
+    box("Balcony", Vec.new(-30, 0, -6), Vec.new(5, 8, 6))
+    root.Position = Vec.new(0, 11, 0); updateParts()
+    FH.BanDirect = now + 20
+    world.route = function(from, to)
+        return { { Position = Vec.new(from.X, 8, from.Z), Action = "Walk" },
+            { Position = Vec.new(-25, 8, 0), Action = "Walk" }, { Position = Vec.new(-25, 0, 20), Action = "Walk" },
+            { Position = Vec.new(40, 0, 20), Action = "Walk" }, { Position = to, Action = "Walk" } }
+    end
+    local started = now
+    local goal = Vec.new(40, 3, 0)
+    local result = Follow.WalkTo(7, function() return goal end, 1.5, nil, { noDoor = true, maxTime = 12 })
+    check(result == "arrived" and now - started < 5,
+        "took the long stairs instead of dropping: " .. tostring(result) .. " in " .. tostring(now - started) .. " s")
+end)
+scenario("steering through a narrow doorway is centred between its frames", function()
+    if not Follow.CenterAim then return end -- New helper absent from baseline.
+    box("FrameNorth", Vec.new(1.5, 0, 1.6), Vec.new(2.5, 10, 30))
+    box("FrameSouth", Vec.new(1.5, 0, -30), Vec.new(2.5, 10, -1.6))
+    local aim = Follow.CenterAim(Vec.new(0, 3, 1.1), Vec.new(20, 3, 1.1), 0)
+    check(aim.Z < 0.6 and aim.Z > -0.6, "aim was not shifted toward the doorway centre: z=" .. tostring(aim.Z))
+    local open = Follow.CenterAim(Vec.new(0, 3, 30), Vec.new(20, 3, 30), 0)
+    check(math.abs(open.Z - 30) < 0.01, "open ground shifted the aim")
+end)
 scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
     local nearPod = pod(8)
     local farPod = pod(-18)
@@ -1715,6 +1739,20 @@ scenario("an open exit approached at an angle is entered, not paced in front of"
     end
     check(stats.Escaped.Value and now - started < 6,
         "open exit approached at an angle was not entered: " .. tostring(result))
+end)
+scenario("waiting at an open exit for a minute with nobody escaping leaves anyway", function()
+    openExit(20)
+    exitPlayers()
+    local state = {}
+    check(FH.ExitRoute(7, state) == "waiting", "did not establish open-exit waiting state")
+    local started, result = now, nil
+    for _ = 1, 900 do
+        result = FH.ExitRoute(7, state)
+        if stats.Escaped.Value then break end
+        task.wait(0.1)
+    end
+    check(stats.Escaped.Value and now - started >= 58 and now - started < 68,
+        "minute-long wait did not end in an escape: " .. tostring(result) .. " after " .. tostring(now - started))
 end)
 scenario("solo survivor prefers a reachable open exit over holding a nearer closed gate", function()
     local far = openExit(30)

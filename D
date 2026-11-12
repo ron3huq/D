@@ -3873,10 +3873,26 @@ function FH.MapBounds()
     FH.BoundsCache = { map = map, at = now, c = center, s = size }
     return center, size
 end
+-- The lobby (map vote area) is never "in the match", even when a large
+-- map's bounding box reaches it: escaped players there kept the exit wait
+-- from ending (live data).
+function FH.InLobby(position)
+    local now = os.clock()
+    local cache = FH.LobbyCache
+    if not cache or now - cache.at > 5 then
+        local objects = Workspace:FindFirstChild("LobbyInteractiveObjects")
+        local ok, pivot = pcall(function() return objects and objects:GetPivot().Position end)
+        cache = { at = now, pivot = ok and pivot or nil }
+        FH.LobbyCache = cache
+    end
+    return cache.pivot ~= nil and Flat(position - cache.pivot).Magnitude <= 160
+        and math.abs(position.Y - cache.pivot.Y) <= 60
+end
 function FH.InMatchPlayer(p)
     local ch = p.Character
     local r = ch and ch:FindFirstChild("HumanoidRootPart")
     if not r then return false end
+    if FH.InLobby(r.Position) then return false end
     local c, s = FH.MapBounds()
     if not c then return true end
     local d = r.Position - c
@@ -10086,6 +10102,30 @@ function Follow.GoalOnFloor(hum, root, goal, ignoreModel)
     local ground, hit = Follow.GoalGround(goal, ignoreModel)
     return hit ~= nil and hit.Normal.Y > 0.6 and math.abs(ground.Y - 0.5 - FH.Feet(hum, root)) <= 1.5
 end
+-- Keep the body centred while passing a doorway, window or narrow gap:
+-- brushing one side was what rejected the lane and started the shake.
+function Follow.CenterAim(rp, aim, feetY)
+    local delta = Flat(aim - rp)
+    if delta.Magnitude < 1.5 then return aim end
+    local dir = delta.Unit
+    local side = Vector3.new(-dir.Z, 0, dir.X)
+    -- Frames are thin (0.75-2.7 studs): sample densely, use the narrowest.
+    local bestL, bestR
+    for _, ahead in ipairs({ 0.4, 1.2, 2, 2.8, 3.6 }) do
+        if ahead < delta.Magnitude then
+            local origin = Vector3.new(rp.X, feetY + 2.4, rp.Z) + dir * ahead
+            local left = Workspace:Raycast(origin, side * 3, rayParams)
+            local right = Workspace:Raycast(origin, -side * 3, rayParams)
+            local l = left and left.Normal.Y < 0.6 and left.Distance or 3
+            local r = right and right.Normal.Y < 0.6 and right.Distance or 3
+            if l + r < 5.5 and (not bestL or l + r < bestL + bestR) then bestL, bestR = l, r end
+        end
+    end
+    if bestL and math.abs(bestL - bestR) > 0.4 then
+        return aim + side * math.clamp((bestL - bestR) * 0.5, -0.9, 0.9)
+    end
+    return aim
+end
 function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     opts = opts or {}
     local previousRescue, rescueControl = Follow.RescueControl, nil
@@ -10112,6 +10152,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local mode, wps, wpi, wpFull = nil, nil, 1, true
     local planAt, planGoal, chkAt, nextPlan = 0, nil, 0, 0
     local lastPos, lastCheck, stuck = nil, os.clock(), 0
+    local dropShortcutAt = 0
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
     local fails, doorTries, radIdx, escTries = 0, 0, 1, 0
@@ -11146,6 +11187,48 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = goal
         else
             local fp = Vector3.new(rp.X, feetY, rp.Z)
+            -- Drop shortcut: a lower target reached by stairs/ramps can often be
+            -- reached faster by jumping down a rail/ledge toward it (user rule).
+            if physicalRoute and not flying and now >= (dropShortcutAt or 0) and wps and wps[wpi] then
+                dropShortcutAt = now + 0.4
+                local goalFloor = Follow.GoalGround(goal, opts.approachModel).Y - 0.5
+                local toGoal = Flat(goal - rp)
+                if feetY - goalFloor > 4 and toGoal.Magnitude > 3 then
+                    local remaining = (wps[wpi].Position - fp).Magnitude
+                    for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
+                    local base = toGoal.Unit
+                    local side = Vector3.new(-base.Z, 0, base.X)
+                    local dropped = false
+                    for _, dir in ipairs({ base, (base + side * 0.6).Unit, (base - side * 0.6).Unit }) do
+                        for _, length in ipairs({ 2.5, 4, 6 }) do
+                            local c = rp + dir * length
+                            local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -40, 0), rayParams)
+                            local floorY = hit and hit.Normal.Y > 0.6 and hit.Position.Y
+                            if floorY and floorY < feetY - 3 and floorY >= goalFloor - 3 then
+                                local point = Vector3.new(c.X, floorY, c.Z)
+                                local after = Flat(goal - point).Magnitude + (feetY - floorY)
+                                if remaining > after + 6 and not FH.LaneRejected(rp, point, feetY) then
+                                    local landing, crossing = Follow.DropLane(hum, root, point, feetY)
+                                    local drop = landing and Follow.StartDrop(token, hum, root, landing, crossing)
+                                    if drop then
+                                        if FH.Diag then FH.Diag("walk", "drop-shortcut") end
+                                        reset()
+                                        dropTraversal = drop
+                                        FH.Move(token, hum, landing)
+                                        dropped = true
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                        if dropped then break end
+                    end
+                    if dropped then
+                        task.wait(0.03)
+                        continue
+                    end
+                end
+            end
             if physicalRoute and not flying then
                 for i = wpi, math.min(#wps, wpi + 2, blockedAt and blockedAt - 1 or #wps) do
                     local landing, crossing = Follow.DropLane(hum, root, wps[i].Position, feetY)
@@ -11545,6 +11628,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if opts.rescueJuke then aim = FH.RescueJuke(token, root, aim, opts.rescueJuke, feetY) end
         local preciseCorner = opts.rescueJuke and mode == "path" and wps and wps[wpi]
             and wps[wpi].RescueCorner and Flat(aim - wps[wpi].Position).Magnitude < 0.1
+        if not preciseCorner and not flying and hum.FloorMaterial ~= Enum.Material.Air then
+            aim = Follow.CenterAim(rp, aim, feetY)
+        end
         FH.Move(token, hum, aim, false, nil, preciseCorner)
         task.wait(0.03)
     end
@@ -11650,14 +11736,14 @@ function FH.RescueBeastAhead(tok, root, aim, podGoal)
                     local hit = Workspace:Raycast(origin, (rp + Vector3.new(0, 1, 0)) - origin, rayParams)
                     if hit == nil then
                         local now = os.clock()
-                        if distance < 16 and now >= (AR.BeastAvoidAt or 0) then
-                            -- Short-lived planner cost around the Beast: the native
-                            -- route search then returns the shortest way around it.
-                            AR.BeastAvoidAt = now + 1.5
-                            FH.AddBad(br.Position, 1.6)
-                            local side = Vector3.new(-look.Unit.Z, 0, look.Unit.X)
-                            for _, offset in ipairs({ look.Unit * 3, side * 3, -side * 3 }) do
-                                FH.AddBad(br.Position + offset, 1.6)
+                        if distance < 20 and now >= (AR.BeastAvoidAt or 0) then
+                            -- Planner cost ring around the Beast: the native route
+                            -- search returns the shortest way around, not through it.
+                            AR.BeastAvoidAt = now + 1
+                            FH.AddBad(br.Position, 2.5)
+                            for k = 0, 7 do
+                                local a = k * math.pi / 4
+                                FH.AddBad(br.Position + Vector3.new(math.cos(a), 0, math.sin(a)) * 4, 2.5)
                             end
                             if FH.Motion.token == tok then FH.Motion.replanToken = tok end
                         end
@@ -12827,6 +12913,30 @@ function FH.ExitTriggerDistance(trigger, position)
     if ok and type(inside) == "number" then distance = math.min(distance, inside) end
     return distance
 end
+-- User rule: waiting at an open exit for 60 s with nobody escaping in the
+-- meantime -> leave anyway. Any new escape restarts the minute.
+function FH.ExitWaitExpired(state)
+    local escaped = 0
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and FH.True(player, FH.ESC) then escaped = escaped + 1 end
+    end
+    local now = os.clock()
+    -- Latched per exit: the escape that follows must not restart the wait.
+    if state.waitExpiredDoor ~= nil and state.waitExpiredDoor == state.door then return true end
+    if not state.waiting then
+        state.waitSince = nil
+        return false
+    end
+    if not state.waitSince or escaped ~= state.waitEscaped then
+        state.waitSince, state.waitEscaped = now, escaped
+        return false
+    end
+    if now - state.waitSince >= 60 then
+        state.waitExpiredDoor = state.door
+        return true
+    end
+    return false
+end
 function FH.ExitRoute(token, state, abort)
     local function escaped() return FH.True(LocalPlayer, FH.ESC) end
     local function stopped()
@@ -12847,6 +12957,7 @@ function FH.ExitRoute(token, state, abort)
         if state.redirect then return true end
         if state.waiting and state.door and FH.ExitDoorOpen(state.door, state.center, state.triggers)
             and (FH.ExitPolicy(state.center, state.waitPos, state.stand and state.stand.Position) or FH.ExitDanger()
+                or FH.ExitWaitExpired(state)
                 or AH.Active and AH.Eval().danger and not AH.Eval().panic) then
             state.redirect = "escape"
             return true
@@ -13004,6 +13115,7 @@ function FH.ExitRoute(token, state, abort)
         )
     local open = FH.ExitDoorOpen(door, center, state.triggers)
     local ready = FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position)
+        or FH.ExitWaitExpired(state)
     local chased = AH.Active and AH.Eval().danger and not AH.Eval().panic
     local directEscape = open and (ready or FH.ExitDanger() or chased)
     state.escaping = directEscape or nil
@@ -13087,7 +13199,7 @@ function FH.ExitRoute(token, state, abort)
         return "retry"
     end
     state.repickAt = nil
-    ready = FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position)
+    ready = FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position) or FH.ExitWaitExpired(state)
     if ready or FH.ExitDanger() then
         state.waiting, state.escaping = nil, true
         local crossed = FH.ExitTraverse(token, state, stopped)
@@ -13422,6 +13534,7 @@ function Follow.Main(token, player)
         if
             not fwPos
             or (r.Position - fwPos).Magnitude >= 0.8
+            or exitState.waiting
             or FH.IsWorking(token)
             or Ctl.On()
             or Fly.Active
@@ -14350,7 +14463,8 @@ function AH.PickFlee(rp, bp)
                         if closest > minClosest then
                             -- Small per-pick jitter: equally good escapes are not
                             -- chosen identically every time, so the run is harder to read.
-                            local score = dB + run * 0.4 + dot * 15 + math.random() * 6
+                            -- Long open runs beat short ones that end in a corner.
+                            local score = dB + run * 0.9 + dot * 15 + math.random() * 6
                             if not best or score > bestScore then
                                 best, bestScore = gp, score
                             end
@@ -14509,7 +14623,8 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
     end
     local away = Flat(rp - bp)
     local distance = away.Magnitude
-    if distance < 0.5 or distance > AH.ThreatRange(AH.NearRange) then
+    -- Windows/rails are worth vaulting for the whole flight (was 32 studs).
+    if distance < 0.5 or distance > AH.ThreatRange(AH.LeaveRange) then
         state.lane, state.untilAt = nil, 0
         return nil
     end
@@ -15146,7 +15261,8 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
     AH.DropNextAt = now + 0.5
     if math.abs(bp.Y - rp.Y) > Follow.MaxDY then return nil end
     local away = Flat(rp - bp)
-    if away.Magnitude < 0.5 or away.Magnitude > AH.ThreatRange(AH.NearRange) then return nil end
+    -- Drops are worth taking for the whole flight, not only at 32 studs.
+    if away.Magnitude < 0.5 or away.Magnitude > AH.ThreatRange(AH.LeaveRange) then return nil end
     away = away.Unit
     forward = forward and Flat(forward) or away
     if forward.Magnitude < 0.1 or forward.Unit:Dot(away) < -0.25 then forward = away end
@@ -15157,7 +15273,7 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
     for _, angle in ipairs({ 0, 30, -30, 60, -60, 90, -90 }) do
         local rad = math.rad(angle)
         local dir = forward * math.cos(rad) + side * math.sin(rad)
-        for _, reach in ipairs({ 3, 4.5, 6 }) do
+        for _, reach in ipairs({ 3, 4.5, 6, 8 }) do
             local raw = rp + dir * reach
             local floor =
                 Workspace:Raycast(Vector3.new(raw.X, feetY + 0.15, raw.Z), Vector3.new(0, -33.5, 0), rayParams)
