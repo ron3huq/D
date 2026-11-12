@@ -1,3 +1,21 @@
+# Ninth round — 2026-11-12 (8)
+
+Source: 1 recorder file (Homestead) plus user reports.
+
+| Finding | Change | Test |
+|---|---|---|
+| Fewer completed hacks after the 2 s / 30 s hack guard | Guard back to 6 s, skip 10 s. The older 4 s "unconfirmed" exit also sets the slot aside for 6 s when no ActionInput was ever seen | scenario adjusted |
+| Rapid "undecided" shaking (Homestead #3–6) with `drop-shortcut` and `vertical-waypoint-advanced` firing every few frames | Drop shortcut: ≥ 15 studs saving, checked each 1 s, at most 2 per leg, 3 s cooldown after an attempt. Vertical advance only after 0.6 s without progress | — |
+| Pod straight below a roof/floor: the flat direction to it is about 0 and flipped every frame (shaking on top) | WalkTo commits to one verified drop edge, or walks to the nearest edge/pit within 14 studs and steps off; otherwise it waits for the route | fails on `783bdd6` (stays on the roof), 0.9 s now |
+| AutoHide turned away from holes it could walk into | `AH.DropAim`: if no verified jump lane exists but the walk into the drop is clear at body heights, it walks in (committed drop traversal) | — |
+| Relaxed route entry could aim at waypoint 2 behind us (one step back) | Pick the farthest reachable waypoint within 6 studs | — |
+| **Waiting at an open exit, the Beast starts chasing → the bot did not cross**: the escape goal was chosen, but the final crossing condition lacked the chase reason, so it returned to waiting and AutoHide took it elsewhere | Being chased is a crossing reason | fails on `783bdd6`, escapes in 1.3 s now |
+
+## Verification
+
+- Harness: 153 scenarios / 338 checks pass. D compiles.
+- Nothing was run in Roblox.
+
 # Live recorder data, eighth batch — 2026-11-12 (7)
 
 Source: 14 recorder files (348 incidents).

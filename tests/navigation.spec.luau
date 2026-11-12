@@ -1210,7 +1210,7 @@ scenario("a PC slot where the game never starts the hack is left quickly", funct
     world.ignoreE = 1000
     local started = now
     local result = FH.ComputerContact(7, comp, world.trigger, function() return false end)
-    check(result ~= "done" and now - started < 6,
+    check(result ~= "done" and now - started < 10,
         "stood holding E without a started hack for " .. tostring(now - started) .. " s: " .. tostring(result))
     check(FH.SlotRejected and FH.SlotRejected[world.trigger], "the unusable slot was not set aside for other slots")
 end)
@@ -1505,6 +1505,18 @@ scenario("steering through a narrow doorway is centred between its frames", func
     local open = Follow.CenterAim(Vec.new(0, 3, 30), Vec.new(20, 3, 30), 0)
     check(math.abs(open.Z - 30) < 0.01, "open ground shifted the aim")
 end)
+scenario("a target straight below a roof leads off the roof edge, not shaking on top", function()
+    box("Roof", Vec.new(-6, 0, -6), Vec.new(6, 8, 6))
+    root.Position = Vec.new(0, 11, 0); updateParts()
+    world.route = function() return nil end
+    local goal = Vec.new(1, 3, 0)
+    for _ = 1, 10 do
+        Follow.WalkTo(7, function() return goal end, 1.5, function() return root.Position.Y < 6 end,
+            { noDoor = true, maxTime = 4 })
+        if root.Position.Y < 6 or now - 100 > 5 then break end
+    end
+    check(root.Position.Y < 6 and now - 100 < 5, "stayed on the roof above a target below: y=" .. tostring(root.Position.Y))
+end)
 scenario("AutoHelp ranks feasible route length rather than only pod distance", function()
     local nearPod = pod(8)
     local farPod = pod(-18)
@@ -1779,6 +1791,21 @@ scenario("an exit that ignores the first entry is left and re-entered", function
     end
     check(stats.Escaped.Value and exit.left and now - started < 15,
         "did not step out and re-enter an exit that ignored the first entry")
+end)
+scenario("waiting at an open exit escapes through it when a Beast starts chasing", function()
+    local exit = openExit(20)
+    exitPlayers()
+    local state = {}
+    check(FH.ExitRoute(7, state) == "waiting", "did not establish open-exit waiting state")
+    AH.Active, world.threat = true, Vec.new(-30, 3, 0) -- chasing, beyond the 22-stud exit danger range
+    local result
+    for _ = 1, 6 do
+        result = FH.ExitRoute(7, state)
+        if stats.Escaped.Value then break end
+        task.wait(0.05)
+    end
+    check(stats.Escaped.Value and state.door == exit, "chased while waiting at an open exit but did not escape through it: " .. tostring(result))
+    AH.Active, world.threat = false, nil
 end)
 scenario("solo survivor prefers a reachable open exit over holding a nearer closed gate", function()
     local far = openExit(30)

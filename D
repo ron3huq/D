@@ -3602,7 +3602,14 @@ function FH.ComputerContact(token, comp, trig, stopped)
             if not FH.Move(token, hum, goal) then return finish("lost") end
             if now - progressAt > 1.4 then return finish("blocked") end
         end
-        if inputAt and not progressing and now - inputAt >= 4 and attempts >= 2 then return finish("unconfirmed") end
+        if inputAt and not progressing and now - inputAt >= 4 and attempts >= 2 then
+            local seen = FH.Stat(LocalPlayer, FH.HACK_INPUT)
+            if not (noInputSince and noInputSince > inputAt) and not (seen and seen.Value == true) then
+                FH.SlotRejected = FH.SlotRejected or setmetatable({}, { __mode = "k" })
+                FH.SlotRejected[trig] = now + 6
+            end
+            return finish("unconfirmed")
+        end
         -- Hard bound (live data: E held up to 70 s with ActionInput never set):
         -- 3 s of holding without the game starting the hack means this slot is
         -- unusable now (another player, wrong side). Try another free slot.
@@ -3614,7 +3621,7 @@ function FH.ComputerContact(token, comp, trig, stopped)
             noInputSince = now
         elseif inputAt then
             noInputSince = noInputSince or inputAt
-            if now - noInputSince >= 2 then
+            if now - noInputSince >= 6 then
                 FH.SlotRejected = FH.SlotRejected or setmetatable({}, { __mode = "k" })
                 FH.SlotRejected[trig] = now + 10
                 if FH.Diag then FH.Diag("hack", "slot-no-input") end
@@ -10171,8 +10178,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local mode, wps, wpi, wpFull = nil, nil, 1, true
     local planAt, planGoal, chkAt, nextPlan = 0, nil, 0, 0
     local lastPos, lastCheck, stuck = nil, os.clock(), 0
-    local dropShortcutAt = 0
-    local breaker, breakerAt
+    local dropShortcutAt, dropShortcutTries = 0, 0
+    local breaker, breakerAt, overheadDrop
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
     local fails, doorTries, radIdx, escTries = 0, 0, 1, 0
@@ -10298,8 +10305,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             -- computed for our agent size from this position: follow its first
             -- leg instead of discarding the route and standing still, which
             -- replanned into the same rejection indefinitely (live data).
-            local first = w[2].Position
-            if FH.Line(root.Position, first, FH.Feet(hum, root), first.Y, 1.5) then index = 2 end
+            -- Prefer the farthest waypoint within 6 studs that is reachable,
+            -- so the relaxed entry never steps back to a point behind us.
+            local feet = FH.Feet(hum, root)
+            for i = math.min(#w, 6), 2, -1 do
+                local point = w[i].Position
+                if Flat(point - root.Position).Magnitude <= 6 and w[i].Action ~= Enum.PathWaypointAction.Jump
+                    and FH.Line(root.Position, point, feet, point.Y, 1.5) then
+                    index = i
+                    break
+                end
+            end
+            if not index then
+                local first = w[2].Position
+                if FH.Line(root.Position, first, feet, first.Y, 1.5) then index = 2 end
+            end
             if FH.Diag then FH.Diag("walk", index and "entry-relaxed" or "entry-rejected") end
         end
         if physicalRoute and hum and root and index == nil then
@@ -11192,6 +11212,70 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 end)
             end
         end
+        -- Target straight below/above (pod under a roof or floor): the flat
+        -- direction to it is ~0 and flipped every frame (live report: shaking
+        -- on top). Commit to one verified drop edge, else wait for the route.
+        if not mode and not flying and Flat(goal - rp).Magnitude < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY then
+            if not overheadDrop or now > overheadDrop.untilAt then
+                overheadDrop = nil
+                if goal.Y < rp.Y then
+                    local base = Flat(root.CFrame.LookVector)
+                    if base.Magnitude < 0.1 then base = Vector3.new(1, 0, 0) end
+                    base = base.Unit
+                    for k = 0, 7 do
+                        local a = k * math.pi / 4
+                        local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
+                        for _, length in ipairs({ 3, 4.5, 6 }) do
+                            local c = rp + dir * length
+                            local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -40, 0), rayParams)
+                            if hit and hit.Normal.Y > 0.6 and hit.Position.Y < feetY - 3 then
+                                local point = Vector3.new(c.X, hit.Position.Y, c.Z)
+                                local landing, crossing = Follow.DropLane(hum, root, point, feetY)
+                                if landing and Follow.StartDrop(token, hum, root, landing, crossing) then
+                                    overheadDrop = { aim = landing, untilAt = now + 2 }
+                                    break
+                                end
+                            end
+                        end
+                        if overheadDrop then break end
+                    end
+                    -- No verified edge within reach: walk to the nearest edge
+                    -- (or into the pit) and simply step off; no jump needed.
+                    if not overheadDrop then
+                        local bestDir, bestLen
+                        for k = 0, 7 do
+                            local a = k * math.pi / 4
+                            local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
+                            for length = 1.5, 14, 1.5 do
+                                local c = rp + dir * length
+                                local wall = Workspace:Raycast(Vector3.new(rp.X, feetY + 1.5, rp.Z), dir * length, rayParams)
+                                if wall and wall.Normal.Y < 0.6 then break end
+                                local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -40, 0), rayParams)
+                                if not hit or hit.Position.Y < feetY - 3 then
+                                    if not bestLen or length < bestLen then bestDir, bestLen = dir, length end
+                                    break
+                                end
+                            end
+                        end
+                        if bestDir then
+                            overheadDrop = { aim = rp + bestDir * (bestLen + 2), untilAt = now + 1.5 }
+                            if FH.Diag then FH.Diag("walk", "step-off-edge") end
+                        end
+                    end
+                end
+            end
+            if overheadDrop then
+                FH.Move(token, hum, overheadDrop.aim)
+            elseif now - progressAt > 1.5 and not job then
+                local dir = Follow.BreakerDirection(rp, rp + Flat(root.CFrame.LookVector) * 5, feetY)
+                overheadDrop = { aim = rp + dir * 6, untilAt = now + 0.8 }
+                FH.Move(token, hum, overheadDrop.aim)
+            else
+                FH.Move(token, hum, rp, false, goal)
+            end
+            task.wait(0.03)
+            continue
+        end
         if not mode then
             if breaker and now < breaker.untilAt then
                 FH.Move(token, hum, breaker.aim)
@@ -11226,8 +11310,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             local fp = Vector3.new(rp.X, feetY, rp.Z)
             -- Drop shortcut: a lower target reached by stairs/ramps can often be
             -- reached faster by jumping down a rail/ledge toward it (user rule).
-            if physicalRoute and not flying and now >= (dropShortcutAt or 0) and wps and wps[wpi] then
-                dropShortcutAt = now + 0.4
+            if physicalRoute and not flying and now >= (dropShortcutAt or 0) and wps and wps[wpi]
+                and dropShortcutTries < 2 then
+                dropShortcutAt = now + 1
                 local goalFloor = Follow.GoalGround(goal, opts.approachModel).Y - 0.5
                 local toGoal = Flat(goal - rp)
                 if feetY - goalFloor > 4 and toGoal.Magnitude > 3 then
@@ -11244,10 +11329,14 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                             if floorY and floorY < feetY - 3 and floorY >= goalFloor - 3 then
                                 local point = Vector3.new(c.X, floorY, c.Z)
                                 local after = Flat(goal - point).Magnitude + (feetY - floorY)
-                                if remaining > after + 6 and not FH.LaneRejected(rp, point, feetY) then
+                                if remaining > after + 15 and not FH.LaneRejected(rp, point, feetY) then
                                     local landing, crossing = Follow.DropLane(hum, root, point, feetY)
                                     local drop = landing and Follow.StartDrop(token, hum, root, landing, crossing)
                                     if drop then
+                                        -- One committed attempt, then a pause: a failed
+                                        -- drop must not toggle with the route (shake).
+                                        dropShortcutTries = dropShortcutTries + 1
+                                        dropShortcutAt = now + 3
                                         if FH.Diag then FH.Diag("walk", "drop-shortcut") end
                                         reset()
                                         dropTraversal = drop
@@ -11328,6 +11417,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- navmesh point hovering over the collision surface) is being
                 -- at it. Not advancing left zero input for 5-28 s (live data).
                 if not flying and current.Action ~= Enum.PathWaypointAction.Jump
+                    and now - progressAt > 0.6
                     and Flat(current.Position - rp).Magnitude <= 1
                     and math.abs(current.Position.Y - feetY) > 0.5
                     -- Up to a small step above (hovering navmesh / curb); never
@@ -13322,7 +13412,9 @@ function FH.ExitRoute(token, state, abort)
     end
     state.repickAt = nil
     ready = FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position) or FH.ExitWaitExpired(state)
-    if ready or FH.ExitDanger() then
+    -- Being chased is a reason to cross now (it already chose the escape
+    -- goal above but then fell back to waiting at the gate).
+    if ready or FH.ExitDanger() or chased then
         state.waiting, state.escaping = nil, true
         local crossed = FH.ExitTraverse(token, state, stopped)
         if stopped() then return interrupted() end
@@ -13651,7 +13743,7 @@ function Follow.Main(token, player)
         end
         -- Every slot refused to start a hack: leave this computer alone for
         -- a while instead of returning to it every few seconds (live data).
-        hackSkip[comp] = os.clock() + (noInputSlots > 0 and 30 or (farmMode and 4 or 6))
+        hackSkip[comp] = os.clock() + (noInputSlots > 0 and 10 or (farmMode and 4 or 6))
     end
     local function farmWatch()
         local r = myRoot()
@@ -15439,6 +15531,28 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
             if lane.jumpRequested and FH.JumpFlight then FH.JumpFlight.token = token end
             if lane.jumpRequested and FH.Jmp then FH.Jmp.token = token end
             AH.DropTraversal, AH.Dir = lane, lane.dir
+            return lane.point
+        end
+    end
+    -- No verified jump lane, but the way into the hole / off the ledge is a
+    -- plain walk (no wall at body height): just walk in (live report: AutoHide
+    -- turned away from holes it could simply step into).
+    local best = candidates[1]
+    local step = Flat(best.point - rp)
+    if step.Magnitude > 0.5 then
+        local dir = step.Unit
+        local blocked = false
+        for _, h in ipairs({ 0.6, 2, 3.4 }) do
+            local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + h, rp.Z), dir * step.Magnitude, rayParams)
+            if hit and hit.Normal.Y < 0.6 then blocked = true break end
+        end
+        if not blocked then
+            lane = {
+                point = best.point, dir = dir, landingY = best.point.Y, feetY = feetY, sill = 0, double = false,
+                token = token, hum = hum, root = root, untilAt = now + 2, jumpRequested = false, jumpAt = now,
+            }
+            AH.DropTraversal, AH.Dir = lane, dir
+            if FH.Diag then FH.Diag("evade", "walk-into-drop") end
             return lane.point
         end
     end
