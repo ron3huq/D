@@ -336,6 +336,31 @@ local function step()
         writeLine({ k = "round", n = R.round, map = mapName, t = num(now, 2), utc = os.date("!%H:%M:%S") })
     end
 
+    -- Beast state changes (to identify perk signals such as Seer).
+    if now - (R.beastScanAt or 0) >= 1 then
+        R.beastScanAt = now
+        pcall(function()
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= player and flag(p, "IsBeast") then
+                    local parts = {}
+                    local st = stats(p)
+                    for _, v in ipairs(st and st:GetChildren() or {}) do
+                        local ok, value = pcall(function() return v.Value end)
+                        if ok and (type(value) ~= "userdata") then parts[#parts + 1] = v.Name .. "=" .. tostring(value) end
+                    end
+                    for name, value in pairs(p.Character and p.Character:GetAttributes() or {}) do
+                        parts[#parts + 1] = "@" .. name .. "=" .. tostring(value)
+                    end
+                    table.sort(parts)
+                    local sig = table.concat(parts, ";")
+                    if sig ~= R.beastSig then
+                        R.beastSig = sig
+                        writeLine({ k = "beastState", t = num(now, 2), state = sig })
+                    end
+                end
+            end
+        end)
+    end
     -- Lobby scan (once per lobby phase): where are the map vote spots/buttons?
     if not map and R.lobbyScanned ~= R.round then
         R.lobbyScanned = R.round

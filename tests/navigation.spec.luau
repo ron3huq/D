@@ -503,6 +503,8 @@ step = function(dt)
         world.doubles += 1
     end
     if world.engaged and not world.freezeProgress then
+        -- Live data: the game sets ActionInput for the whole real hack.
+        stats.ActionInput.Value = true
         stats.ActionProgress.Value += dt * 0.02
         if stats.ActionProgress.Value >= world.completeAt then
             world.pc.done = true
@@ -1190,6 +1192,16 @@ scenario("static ActionInput cannot keep a non-progressing keyboard forever", fu
     check(result == "unconfirmed", "static input accepted as endless work: " .. tostring(result))
     check(not comp.done and not FH.IsWorking(7) and not Follow.KeyDown, "failed keyboard retained input/work")
 end)
+scenario("a PC slot where the game never starts the hack is left quickly", function()
+    -- Live data: E held 15-73 s at a computer while ActionInput never turned on.
+    local comp = computer(4)
+    world.ignoreE = 1000
+    local started = now
+    local result = FH.ComputerContact(7, comp, world.trigger, function() return false end)
+    check(result ~= "done" and now - started < 6,
+        "stood holding E without a started hack for " .. tostring(now - started) .. " s: " .. tostring(result))
+    check(FH.SlotRejected and FH.SlotRejected[world.trigger], "the unusable slot was not set aside for other slots")
+end)
 scenario("real PC progress outlives the inactivity limit", function()
     local comp = computer(4)
     world.completeAt = 0.14 -- seven seconds of real work; fixture HackMax is five.
@@ -1686,6 +1698,24 @@ scenario("last survivor waiting at an open exit leaves through it instead of a n
     check(result == "escaped" and state.door == exit and stats.Escaped.Value and now - started < 2,
         "last survivor abandoned the open exit for a nearer closed gate: " .. tostring(result))
 end)
+scenario("an open exit approached at an angle is entered, not paced in front of", function()
+    -- Live data: stopping 2.5 studs off the trigger beside the frame blocked
+    -- the straight crossing; the bot paced at the open exit.
+    local exit = openExit(20)
+    box("FrameLeft", Vec.new(18.5, 0, 1.5), Vec.new(19.5, 10, 8))
+    box("FrameRight", Vec.new(18.5, 0, -8), Vec.new(19.5, 10, -1.5))
+    root.Position = Vec.new(10, 3, 6); updateParts()
+    local a, b = exitPlayers()
+    a.stats.Escaped.Value, b.stats.Escaped.Value = true, true
+    local state, started, result = {}, now, nil
+    for _ = 1, 6 do
+        result = FH.ExitRoute(7, state)
+        if result == "escaped" or stats.Escaped.Value then break end
+        task.wait(0.05)
+    end
+    check(stats.Escaped.Value and now - started < 6,
+        "open exit approached at an angle was not entered: " .. tostring(result))
+end)
 scenario("solo survivor prefers a reachable open exit over holding a nearer closed gate", function()
     local far = openExit(30)
     local near = openExit(-8)
@@ -1971,6 +2001,15 @@ scenario("panic mode keeps a virtual chaser behind us unless mode 0 is on", func
     check(not AH.TestEval().danger, "mode 0 (AutoFarm) did not override panic mode")
     AH.Panic, Follow.AutoFarm, AH.PanicThreat = false, false, nil
     root.AssemblyLinearVelocity = Vec.new()
+end)
+scenario("a Beast walking in through a closed door raises the alarm; a solid wall does not", function()
+    local beast, br = actor("Beast", Vec.new(20, 3, 0), true, Vec.new(-1, 0, 0), Vec.new(-16, 0, 0))
+    world.players = { LocalPlayer, beast }
+    local panel = box("DoorPanel", Vec.new(8, 0, -5), Vec.new(9, 10, 5))
+    task.wait(0.06)
+    check(not AH.TestEval().danger, "a solid wall still raised the directional alarm")
+    panel.door = true; AH.EvalAt = -math.huge
+    check(AH.TestEval().danger, "a Beast approaching behind a door did not raise the alarm")
 end)
 scenario("suspended wall contact recovers by a verified retreat and gravity drop", function()
     box("ThinShelfEdge", Vec.new(0.99, 8.2, -3), Vec.new(1.4, 8.4, 3))

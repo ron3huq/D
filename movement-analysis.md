@@ -1,3 +1,47 @@
+# Live recorder data, third batch — 2026-11-12 (2)
+
+Source: 12 recorder files (262 incidents: 196 stalls, 44 pacing, 22 jitter).
+
+| Finding | Change | Test |
+|---|---|---|
+| Open exit: the bot walked to it and paced in front of it in a 0.5 s move / 3 s stand cycle (Prison, Sanctuary). The 2.5 stud early stop also applied to crossing, so the bot stopped beside the frame and its straight crossing clipped the frame | Early stop only for opening. Before crossing, centre on the doorway line (trigger → volume, or the measured lane). Exit step reasons are logged, and the farm's exit state is now visible to the recorder | fails on `5599f91` (569 blocked frames), passes now |
+| E held 15–73 s at a computer with ActionInput never set. The 3 s guard was reset by our own release/re-press, and computer progress rising from another player looked like our hack | Count from the last real ActionInput | fails before, passes now |
+| Path aim at feet + 1.2 studs (exact border of the earlier fix), up to 27 s | Threshold 0.5 studs. Plus a final guard: a path aim < 0.6 studs away advances to the next waypoint (not at rescue corners) | — |
+| Unreachable computer goal (inside furniture) on Sanctuary Zoo | Ring of 6 alternative approach points around the goal | — |
+| User: a Beast outside a closed door walking in gave no alarm | Directional alarm sees through doors within 30 studs | fails before, passes now |
+
+## Other changes
+
+**AutoExit**
+- An opened exit always wins.
+- A closed exit with the Beast within 35 studs (walls ignored) is avoided.
+- Chased with an exit open: escape now.
+- While opening: below 70 % progress the bot flees from a threat; from 70 % it keeps opening.
+
+**AutoHide**
+- Closing in on the Beast within 12 studs (facing or not) raises the alarm.
+- While ragdolled, Space is pressed once per second.
+- Seer: best-effort detection from the Beast's stats (signal names unverified). The recorder now logs `beastState` changes so the real Seer signal can be identified.
+
+**Keys**
+- 0: Follow picker + AutoHide + AutoHelp. Pressing 0 again stops all of them.
+- Load: AutoFarm + AutoHide + AutoHelp + ESP Player.
+
+**Lobby**
+- Library is preference #2.
+- After voting the bot backs off, then stands 3–5 studs from a nearby player facing them. Who and where varies each time.
+
+## Not addressed this round
+
+- AutoHide route choice (windows, drops, open space instead of corners).
+- Rescue-specific doorway centring.
+
+## Verification
+
+- Harness: 144 scenarios / 315 checks pass.
+- D and the recorder compile.
+- Nothing was run in Roblox.
+
 # Live recorder data, second batch — 2026-11-12
 
 Source: 15 recorder files (515 incidents: 353 stalls, 116 pacing, 46 jitter; 14 maps plus the lobby). Raw data stays out of the repo.

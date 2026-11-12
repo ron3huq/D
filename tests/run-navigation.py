@@ -49,7 +49,7 @@ Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePo
 AR.Loop Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 Follow.RescueDoorState Follow.RescueDoorDir Follow.RescueRouteReturns Follow.RescueDoorKind Follow.RescueDoorCrossed
 Follow.DoorOpening Follow.PassDoor Follow.ActiveDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold
-FH.ExitSpan FH.ExitLane FH.ExitTriggerDistance FH.ExitTeamPull FH.RescueBeastAhead AH.ContactThreat AH.NoteMeet AH.RoundStep AH.PanicSuppressed AH.PanicChaser FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing
+FH.ExitSpan FH.ExitLane FH.ExitTriggerDistance FH.ExitTeamPull FH.BeastNearPoint FH.RescueBeastAhead AH.ContactThreat AH.NoteMeet AH.RoundStep AH.PanicSuppressed AH.PanicChaser AH.SeerActive FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing
 """.split()
 functions = "\n".join(function(n) for n in names)
 functions += "\n" + function("AH.Eval").replace("function AH.Eval(", "function AH.TestEval(", 1)
