@@ -760,3 +760,15 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   re-rolled every 1.5-3 s) bends the line unpredictably without frame-to-frame changes; open
   junctions +7, narrow pockets -6, dead ends -25.
 - Micro-stops (0.15-0.9 s) in this recording: 16 (74 in the previous one).
+
+## Round 17 (Workspace_2)
+
+- "Step, beat, step" with a captive and low health: AutoFarm's PC walk aborted on "any captive in
+  a pod" (`hasCaptured`) and `capturedPods()` ignored the rescue gate, so every walk to a computer
+  stopped after a few studs, the lease ran out (~3 s standing), and it picked again. The farm's
+  captive list is now empty whenever no rescue will run (health < 10% or `AR.Pending()` false).
+- Exit gate "not even opening": a gate was believed open (panels had moved while someone held the
+  lever, then slid back) and the bot stood in "waiting" for 30 s in front of the shut gate.
+  Panel movement now counts only after the panels stayed put for 2 s, and while waiting the bot
+  checks once a second for a solid panel of that gate between it and the gate centre; if found it
+  drops the mark and goes to open it.

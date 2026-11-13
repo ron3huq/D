@@ -12975,8 +12975,18 @@ function FH.ExitPanelsChanged(door)
         return false
     end
     -- Only collision turned off or panels moved; transparency can change
-    -- with indicator lights when the exits power up.
-    return n < base.n or (sum - base.sum).Magnitude > 2
+    -- with indicator lights when the exits power up. A move counts only once
+    -- it has stayed put for 2 s: panels slide while someone holds the lever
+    -- and slide back when they let go (that read as "open" for good and the
+    -- bot stood waiting at a shut gate, live data).
+    if n < base.n then return true end
+    local now = os.clock()
+    local track = base.track
+    if not track or (sum - track.sum).Magnitude > 0.3 then
+        base.track = { sum = sum, since = now }
+        return false
+    end
+    return (sum - base.sum).Magnitude > 2 and now - track.since >= 2
 end
 function FH.ExitDoorOpen(door, center, triggers)
     if not door or not IsInWorld(door) then return false end
@@ -13784,6 +13794,24 @@ function FH.ExitRoute(token, state, abort)
                 { maxTime = 3, nearOk = 3 }
             )
         else
+            -- Waiting at a gate believed open: verify it about once a second.
+            -- A solid panel of this exit between us and its centre proves it
+            -- shut: drop the mark and go open it (live: 30 s waiting in front
+            -- of a closed gate).
+            if os.clock() >= (state.verifyAt or 0) then
+                state.verifyAt = os.clock() + 1
+                local to = Vector3.new(center.X, root.Position.Y, center.Z) - root.Position
+                if to.Magnitude > 0.5 then
+                    local hit = Workspace:Raycast(root.Position, to, rayParams)
+                    if hit and hit.Instance:IsDescendantOf(door) and hit.Instance.CanCollide
+                        and not string.find(string.lower(hit.Instance.Name), "trigger", 1, true) then
+                        if FH.Diag then FH.Diag("exit", "wait-gate-shut") end
+                        FH.RevokeExitOpened(door)
+                        state.waiting = nil
+                        return "retry"
+                    end
+                end
+            end
             -- A valid wait is intentional. Renew a stationary owned command;
             -- loiter retries must not leave a stale destination into the exit.
             Follow.Release(token)
@@ -14116,6 +14144,9 @@ function Follow.Main(token, player)
     local function capturedPods()
         local now = os.clock()
         local res = {}
+        -- No rescue will run (health < 10%, or AutoHelp's gate says no):
+        -- the farm/follow must not stop or abort for captives at all.
+        if AR.LowHealth() or AR.Active and not AR.Pending() then return res end
         for _, info in ipairs(AR.Pods(true)) do
             local skipped = podSkip[info.trig]
             if
@@ -14275,7 +14306,14 @@ function Follow.Main(token, player)
         FH.RefreshFilter()
         setLabel("Follow [0]: FARM")
         farmWatch()
-        local function hasCaptured() return #capturedPods() > 0 end
+        -- "A captive needs us" only when a rescue will really run: health
+        -- >= 10% and, with AutoHelp on, its own gate passes. Counting any
+        -- captive aborted every PC walk at low health: step, beat, step.
+        local function hasCaptured()
+            if AR.LowHealth() then return false end
+            if AR.Active and not AR.Pending() then return false end
+            return #capturedPods() > 0
+        end
         local function targetBack() return afk and targetActive() end
         if targetBack() then return end
         if FH.ExitOpen() and FH.ExitDanger() and FH.AnyExitOpen() then
