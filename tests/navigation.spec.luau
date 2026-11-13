@@ -1741,6 +1741,34 @@ local function exitPlayers()
     world.players = { LocalPlayer, a, b, beast }
     return a, b, beast, br
 end
+scenario("the Beast announcing a free round in chat makes the round safe", function()
+    if not AH.OnBeastChat then return end
+    local beast = actor("ChatBeast", Vec.new(40, 3, 0), true)
+    local other = actor("ChatOther", Vec.new(50, 3, 0))
+    world.players = { LocalPlayer, beast, other }
+    AH.ChatFree = nil
+    AH.OnBeastChat(other, "free round")
+    check(not AH.ChatFreeRound(), "a survivor's chat marked the round free")
+    AH.OnBeastChat(beast, "not free lol")
+    check(not AH.ChatFreeRound(), "a negated message marked the round free")
+    AH.OnBeastChat(beast, "FREE WIN!!")
+    check(AH.ChatFreeRound(), "the Beast's 'free win' did not mark the round free")
+    AH.OnBeastChat(beast, "jk not free")
+    check(not AH.ChatFreeRound(), "the Beast taking it back kept the round free")
+end)
+scenario("a solid exit panel in front revokes a stale 'opened' mark", function()
+    if not FH.ExitPanelAhead then return end
+    local exit = openExit(6)
+    local panel = box("GatePanel", Vec.new(2, 0, -3), Vec.new(2.5, 10, 3), exit)
+    check(FH.ExitPanelAhead(exit, root, Vec.new(1, 0, 0)), "a closed gate panel ahead was not recognised")
+    check(not FH.ExitPanelAhead(exit, root, Vec.new(-1, 0, 0)), "open space behind was read as a gate panel")
+    FH.ExitOpened = { [exit] = map }
+    FH.RevokeExitOpened(exit)
+    check(FH.ExitOpened[exit] == nil, "the stale opened mark survived physical proof of a shut gate")
+    FH.MarkExitOpened = FH.MarkExitOpened or function() end
+    panel.CanCollide = false
+    check(not FH.ExitPanelAhead(exit, root, Vec.new(1, 0, 0)), "a non-colliding (opened) panel still read as shut")
+end)
 scenario("rescue adopts the forward segment after passing an old waypoint", function()
     root.Position = Vec.new(11, 3, 0); updateParts()
     local path = { { Position = Vec.new(0, 0, 0), Action = "Walk" },

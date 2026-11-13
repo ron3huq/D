@@ -681,3 +681,25 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   studs from its flee point): replan at once and head for the goal.
 - Lobby: the stall breaker runs after 0.4 s while a plan is pending (spawn stood ~1.2 s on every
   join); a vote-box walk gives up after 8 s (was 25 s) when the box is crowded.
+
+## Round 13 (Workspace2 + Workspace_12)
+
+- AutoHop is its own script `autohop.luau` (on at load, active after 10 s); the recorder only
+  records. D key 9 stays free.
+- Exit gate "standing in front, never opening": a gate was marked opened for good once its panels
+  had moved (someone else's partial hold that slid back), so the bot pushed into the shut gate
+  (forced run-in, crossing-failed for minutes). Being stopped by a solid panel of that exit now
+  revokes the mark (`FH.RevokeExitOpened`, 6 s proof window) and the bot goes back to open it.
+- Rescue descent shaking: the "goal right under the feet -> step off" rule fired mid-jump near the
+  pod (feet briefly above the goal); it now needs ground contact and 0.4 s on that height. A
+  shortcut drop tried at a spot that left us on the same floor is not retried there for 15 s.
+- Stairs up/down loop: the same spot read as a "wall" twice within 4 s while on a route no longer
+  drops the route (stair treads/banisters); the no-progress rules still catch a real wall.
+- Rescue vs Beast: any Beast closing in fast (> 6 studs/s) within 20 studs with line of sight
+  hands over to AutoHide (latched), not only a perfectly head-on one.
+- AutoHide dead ends: the best headings are checked for a way on at their end (7 rays, 10 studs);
+  dead ends get -25 and are remembered for 25 s (-30), open junctions +4.
+- Beast chat "free / free round / free win ..." (from the player who is the Beast this round)
+  marks the round free for AutoHide; "not free" etc. cancels it. Ends with the round.
+- Lobby face-to-face: the avatar now turns its body smoothly to face the other player squarely
+  (a 0.6-stud step was below the input threshold and left it side-on).

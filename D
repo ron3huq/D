@@ -11311,7 +11311,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- Also when a route ends right under our feet (standing on top of a
         -- pod enclosure wall, live: goal 3.9 below, held in place + shaking).
         local goalFlat = Flat(goal - rp).Magnitude
-        local below = goalFlat < 2.5 and goal.Y < feetY - 2.5
+        -- Only standing on that height (not mid-jump: a hop up near the pod
+        -- made the feet briefly "above" the goal, it stepped off, climbed
+        -- back and stepped off again - violent shaking, live data).
+        local grounded = hum.FloorMaterial ~= Enum.Material.Air
+        local below = grounded and now - progressAt > 0.4 and goalFlat < 2.5 and goal.Y < feetY - 2.5
         -- No route found twice to a target a floor below (live: 35 s
         -- shuffling on an upper floor, every plan unusable): go down the
         -- nearest edge toward it instead of pacing.
@@ -11433,8 +11437,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             local fp = Vector3.new(rp.X, feetY, rp.Z)
             -- Drop shortcut: a lower target reached by stairs/ramps can often be
             -- reached faster by jumping down a rail/ledge toward it (user rule).
+            -- A shortcut drop tried here before that left us on the same
+            -- floor (rail/lip): do not try it again for 15 s (it shook the
+            -- avatar between the drop edge and the route).
+            local triedHere = false
+            for _, t in ipairs(FH.DropTriedAt or {}) do
+                if now - t.at < 15 and Flat(t.pos - rp).Magnitude < 6 and math.abs(t.feet - feetY) < 1.5 then
+                    triedHere = true
+                    break
+                end
+            end
             if physicalRoute and not flying and now >= (dropShortcutAt or 0) and wps and wps[wpi]
-                and dropShortcutTries < 2 then
+                and dropShortcutTries < 2 and not triedHere then
                 dropShortcutAt = now + 1
                 local goalFloor = Follow.GoalGround(goal, opts.approachModel).Y - 0.5
                 local toGoal = Flat(goal - rp)
@@ -11460,6 +11474,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                                         -- drop must not toggle with the route (shake).
                                         dropShortcutTries = dropShortcutTries + 1
                                         dropShortcutAt = now + 3
+                                        FH.DropTriedAt = FH.DropTriedAt or {}
+                                        table.insert(FH.DropTriedAt, { pos = rp, feet = feetY, at = now })
+                                        if #FH.DropTriedAt > 12 then table.remove(FH.DropTriedAt, 1) end
                                         if FH.Diag then FH.Diag("walk", "drop-shortcut") end
                                         reset()
                                         dropTraversal = drop
@@ -11811,6 +11828,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 end
             else
                 kind, sill, inst, pdoor = Follow.RouteProfile(token, hum, root, aim, profileFeet, 3.4, physicalRoute)
+                -- The same spot read as a "wall" again within 4 s while on a
+                -- route (live: stair treads/banisters - the route was dropped,
+                -- re-planned, climbed and dropped again, up and down the
+                -- stairs). Keep following the route there instead.
+                if kind == "wall" and mode == "path" then
+                    local w = FH.WallResetSpot
+                    if w and w.token == token and Flat(w.pos - rp).Magnitude < 4 and now - w.at < 4 then
+                        if w.n >= 1 then kind = nil end
+                        w.n, w.at = w.n + 1, now
+                    else
+                        FH.WallResetSpot = { token = token, pos = rp, at = now, n = 0 }
+                    end
+                end
             end
             if not flying and (physicalRoute or kind == "jump" or kind == "jump2") then
                 local crossing = physicalRoute
@@ -12814,8 +12844,33 @@ end
 -- Gates proven open this round (our completed hold, or the gate's own parts
 -- changing since we first saw it closed). Keyed by door, valid per map.
 function FH.MarkExitOpened(door)
+    if FH.ExitClosedProof and FH.ExitClosedProof[door] and os.clock() < FH.ExitClosedProof[door] then return end
     FH.ExitOpened = FH.ExitOpened or setmetatable({}, { __mode = "k" })
     FH.ExitOpened[door] = GetCurrentMap()
+end
+-- Physical proof the gate is shut (our body stopped by one of its solid
+-- panels): drop any "opened" mark and re-base the panel signature. Panels
+-- that moved while someone else held the lever and then slid back had
+-- left the gate marked open for good, so the bot pushed into the closed
+-- gate and never opened it (live data).
+function FH.RevokeExitOpened(door)
+    if not door then return end
+    if FH.ExitOpened then FH.ExitOpened[door] = nil end
+    FH.ExitClosedProof = FH.ExitClosedProof or setmetatable({}, { __mode = "k" })
+    FH.ExitClosedProof[door] = os.clock() + 6
+    if FH.ExitPanelBase and door:IsA("Model") then
+        local n, sum, tc = FH.DoorSig(door)
+        FH.ExitPanelBase[door] = { n = n, sum = sum, tc = tc, map = GetCurrentMap() }
+    end
+    if FH.ExitDoorParams and FH.ExitDoorParams[door] then FH.ExitDoorParams[door].result = nil end
+    if FH.ExitPhysicalCache then FH.ExitPhysicalCache.at = -math.huge end
+end
+-- Is a solid panel of this exit right in front of us along dir?
+function FH.ExitPanelAhead(door, root, dir)
+    if not (door and root and dir and dir.Magnitude > 0.1) then return false end
+    local hit = Workspace:Raycast(root.Position, dir.Unit * 3, rayParams)
+    return hit ~= nil and hit.Instance:IsDescendantOf(door) and hit.Instance.CanCollide
+        and not string.find(string.lower(hit.Instance.Name), "trigger", 1, true)
 end
 function FH.ExitPanelsChanged(door)
     if not (door and door:IsA("Model")) then return false end
@@ -12833,7 +12888,8 @@ end
 function FH.ExitDoorOpen(door, center, triggers)
     if not door or not IsInWorld(door) then return false end
     if FH.ExitOpened and FH.ExitOpened[door] ~= nil and FH.ExitOpened[door] == GetCurrentMap() then return true end
-    if FH.ExitOpen and FH.ExitOpen() and FH.ExitPanelsChanged(door) then
+    local proofShut = FH.ExitClosedProof and FH.ExitClosedProof[door] and os.clock() < FH.ExitClosedProof[door]
+    if not proofShut and FH.ExitOpen and FH.ExitOpen() and FH.ExitPanelsChanged(door) then
         FH.MarkExitOpened(door)
         return true
     end
@@ -13022,6 +13078,11 @@ function FH.ExitTraverse(token, state, stopped)
                     elseif os.clock() - lastAt > 0.5 then
                         -- Pressing into a wall/frame: give up quickly (live:
                         -- 2 s pushing with the Beast 10 studs away).
+                        if FH.ExitPanelAhead(state.door, root, Flat(point - root.Position)) then
+                            if FH.Diag then FH.Diag("exit", "gate-still-shut") end
+                            FH.RevokeExitOpened(state.door)
+                            return "shut"
+                        end
                         return "blocked"
                     end
                     task.wait(0.03)
@@ -13032,6 +13093,7 @@ function FH.ExitTraverse(token, state, stopped)
             for attempt = 1, 3 do
                 if FH.Diag then FH.Diag("exit", "forced-run-in:" .. attempt) end
                 local blockedIn = runTo(inside, 2.5)
+                if blockedIn == "shut" then break end -- go back and open it
                 if FH.True(LocalPlayer, FH.ESC) or stopped() or RootNow() ~= root or attempt == 3 then break end
                 if blockedIn == "blocked" and AH.Eval and AH.Eval().danger then break end
                 runTo(outside, 2)
@@ -14815,12 +14877,43 @@ function AH.Eval()
         AH.Last = res
         return res
     end
-    if AH.RoundStep(now, round) then
+    if AH.RoundStep(now, round) or AH.ChatFreeRound() then
         -- Free round: no AutoHide alarm for the rest of this round.
         res.free, res.danger, res.afk = true, false, true
     end
     AH.Last = res
     return res
+end
+-- The Beast (the player who really is the Beast this round) announcing a
+-- free round in chat ("free", "free round", "free win", ...) marks this
+-- round safe. A negation ("not free", "no free") does not count, and a
+-- later "not free"/"kill" from the same Beast cancels it.
+function AH.OnBeastChat(player, text)
+    if type(text) ~= "string" or player == LocalPlayer then return end
+    if not (FH.True(player, FH.BEASTN) and FH.MatchOn()) then return end
+    local t = " " .. string.lower(text):gsub("[%p]", " ") .. " "
+    t = t:gsub("%s+", " ")
+    local negated = t:find(" not free ") or t:find(" no free ") or t:find(" non free ")
+        or t:find(" no win ") or t:find(" not a free ") or t:find(" ko free ") or t:find(" khong free ")
+    if negated or t:find(" kill all ") or t:find(" no mercy ") then
+        if AH.ChatFree and AH.ChatFree.player == player then AH.ChatFree = nil end
+        return
+    end
+    local free = t:find(" free ") or t:find(" freeround ") or t:find(" freewin ") or t:find(" free win ")
+        or t:find(" free round ") or t:find(" free escape ") or t:find(" free rnd ") or t:find(" fr33 ")
+        or t:find(" tha het ") or t:find(" cho win ") or t:find(" free nha ")
+    if free then
+        AH.ChatFree = { player = player, map = GetCurrentMap(), at = os.clock() }
+    end
+end
+function AH.ChatFreeRound()
+    local c = AH.ChatFree
+    if not c then return false end
+    if c.map ~= GetCurrentMap() or not c.player.Parent or not FH.True(c.player, FH.BEASTN) or not FH.MatchOn() then
+        AH.ChatFree = nil
+        return false
+    end
+    return true
 end
 function AH.PickFlee(rp, bp)
     local hum, root = GetHumanoid(), RootNow()
@@ -14930,6 +15023,43 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                     + (run >= full and 8 or 0)
                     + math.max(dir:Dot(forward), 0) * 6
                 candidates[#candidates + 1] = { point = point, run = run, dir = dir, score = score }
+            end
+        end
+    end
+    table.sort(candidates, function(a, b) return a.score > b.score end)
+    -- Dead ends (live: AutoHide kept running into closed corridors and
+    -- rooms where the Beast simply walked in after it): a heading whose end
+    -- has no way on is heavily penalised, and remembered for 25 s.
+    local now = os.clock()
+    AH.DeadEnds = AH.DeadEnds or {}
+    for i = #AH.DeadEnds, 1, -1 do
+        if now - AH.DeadEnds[i].at > 25 then table.remove(AH.DeadEnds, i) end
+    end
+    for i = 1, math.min(5, #candidates) do
+        local c = candidates[i]
+        local known = false
+        for _, d in ipairs(AH.DeadEnds) do
+            if Flat(d.pos - c.point).Magnitude < 8 then known = true; break end
+        end
+        if known then
+            c.score = c.score - 30
+        elseif c.run < full then
+            local open = 0
+            local base = c.dir
+            local bside = Vector3.new(-base.Z, 0, base.X)
+            local origin = Vector3.new(c.point.X, feetY + 1.5, c.point.Z) - base * 1.5
+            for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
+                local r = math.rad(a)
+                local d = base * math.cos(r) + bside * math.sin(r)
+                local hit = Workspace:Raycast(origin, d * 10, rayParams)
+                if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
+            end
+            if open <= 1 then
+                c.score = c.score - 25
+                AH.DeadEnds[#AH.DeadEnds + 1] = { pos = c.point, at = now }
+                if #AH.DeadEnds > 30 then table.remove(AH.DeadEnds, 1) end
+            elseif open >= 4 then
+                c.score = c.score + 4 -- open junction: more ways to lose the Beast
             end
         end
     end
@@ -16663,6 +16793,13 @@ function AR.ThreatPreemptsRaw()
     if headOn and threat.vel then
         local closing = Flat(threat.vel):Dot(-flatDelta.Unit)
         if closing > 4 then reach = math.min(12 + closing * 0.6, 24) end
+    end
+    -- Any Beast closing in on us fast (not only a perfectly head-on one):
+    -- yield within 20 studs while it approaches (live: the rescue kept
+    -- running into a Beast that came at it slightly off-line).
+    if threat.vel and flatDelta.Magnitude > 0.1 then
+        local closing = Flat(threat.vel):Dot(-flatDelta.Unit)
+        if closing > 6 then reach = math.max(reach, 20) end
     end
     if flatDelta.Magnitude > math.max(8, reach) then return false end
     FH.RefreshFilter()
@@ -22053,6 +22190,34 @@ function Follow.LobbyStrollPoint(state, root, board)
     end
     return nil
 end
+-- Smooth yaw turn of our avatar toward another root (lobby chat pose).
+function Follow.FaceToward(targetRoot, seconds)
+    local root, hum = RootNow(), GetHumanoid()
+    if not (root and hum and targetRoot and targetRoot.Parent) then return end
+    local started = os.clock()
+    local autoRotate = hum.AutoRotate
+    pcall(function() hum.AutoRotate = false end)
+    while os.clock() - started < seconds do
+        local live = RootNow()
+        if live ~= root or not targetRoot.Parent or Ctl.On() then break end
+        local toward = Flat(targetRoot.Position - root.Position)
+        if toward.Magnitude < 0.5 then break end
+        local look = Flat(root.CFrame.LookVector)
+        if look.Magnitude < 0.1 then look = toward end
+        local a = math.clamp((os.clock() - started) / seconds + 0.25, 0, 1)
+        local dir = (look.Unit:Lerp(toward.Unit, a))
+        if dir.Magnitude < 0.05 then dir = toward.Unit end
+        local pos = root.Position
+        pcall(function() root.CFrame = CFrame.lookAt(pos, pos + dir.Unit) end)
+        task.wait()
+    end
+    local final = Flat(targetRoot.Position - root.Position)
+    if final.Magnitude > 0.5 and RootNow() == root then
+        local pos = root.Position
+        pcall(function() root.CFrame = CFrame.lookAt(pos, pos + final.Unit) end)
+    end
+    pcall(function() hum.AutoRotate = autoRotate end)
+end
 function Follow.LobbyStep(token)
     local state = Follow.Lobby
     if not state or state.token ~= token then
@@ -22196,17 +22361,11 @@ function Follow.LobbyStep(token)
             Follow.WalkTo(token, frontSpot, 1.2,
                 function() return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) end, { maxTime = 6, nearOk = 1.5 })
         end
-        -- Face them: a short step toward them turns the character naturally.
-        local live = RootNow()
-        local toward = live and Flat(buddy.root.Position - live.Position)
-        if live and toward and toward.Magnitude > 1 then
-            local look = Flat(live.CFrame.LookVector)
-            if look.Magnitude < 0.1 or look.Unit:Dot(toward.Unit) < 0.9 then
-                FH.Move(token, hum, live.Position + toward.Unit * 0.6)
-                task.wait(0.12)
-            end
-        end
+        -- Face them squarely (a 0.6-stud step was below the controller's
+        -- input threshold, so the avatar ended up side-on): stop, then turn
+        -- the body smoothly until it looks straight at their face.
         FH.ReleaseMotion(token, true)
+        Follow.FaceToward(buddy.root, 0.35)
         -- Occasionally drift a little or pick someone else, never a fixed loop.
         local roll = math.random()
         if roll < 0.35 then state.buddy = nil elseif roll < 0.6 then state.buddyOffset = nil end
@@ -23432,7 +23591,10 @@ function CB.OnChat(player, msg)
 end
 function CB.Hook(p)
     if p == LocalPlayer then return end
-    TrackConnection(p.Chatted:Connect(function(m) CB.OnChat(p, m) end))
+    TrackConnection(p.Chatted:Connect(function(m)
+        pcall(AH.OnBeastChat, p, m)
+        CB.OnChat(p, m)
+    end))
 end
 for _, p in ipairs(Players:GetPlayers()) do
     CB.Hook(p)
@@ -23447,6 +23609,7 @@ pcall(function()
         if p == LocalPlayer then
             MG.OnOwn(m.Text)
         elseif p then
+            pcall(AH.OnBeastChat, p, m.Text)
             CB.OnChat(p, m.Text)
         end
     end))
