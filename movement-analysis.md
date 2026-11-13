@@ -668,3 +668,16 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   doors allowed, 4 s budget.
 - Pod side retries get time for detours (up to 12 s instead of 4 s). Computer contact gives up
   a blocked side after 0.8 s (was 1.4 s).
+
+## Round 12 (Workspace_11)
+
+- AutoHop (recorder) worked: 30+ hops, for "round running without us" and "beast". Lane-rejected
+  stalls are gone.
+- Repeated hop-and-turn-back at the same spot (a jump over a rail/clip barrier that never
+  succeeds, the replan returning the same route): the second no-progress reset within 4 studs /
+  8 s marks the blocked spot bad for the planner (8 s) and bans direct mode for 3 s; the third
+  gives the goal up ("nopath") so the caller picks another target.
+- End of a partial route still short of the goal (AutoHide stood ~1 s on the last waypoint 26
+  studs from its flee point): replan at once and head for the goal.
+- Lobby: the stall breaker runs after 0.4 s while a plan is pending (spawn stood ~1.2 s on every
+  join); a vote-box walk gives up after 8 s (was 25 s) when the box is crowded.
