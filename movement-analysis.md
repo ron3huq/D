@@ -622,3 +622,23 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - Pod behind an enclosure wall (live: standing on the wall top, approach point 3.9 below the
   feet, held in place and shaking): a path whose goal is right under the feet now uses the
   step-off-edge branch, preferring the pod side.
+
+## Round 10 (Workspace_9)
+
+- AutoHelp ran from the lobby toward pods ~700 studs away (359 samples): `FH.InLobby` used
+  `GetPivot()` on `LobbyInteractiveObjects`, which fails for a Folder. It now uses the bounds of
+  the folder's parts (+180 studs). `AR.Pending` also refuses pods more than 450 studs away.
+- AutoHelp is off below 10% health (`AR.LowHealth`: Humanoid, or the game's Health stat against
+  the highest value seen).
+- Key 9 AutoHop (`AH.HopToggle`, on at load, armed 10 s after switching on): changes server
+  (random public server with room, else rejoin) when the round runs without us (joined
+  mid-round / caught and out while teammates play) or when we are the Beast.
+- Standing during slow route searches (corner, planner 2 s): the stall breaker now also runs
+  while a plan job is pending (after 0.6 s); breaker walks do not count as route progress.
+- The 0.9 s "pushing without progress -> reject lane and replan" rule now applies to every
+  owner (farm, flee, exit), not only rescue.
+- Exit forced run-in gives up after 0.5 s pressing into a frame, and stops retrying if blocked
+  with a Beast threat.
+- AutoHide red-alert E taps are suppressed within 7 studs of a computer (a tap started a hack and
+  rooted the flight for 1.3 s); door-closing taps still work.
+- AutoFarm/exit walks use the Beast-ahead veer (head-on Beast avoidance) that rescue used.

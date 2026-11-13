@@ -1798,6 +1798,7 @@ local buttonDefs = {
     { "AutoHide", "AutoHide", function() AH.Toggle() end, 8 },
     { "AutoRescue", "AutoHelp", function() AR.Toggle() end, 9 },
     { "Panic", "Panic [8]", function() if AH.PanicToggle then AH.PanicToggle() end end, 9 },
+    { "Hop", "AutoHop [9]", function() if AH.HopToggle then AH.HopToggle() end end, 9 },
     { "Spectate", "Spectate [7]", function() EX.ToggleSpectate() end, 10 },
     { "Invis", "Invis [Z]", ToggleInvisUI, 11 },
     { "AutoHelp", "Silent Help [H]", TriggerAutoHelpSilent, 12 },
@@ -3887,13 +3888,30 @@ function FH.InLobby(position)
     local now = os.clock()
     local cache = FH.LobbyCache
     if not cache or now - cache.at > 5 then
+        -- LobbyInteractiveObjects can be a Folder (no pivot): GetPivot then
+        -- failed and the lobby was never recognised, so AutoHelp ran from
+        -- the lobby toward pods 700 studs away (live data). Use the bounds
+        -- of its parts instead.
         local objects = Workspace:FindFirstChild("LobbyInteractiveObjects")
-        local ok, pivot = pcall(function() return objects and objects:GetPivot().Position end)
-        cache = { at = now, pivot = ok and pivot or nil }
+        local lo, hi
+        if objects then
+            for _, part in ipairs(objects:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local q = part.Position
+                    lo = lo and Vector3.new(math.min(lo.X, q.X), math.min(lo.Y, q.Y), math.min(lo.Z, q.Z)) or q
+                    hi = hi and Vector3.new(math.max(hi.X, q.X), math.max(hi.Y, q.Y), math.max(hi.Z, q.Z)) or q
+                end
+            end
+        end
+        cache = { at = now, lo = lo, hi = hi }
         FH.LobbyCache = cache
     end
-    return cache.pivot ~= nil and Flat(position - cache.pivot).Magnitude <= 160
-        and math.abs(position.Y - cache.pivot.Y) <= 60
+    local lo, hi = cache.lo, cache.hi
+    if not lo then return false end
+    local margin = 180
+    return position.X >= lo.X - margin and position.X <= hi.X + margin
+        and position.Z >= lo.Z - margin and position.Z <= hi.Z + margin
+        and position.Y >= lo.Y - 60 and position.Y <= hi.Y + 60
 end
 function FH.InMatchPlayer(p)
     local ch = p.Character
@@ -11055,7 +11073,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             -- the one-beat pause between legs). Contact code stops itself.
             if not (keep and flatDist > 5 and keep()) then return finish("arrived", opts.stopAtEnd == true) end
         end
-        if progressPosition and (Flat(rp - progressPosition).Magnitude >= 0.75
+        -- A blind stall-breaker walk is not route progress: it must not
+        -- hide a real failure from the timeouts.
+        if breaker and now < breaker.untilAt + 0.3 then
+            progressPosition = rp
+        elseif progressPosition and (Flat(rp - progressPosition).Magnitude >= 0.75
             or opts.rescueJuke and not flying and rp.Y - progressPosition.Y >= 0.5
                 and Follow.RescueGrounded(hum, root, true)) then
             progressPosition, progressAt = rp, now
@@ -11063,7 +11085,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             progressPosition, progressAt = rp, now
         end
         if job and not job.done and now - progressAt > 8 then return finish("timeout", true) end
-        if opts.rescueJuke and mode and not flying and now - progressAt > 0.9
+        -- Pushing into something for 0.9 s (any owner: farm, flee, exit,
+        -- rescue) rejects that lane and replans instead of pressing on.
+        if mode and not flying and now - progressAt > 0.9
             and not FH.IsWorking(token) and not Follow.KeyDown and not AR.KeyDown
             and not Follow.Held and not AR.Held and not Follow.ActiveEscape(token, hum, root) then
             local attempted = FH.Motion.token == token and FH.Motion.aim
@@ -11298,7 +11322,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- Stall breaker (live data: 125 s standing on a prop whose top
                 -- rays cannot see, so neither planner nor local lanes worked):
                 -- after 1.5 s without progress, walk out blind for 0.7 s.
-                if not job and now - progressAt > 1.5 and now - (breakerAt or 0) > 1.5
+                -- Also while a slow route search runs (live: 2 s standing in
+                -- a corner waiting for the planner): after 0.6 s, walk out.
+                if now - progressAt > (job and 0.6 or 1.5) and now - (breakerAt or 0) > 1.3
                     and hum.FloorMaterial ~= Enum.Material.Air then
                     local dir = Follow.BreakerDirection(rp, goal, feetY)
                     breaker = { aim = rp + dir * 6, untilAt = now + 0.7 }
@@ -11765,7 +11791,14 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = wps[wpi].Position
             if FH.Diag then FH.Diag("walk", "near-aim-advanced") end
         end
-        if opts.rescueJuke then aim = FH.RescueJuke(token, root, aim, opts.rescueJuke, feetY) end
+        if opts.rescueJuke then
+            aim = FH.RescueJuke(token, root, aim, opts.rescueJuke, feetY)
+        elseif not (type(token) == "table" and token.owner == "evade") and not flying
+            and FH.MatchOn() and not FH.AmBeast() then
+            -- AutoFarm/exit walks veer around a Beast ahead that faces us
+            -- too (live: farm routes ran straight into it).
+            aim = FH.RescueJuke(token, root, aim, goal, feetY)
+        end
         local preciseCorner = opts.rescueJuke and mode == "path" and wps and wps[wpi]
             and wps[wpi].RescueCorner and Flat(aim - wps[wpi].Position).Magnitude < 0.1
         if not preciseCorner and not flying and hum.FloorMaterial ~= Enum.Material.Air then
@@ -12152,7 +12185,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
     end
 
     local t0 = os.clock()
-    local attempts, routeFailures = 0, 0
+    local attempts, routeFailures, podBest = 0, 0, nil
     while not stop() and os.clock() - t0 < 75 do
         Follow.Beat = os.clock()
         Ctl.Gate()
@@ -12180,6 +12213,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
             end
             moving(true)
             local from = RootNow() and RootNow().Position
+            podBest = math.min(podBest or math.huge, flatDist())
             local result = Follow.WalkTo(tok, function() return approach end, 0.8, function() return stop() or near() end, {
                 maxTime = math.clamp(
                     flatDist() / math.max(GetHumanoid() and GetHumanoid().WalkSpeed or 16, 1) * 2 + 4,
@@ -12194,7 +12228,9 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
             })
             local current = RootNow()
             if result == "nopath" or result == "timeout" then
-                if from and current and (current.Position - from).Magnitude < 0.75 then
+                -- Shuffling inside a closed room (stall breaker) is not
+                    -- getting closer: count it as a failure too.
+                if from and current and ((current.Position - from).Magnitude < 0.75 or flatDist() > podBest - 1) then
                     routeFailures += 1
                 else
                     routeFailures = 0
@@ -12883,8 +12919,10 @@ function FH.ExitTraverse(token, state, stopped)
                     FH.Move(token, hum, point, true)
                     if Flat(root.Position - lastPos).Magnitude > 0.3 then
                         lastPos, lastAt = root.Position, os.clock()
-                    elseif os.clock() - lastAt > 1.2 then
-                        return
+                    elseif os.clock() - lastAt > 0.5 then
+                        -- Pressing into a wall/frame: give up quickly (live:
+                        -- 2 s pushing with the Beast 10 studs away).
+                        return "blocked"
                     end
                     task.wait(0.03)
                 end
@@ -12893,8 +12931,9 @@ function FH.ExitTraverse(token, state, stopped)
             -- player: walk back out in front of the gate, then run in again.
             for attempt = 1, 3 do
                 if FH.Diag then FH.Diag("exit", "forced-run-in:" .. attempt) end
-                runTo(inside, 2.5)
+                local blockedIn = runTo(inside, 2.5)
                 if FH.True(LocalPlayer, FH.ESC) or stopped() or RootNow() ~= root or attempt == 3 then break end
+                if blockedIn == "blocked" and AH.Eval and AH.Eval().danger then break end
                 runTo(outside, 2)
                 if FH.True(LocalPlayer, FH.ESC) or stopped() or RootNow() ~= root then break end
             end
@@ -14354,6 +14393,16 @@ function AH.TapStep()
     if closing then
         if UserInputService:IsKeyDown(Enum.KeyCode.E) then return end
         AH.NextTapAt = 0
+    end
+    -- A plain red-alert tap next to a computer starts a hack and roots the
+    -- flight in place (live: 1.3 s standing with the Beast 24 studs away and
+    -- facing us). Only door-closing taps are allowed there.
+    if not closing and not AH.TapDown and now >= AH.NextTapAt then
+        local nearPc = FindNearestComputerTrigger(7)
+        if nearPc then
+            AH.NextTapAt = now + 0.3
+            return
+        end
     end
     if not AH.TapDown and now >= AH.NextTapAt then
         -- Walking or a movement command is not an E owner. Only a physical E
@@ -16000,6 +16049,85 @@ function AH.PanicToggle()
         end
     end
 end
+-- Key 9: AutoHop. Armed 10 s after it is switched on; then it changes server
+-- (another public server, else a plain rejoin) when:
+--   1) the round already runs without us (joined mid-round, waiting in the lobby),
+--   2) we were caught and are out while teammates are still in the round,
+--   3) we are the Beast.
+-- Escaped players are not "out": they wait for the round to end.
+function AH.HopReason()
+    if not FH.MatchOn() then return nil end
+    if FH.AmBeast() then return "beast" end
+    if FH.True(LocalPlayer, FH.ESC) then return nil end
+    local root = RootNow()
+    if not root then return nil end
+    if FH.InMatchPlayer(LocalPlayer) then return nil end
+    if FH.OthersRemain() then return "round running without us" end
+    return nil
+end
+function AH.HopServers()
+    local placeId, jobId = game.PlaceId, game.JobId
+    local url = "https://games.roblox.com/v1/games/" .. tostring(placeId)
+        .. "/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true"
+    local body
+    local okGet = pcall(function() body = game:HttpGet(url) end)
+    if (not okGet or type(body) ~= "string") then
+        local requester = (syn and syn.request) or (http and http.request) or http_request or request
+        if type(requester) == "function" then
+            pcall(function()
+                local res = requester({ Url = url, Method = "GET" })
+                body = res and res.Body
+            end)
+        end
+    end
+    if type(body) ~= "string" then return {} end
+    local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
+    local list = {}
+    if ok and type(data) == "table" and type(data.data) == "table" then
+        for _, server in ipairs(data.data) do
+            if type(server) == "table" and server.id ~= jobId and tonumber(server.playing)
+                and tonumber(server.maxPlayers) and server.playing < server.maxPlayers - 1 and server.playing >= 2 then
+                list[#list + 1] = server.id
+            end
+        end
+    end
+    return list
+end
+function AH.HopGo()
+    local TeleportService = game:GetService("TeleportService")
+    local servers = AH.HopServers()
+    if #servers > 0 then
+        local id = servers[math.random(1, #servers)]
+        local ok = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, id, LocalPlayer) end)
+        if ok then return true end
+    end
+    return pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
+end
+function AH.HopLoop(token)
+    local since, nextTry = nil, 0
+    while not unloaded and AH.HopActive and AH.HopToken == token do
+        local now = os.clock()
+        local reason = now >= AH.HopArmedAt and AH.HopReason() or nil
+        if reason then
+            since = since or now
+            -- Held a moment so round start/end transitions do not trigger it.
+            if now - since >= (reason == "beast" and 2 or 4) and now >= nextTry then
+                nextTry = now + 10
+                AH.HopGo()
+            end
+        else
+            since = nil
+        end
+        task.wait(0.5)
+    end
+end
+function AH.HopToggle()
+    AH.HopActive = not AH.HopActive
+    AH.HopToken = (AH.HopToken or 0) + 1
+    AH.HopArmedAt = os.clock() + 10
+    SetOn(Btn.Hop, AH.HopActive)
+    if AH.HopActive then task.spawn(AH.HopLoop, AH.HopToken) end
+end
 -- Virtual chaser ~10 studs behind our heading; it drifts so the route varies.
 function AH.PanicChaser(mr, now)
     local state = AH.PanicThreat
@@ -16162,6 +16290,18 @@ function AR.Pods(ignoreSkip)
     AR.PodAt, AR.PodList = now, res
     return res
 end
+-- Below 10% health a rescue is too likely to end in our own capture: leave
+-- the captives to the others and keep only AutoFarm + AutoHide.
+function AR.LowHealth()
+    local hum = GetHumanoid()
+    if hum and hum.MaxHealth > 0 and hum.Health < hum.MaxHealth * 0.1 then return true end
+    -- The game's own Health stat: compare with the highest value seen, so
+    -- the check works whatever scale it uses.
+    local hp = FH.Stat(LocalPlayer, FH.HP)
+    if not hp or type(hp.Value) ~= "number" or hp.Value <= 0 then return false end
+    AR.HpMax = math.max(AR.HpMax or 0, hp.Value)
+    return hp.Value < AR.HpMax * 0.1
+end
 function AR.Pending()
     if
         not AR.Active
@@ -16174,6 +16314,7 @@ function AR.Pending()
         or FH.AmBeast()
         or not FH.ActiveSurvivor(LocalPlayer)
         or AH.Down()
+        or AR.LowHealth()
     then
         return false
     end
@@ -16181,7 +16322,10 @@ function AR.Pending()
     local cached = AR.PendingPick
     if cached and AR.PendingMap == map then
         local info = AR.PodInfo(cached.trig, map)
-        if info and info.occupant == cached.occupant then return true end
+        if info and info.occupant == cached.occupant then
+            local root = RootNow()
+            return not (root and (info.trig.Position - root.Position).Magnitude > 450)
+        end
         -- Release/recapture is live, even inside the discovery cache window.
         AR.PendingPick, AR.PendingAt = nil, nil
     elseif AR.PendingMap == map and AR.PendingAt and now - AR.PendingAt < 0.05 then
@@ -16213,6 +16357,10 @@ function AR.Pending()
             end
         end
     end
+    -- Second guard against rescuing from outside the map (lobby): no map
+    -- pod is 450+ studs away from a player standing in that map.
+    local root = RootNow()
+    if AR.PendingPick and root and (AR.PendingPick.trig.Position - root.Position).Magnitude > 450 then return false end
     return AR.PendingPick ~= nil
 end
 function AR.Nearest()
@@ -25252,7 +25400,10 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
         EX.ToggleEmote()
         return
     end
-    -- 9 is free for a future feature.
+    if keyCode == Enum.KeyCode.Nine or keyCode == Enum.KeyCode.KeypadNine then
+        AH.HopToggle()
+        return
+    end
     if keyCode == Enum.KeyCode.Eight or keyCode == Enum.KeyCode.KeypadEight then
         AH.PanicToggle()
         return
@@ -25280,4 +25431,5 @@ task.delay(1, function()
     if unloaded then return end
     pcall(function() if not espPlayerActive then TogglePlayerESP() end end)
     pcall(function() Follow.AutoAll(true) end)
+    pcall(function() if not AH.HopActive then AH.HopToggle() end end)
 end)

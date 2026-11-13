@@ -965,6 +965,26 @@ scenario("rescue/AutoHide hand-over holds instead of flipping at the line", func
     task.wait(1.6)
     check(not AR.ThreatPreempts(), "hand-over stayed latched after the Beast left")
 end)
+scenario("lobby is recognised from a Folder of lobby objects (no pivot)", function()
+    if not FH.TestInLobby then return end
+    local folder = node("LobbyInteractiveObjects", "Folder", nil)
+    folder.GetPivot = function() error("Folder has no pivot") end
+    part("VoteBoxA", Vec.new(-70, 66, -690), Vec.new(0.6, 6, 6), folder)
+    part("VoteBoxD", Vec.new(-62, 66, -702), Vec.new(0.6, 6, 6), folder)
+    function Workspace:FindFirstChild(name) return name == folder.Name and folder or nil end
+    FH.LobbyCache = nil
+    check(FH.TestInLobby(Vec.new(41, 74, -642)), "a player in the lobby was treated as in the match")
+    check(not FH.TestInLobby(Vec.new(-58, 101, 90)), "a map position was treated as the lobby")
+    Workspace.FindFirstChild = nil
+    FH.LobbyCache = nil
+end)
+scenario("AutoHelp stays off below 10% health", function()
+    if not AR.LowHealth then return end
+    hum.MaxHealth, hum.Health = 100, 9
+    check(AR.LowHealth(), "9% health still allowed a rescue")
+    hum.Health = 60
+    check(not AR.LowHealth(), "healthy player refused rescues")
+end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
     world.threat = Vec.new(3, 3, 0)

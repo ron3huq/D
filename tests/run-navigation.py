@@ -54,6 +54,8 @@ Follow.CenterAim Follow.BreakerDirection FH.ExitSpan FH.ExitLane FH.ExitTriggerD
 functions = "\n".join(function(n) for n in names)
 functions += "\n" + function("AH.Eval").replace("function AH.Eval(", "function AH.TestEval(", 1)
 functions += "\n" + function("FH.ExitOpen").replace("function FH.ExitOpen(", "function FH.TestExitOpen(", 1)
+functions += "\n" + function("FH.InLobby").replace("function FH.InLobby(", "function FH.TestInLobby(", 1)
+functions += "\n" + function("AR.LowHealth")
 # Exercise the real Main wrapper too: no success-only stand-in for its terminal loop.
 main = source.index("function Follow.Main(token, player)\n")
 last = source.index("    local function farmWatch()\n", main)
