@@ -3144,16 +3144,20 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
         -- was refused for seconds). Slide past it on one side instead; the
         -- side is kept for a moment so it cannot flip left/right.
         local slid
-        if root and not force then
+        if root and not force and not precision then
             local delta = Flat(goal - root.Position)
-            if delta.Magnitude > 0.6 then
+            if delta.Magnitude > 4 then
                 local feet = FH.Feet(hum, root)
                 local base = delta.Unit
                 local reach = math.min(delta.Magnitude, 4)
                 local keep = FH.SlideSide
-                local first = keep and keep.root == root and os.clock() < keep.untilAt and keep.side or 1
+                local kept = keep and keep.root == root and os.clock() < keep.untilAt
+                local first = kept and keep.side or 1
+                -- Never flip sides while a slide is kept (left-right-left was
+                -- the shake at doors, live data).
+                local sides = kept and { first } or { first, -first }
                 for _, deg in ipairs({ 40, 75, 110 }) do
-                    for _, side in ipairs({ first, -first }) do
+                    for _, side in ipairs(sides) do
                         local a = math.rad(deg) * side
                         local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
                         local candidate = root.Position + dir * reach
@@ -3161,7 +3165,7 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
                         if not FH.LaneRejected(root.Position, candidate, feet)
                             and not Workspace:Raycast(origin, dir * (reach + 0.5), rayParams) then
                             slid = candidate
-                            FH.SlideSide = { root = root, side = side, untilAt = os.clock() + 1.2 }
+                            if not kept then FH.SlideSide = { root = root, side = side, untilAt = os.clock() + 1.5 } end
                             break
                         end
                     end
@@ -4817,72 +4821,15 @@ function FH.GroundMoveStep(dt)
     then
         return
     end
-    if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); FH.SmoothDir = nil; return end
+    if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); return end
     local direction = Flat(motion.aim - root.Position)
     if direction.Magnitude <= 0.5 then
-        FH.SmoothDir = nil
         hum:Move(Vector3.new(0, 0, 0), false)
         return
     end
-    hum:Move(FH.SmoothHeading(direction.Unit, dt, root, direction.Magnitude), false)
-end
--- Turn the input heading like a player's hand on the keys: a bounded turn
--- rate (fast enough for doorways, ~0.1 s per 90 deg) instead of snapping
--- between headings every frame, which read as jerky shaking.
-function FH.SmoothHeading(want, dt, root, reach)
-    local now = os.clock()
-    local state = FH.SmoothDir
-    if not state or state.root ~= root or now - state.at > 0.25 then
-        FH.SmoothDir = { dir = want, at = now, root = root }
-        return want
-    end
-    local cur = state.dir
-    local a0 = math.atan2(cur.Z, cur.X)
-    local a1 = math.atan2(want.Z, want.X)
-    local diff = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
-    -- Small corrections (wall hugging, doorway centring) pass at once.
-    if math.abs(diff) < math.rad(25) then
-        state.dir, state.at = want, now
-        return want
-    end
-    -- Only in open space: next to walls, frames and doorways the exact
-    -- heading matters more than a rounded turn (a rounded turn scrapes).
-    local origin = root.Position
-    local speed = Flat(root.AssemblyLinearVelocity).Magnitude
-    -- Near a corner / waypoint the exact heading matters (cutting it scrapes
-    -- the corner): only round turns toward an aim still well ahead.
-    local open = speed > 8 and (reach or 0) > 6
-    if open then
-        -- Rays only while a sharp turn is in progress (>= 25 deg), never
-        -- on straight running; cached briefly per heading pair.
-        local cache = state.open
-        if cache and now - cache.at < 0.12 and Flat(cache.pos - origin).Magnitude < 0.75
-            and cache.want:Dot(want) > 0.98 and cache.cur:Dot(cur) > 0.98 then
-            open = cache.value
-        else
-            for _, deg in ipairs({ 0, 45, -45, 90, -90 }) do
-                for _, base in ipairs({ want, cur }) do
-                    local r = math.rad(deg)
-                    local d = Vector3.new(base.X * math.cos(r) - base.Z * math.sin(r), 0,
-                        base.X * math.sin(r) + base.Z * math.cos(r))
-                    if Workspace:Raycast(origin, d * 4, rayParams) then open = false break end
-                end
-                if not open then break end
-            end
-            state.open = { at = now, pos = origin, want = want, cur = cur, value = open }
-        end
-    end
-    if not open then
-        state.dir, state.at = want, now
-        return want
-    end
-    -- Near reversals are deliberate (a juke or a flight): turn faster.
-    local rate = math.abs(diff) > 2.4 and 18 or 14
-    local maxStep = rate * math.clamp(dt or 0.016, 0.005, 0.1)
-    local a = a0 + math.clamp(diff, -maxStep, maxStep)
-    local out = Vector3.new(math.cos(a), 0, math.sin(a))
-    state.dir, state.at = out, now
-    return out
+    -- Direct heading (the round-14 turn smoothing made turns sluggish and
+    -- scrape walls - live report "turning lags").
+    hum:Move(direction.Unit, false)
 end
 -- Share a short, verified uphill sample between navigation and the render
 -- recovery loop. Flat walking needs only the coarse profile and one floor ray.
@@ -11405,7 +11352,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- made the feet briefly "above" the goal, it stepped off, climbed
         -- back and stepped off again - violent shaking, live data).
         local grounded = hum.FloorMaterial ~= Enum.Material.Air
-        local below = grounded and math.abs(root.AssemblyLinearVelocity.Y) < 3 and goalFlat < 2.5 and goal.Y < feetY - 2.5
+        local below = grounded and math.abs(root.AssemblyLinearVelocity.Y) < 3 and goalFlat < 2.5 and goal.Y < feetY - 1.5
         -- No route found twice to a target a floor below (live: 35 s
         -- shuffling on an upper floor, every plan unusable): go down the
         -- nearest edge toward it instead of pacing.
@@ -11415,12 +11362,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- go down the nearest edge whatever the goal height.
         local island = not mode and failSpot ~= nil and failSpot.n >= 3
             and Flat(failSpot.pos - rp).Magnitude < 10 and now - failSpot.at < 20
+            and now >= (failSpot.islandAt or 0)
         local stuckAbove = not mode and (fails >= 2 and goal.Y < feetY - 6 or island)
         local overhead = goalFlat < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY or below or stuckAbove
         if (not mode or mode == "path" and below) and not flying and overhead then
             if not overheadDrop or now > overheadDrop.untilAt then
                 overheadDrop = nil
                 if goal.Y < rp.Y or island then
+                    -- An "island" is a real raised area: only a 6+ stud edge
+                    -- counts (a low cabinet/prop edge made it hop on and off
+                    -- the prop, live). Once per 10 s per spot.
+                    local islandOnly = island and not (goal.Y < feetY - 6)
+                    local need = islandOnly and 6 or 3
+                    if island and failSpot then failSpot.islandAt = now + 10 end
                     local base = Flat(root.CFrame.LookVector)
                     -- Prefer stepping off toward the pod/target side.
                     local toward = Flat((opts.rescueJuke or goal) - rp)
@@ -11433,7 +11387,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         for _, length in ipairs({ 3, 4.5, 6 }) do
                             local c = rp + dir * length
                             local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -40, 0), rayParams)
-                            if hit and hit.Normal.Y > 0.6 and hit.Position.Y < feetY - 3 then
+                            if hit and hit.Normal.Y > 0.6 and hit.Position.Y < feetY - need then
                                 local point = Vector3.new(c.X, hit.Position.Y, c.Z)
                                 local landing, crossing = Follow.DropLane(hum, root, point, feetY)
                                 if landing and Follow.StartDrop(token, hum, root, landing, crossing) then
@@ -11456,7 +11410,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                                 local wall = Workspace:Raycast(Vector3.new(rp.X, feetY + 1.5, rp.Z), dir * length, rayParams)
                                 if wall and wall.Normal.Y < 0.6 then break end
                                 local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -40, 0), rayParams)
-                                if not hit or hit.Position.Y < feetY - 3 then
+                                if not hit or hit.Position.Y < feetY - (below and goal.Y > feetY - 3 and 1.2 or need) then
                                     -- Nearest edge, preferring the target's side.
                                     local score = length - dir:Dot(base) * 4
                                     if not bestScore or score < bestScore then
@@ -12384,8 +12338,11 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                 for _, fraction in ipairs({ 0.5, 1 }) do
                     local point = root.Position + advance * fraction
                     local floor =
-                        Workspace:Raycast(Vector3.new(point.X, feetY + 1.25, point.Z), Vector3.new(0, -3.5, 0), params)
-                    if not floor or floor.Normal.Y < 0.6 or math.abs(floor.Position.Y - feetY) > 1.5 then
+                        Workspace:Raycast(Vector3.new(point.X, feetY + 1.25, point.Z), Vector3.new(0, -5.5, 0), params)
+                    -- A short step down to the pod is fine (live: stood on a
+                    -- 2-stud ledge right beside the pod, shaking, no rescue).
+                    if not floor or floor.Normal.Y < 0.6 or floor.Position.Y > feetY + 1.5
+                        or floor.Position.Y < feetY - 3.5 then
                         return finish(false)
                     end
                 end
@@ -15421,12 +15378,25 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
     }) do
         local rad = math.rad(angle)
         local dir = forward * math.cos(rad) + across * math.sin(rad)
-        local low = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.7, rp.Z), dir * 8.5, rayParams)
-        if low and low.Normal.Y < 0.6 and not (state.skipInstance == low.Instance and now < (state.skipUntil or 0)) then
-            local reach = math.min(8.5, low.Distance + 0.8)
+        -- Windows/rails a bit farther to the side count too (it ran into
+        -- walls with a window 10-14 studs away, live report).
+        local low = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.7, rp.Z), dir * 14, rayParams)
+        local isVent = false
+        do
+            local a = low and low.Instance
+            for _ = 1, 4 do
+                if not a then break end
+                if string.find(string.lower(a.Name), "vent", 1, true) then isVent = true break end
+                a = a.Parent
+            end
+        end
+        -- Crawl vents are walls (user rule): never vault into one.
+        if low and not isVent and low.Normal.Y < 0.6
+            and not (state.skipInstance == low.Instance and now < (state.skipUntil or 0)) then
+            local reach = math.min(14, low.Distance + 0.8)
             local sill, instance = AH.VaultSill(rp, dir, feetY, reach, low)
             if sill then
-                local length = math.min(12, low.Distance + 3.2)
+                local length = math.min(17.5, low.Distance + 3.2)
                 local raw = rp + dir * length
                 local floor = Workspace:Raycast(
                     Vector3.new(raw.X, feetY + sill + 3, raw.Z),
@@ -15450,7 +15420,7 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
                         for _ = 1, 4 do
                             if not ancestor then break end
                             local name = string.lower(ancestor.Name)
-                            if name:find("window", 1, true) or name:find("vent", 1, true) then
+                            if name:find("window", 1, true) then
                                 window = true
                                 break
                             end
@@ -15648,7 +15618,7 @@ function AH.OpenDoorAim(rp, bp, feetY, state, forward, danger)
             if g and FH.DoorOnFloor(g, rp, feetY) and not FH.DoorBlocked(g) then
                 local toward = Flat(g.Center - rp)
                 local distance = Flat(g.NearPos - rp).Magnitude
-                if distance <= 16 and toward.Magnitude > 0.5 then
+                if distance <= 22 and toward.Magnitude > 0.5 then
                     local entry = g.Center - g.Dir * 3.5
                     local across = g.Center + g.Dir * 3.5
                     entry = Vector3.new(entry.X, rp.Y, entry.Z)

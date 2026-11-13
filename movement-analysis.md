@@ -788,3 +788,17 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   save 6+ studs (was 15).
 - Rescue: with the pod within 30 studs and a closed door straight between us and it, that door is
   opened directly instead of a door-route search that could pick a different, far door.
+
+## Round 19 (Workspace_4 + D_stall_20261113_143025)
+
+- Turning "lag": the round-14 turn-rate smoothing is removed (direct heading again, as in the
+  round-13 build the user liked); it made turns sluggish and scrape walls.
+- Door/wall shaking: the rejected-lane slide flipped sides (left-right-left) at doors. A kept
+  slide never changes side, slides only for aims > 4 studs away and never for precise contact.
+- Rescue next to a pod from a ledge (Library: standing 2 studs above the approach point): the
+  final pod approach may step down up to 3.5 studs, and the "goal under the feet" step-off works
+  from 1.5 studs (1.2-stud edges when the goal is that close).
+- School: the "island" rule took a low filing-cabinet edge for an island and hopped on/off it;
+  an island now needs a 6+ stud edge and fires once per 10 s per spot.
+- AutoHide: vents are never vaulted (they were treated like windows); windows/rails are found up
+  to 14 studs to the side (8.5 before) with landing up to 17.5; open doors up to 22 studs (16).

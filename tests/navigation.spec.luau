@@ -1017,17 +1017,6 @@ scenario("the end of a partial route short of the goal does not stand still", fu
     local result = Follow.WalkTo(7, function() return Vec.new(20, 3, 0) end, 1, nil, { noDoor = true, maxTime = 3 })
     check(root.Position.X > 10, "stood at the end of a partial route: x=" .. tostring(root.Position.X) .. " " .. tostring(result))
 end)
-scenario("input heading turns like a player's hand in open space, exact near walls", function()
-    if not FH.SmoothHeading then return end
-    root.AssemblyLinearVelocity = Vec.new(16, 0, 0)
-    FH.SmoothDir = { dir = Vec.new(1, 0, 0), at = now, root = root }
-    local out = FH.SmoothHeading(Vec.new(0, 0, 1), 0.016, root, 20)
-    check(out.Z < 0.5 and out.Z > 0, "a 90-degree turn in open space snapped instead of turning smoothly")
-    box("NearWall", Vec.new(-5, 0, 2), Vec.new(5, 10, 3))
-    FH.SmoothDir = { dir = Vec.new(1, 0, 0), at = now, root = root }
-    local exact = FH.SmoothHeading(Vec.new(0, 0, 1), 0.016, root, 20)
-    check(exact.Z > 0.99, "next to a wall the heading was rounded (scrapes the wall)")
-end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
     world.threat = Vec.new(3, 3, 0)

@@ -37,7 +37,7 @@ FH.LaneRevision FH.RejectLane FH.LaneRejected FH.PathLaneRejected FH.AddBad FH.I
 FH.JumpReady FH.RecordTakeoff FH.CompTriggers FH.CanHold FH.Feet FH.Space Follow.RescueGrounded FH.TakeoffSupported FH.NormalJump
 FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.JumpTickStep FH.MotionProfile FH.PreciseMove FH.JumpMoveStep
 FH.MotionGuardedStep FH.MotionStep FH.ForwardLane FH.ReleaseForward FH.ForwardOwner FH.PressForward FH.ForwardWatchStep
-FH.PeriodicComputerBlocked FH.PeriodicSpaceStep FH.GroundMoveStep FH.SmoothHeading FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
+FH.PeriodicComputerBlocked FH.PeriodicSpaceStep FH.GroundMoveStep FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
 FH.NativeJumpLimits FH.SupportVelocityY FH.TraversalOwned FH.TraversalSweep FH.TraversalStairs
 FH.TraversalLane FH.TryJump FH.ApproachClear FH.StairLane FH.Profile FH.Seg FH.Line
 FH.Ground FH.Path FH.Len FH.RouteCost FH.PathAny Follow.Hold Follow.Release Follow.PlanClear
