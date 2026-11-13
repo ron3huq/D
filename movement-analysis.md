@@ -726,3 +726,18 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   AutoHide the rescue resumes only after 2.5 s and with the Beast beyond 18 studs (max 5 s).
 - Lobby face-to-face: varied, human-paced turns (calm ease-in-out, two-stage glance with a beat,
   casual turn with a slight overshoot that settles), duration scaled by the angle.
+
+## Round 15 (round 14 re-applied on the user's restored round-13 D)
+
+- The round-14 game lag: `AR.Pending()` -> `AR.BeastCampsPod` -> `AH.Eval()` ->
+  `AH.RescueContext()` -> `AR.Pending()` ... recursed without end; the stack overflow was caught
+  and retried by every loop (hide, help, movement). The guard check now reads the cached
+  `AH.Last` and is cached per pod for 0.3 s; a test fails if it re-enters `AH.Eval`.
+- `FH.SmoothHeading` only casts rays while a sharp turn (>= 25 deg) is in progress, cached for
+  0.12 s per heading pair.
+- All other round-14 fixes are back (micro-stop removal, single rescue gate for farm/hide with
+  low health, recent-route keep for pods behind walls, pod guarding, human lobby turns).
+- Rescue vs a charging Beast reacts earlier: head-on charge 14 + 0.8 x closing speed (cap 30),
+  any Beast closing > 6 studs/s within 24 studs (static head-on keeps the user's 12).
+- Lobby turns: five styles now (glance away first, several small nudges, calm ease, two-stage
+  glance, casual overshoot), human-paced.

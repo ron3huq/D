@@ -1787,8 +1787,18 @@ scenario("a Beast guarding the pod holds the rescue back until it leaves", funct
     local info = pod(30)
     local beast, br = actor("GuardBeast", Vec.new(36, 3, 0), true)
     world.players = { LocalPlayer, beast }
-    check(AR.BeastCampsPod(info.trig), "a Beast 6 studs from the pod was not seen as guarding it")
+    -- Must not re-enter the threat evaluation (AR.Pending -> camp check ->
+    -- AH.Eval -> AH.RescueContext -> AR.Pending ... recursed without end
+    -- and lagged the game).
+    AH.Active = true
+    local eval = AH.Eval
+    AH.Eval = function() error("camp check re-entered AH.Eval (recursion)") end
+    local ok, guarded = pcall(AR.BeastCampsPod, info.trig)
+    AH.Eval = eval
+    check(ok, "the pod-guard check recursed into AH.Eval: " .. tostring(guarded))
+    check(guarded, "a Beast 6 studs from the pod was not seen as guarding it")
     br.Position = Vec.new(80, 3, 0)
+    task.wait(0.35)
     check(not AR.BeastCampsPod(info.trig), "a Beast far from the pod still blocked the rescue")
 end)
 scenario("rescue adopts the forward segment after passing an old waypoint", function()
