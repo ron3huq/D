@@ -741,3 +741,22 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   any Beast closing > 6 studs/s within 24 studs (static head-on keeps the user's 12).
 - Lobby turns: five styles now (glance away first, several small nudges, calm ease, two-stage
   glance, casual overshoot), human-paced.
+
+## Round 16 (Workspace_1)
+
+- Exit lever released at 98-99 %: the opening loop broke out as soon as progress read >= 0.98
+  (and could also break on "panels moved" while holding), releasing E before the game finished;
+  the gate reset, the run-in hit the shut panel ("gate-still-shut") and it started over. It now
+  holds through the top until the progress falls back or reads full (0.3 s), max 3 s; while
+  holding only a real geometric opening by someone else ends it. Past 70 % the holder keeps the
+  movement: `FH.ExitHoldLocked` denies other owners, and only hard reasons (manual control,
+  caught/ragdoll, Beast role, escaped, exits off) stop the hold - not AutoHide busy/farm abort.
+- Lobby face-to-face reworked to how players turn: mostly a short movement-key tap toward them
+  (native body rotation), quick linear camera-like flicks, double taps, flick with overshoot and
+  correction. No slow eased glides.
+- AutoHide: oscillation guard counts 3 reversals within 3 s (dead-end shuffles reversed every
+  ~1.2 s); walk-into-drop keeps pushing 2.5 studs past the lip until it falls (it stood at the
+  edge); hop-ups get a bonus (+2 per jump) instead of a penalty; a weave bias (+-55 deg,
+  re-rolled every 1.5-3 s) bends the line unpredictably without frame-to-frame changes; open
+  junctions +7, narrow pockets -6, dead ends -25.
+- Micro-stops (0.15-0.9 s) in this recording: 16 (74 in the previous one).

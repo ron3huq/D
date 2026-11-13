@@ -2598,9 +2598,16 @@ function FH.MotionActive()
     local m = FH.Motion
     return m.token ~= nil and os.clock() < m.untilAt and FH.MotionValid(m.token)
 end
+-- An exit gate held past 70 % belongs to its holder until it opens: no
+-- other feature may take the movement (that released it at 99 %).
+function FH.ExitHoldLocked(token)
+    local h = FH.ExitHolding
+    return h ~= nil and os.clock() - h.at < 0.6 and h.progress >= 0.7 and h.token ~= nil and h.token ~= token
+end
 function FH.MotionAvailable(token)
     if not FH.MotionValid(token) then return false end
     local m = FH.Motion
+    if m.token ~= token and FH.ExitHoldLocked(token) then return false end
     return m.token == token or not FH.MotionActive() or FH.MotionPriority(token) > FH.MotionPriority(m.token)
 end
 -- Only a live, owned computer/exit interaction may intentionally stand for a long time.
@@ -13443,6 +13450,15 @@ end
 function FH.ExitRoute(token, state, abort)
     local function escaped() return FH.True(LocalPlayer, FH.ESC) end
     local function stopped()
+        -- Past 70 % on our own hold: only hard reasons end it (manual
+        -- control, caught/ragdoll, Beast role, escaped, exits off). Feature
+        -- hand-overs (AutoHide busy, farm abort, rescue) wait for the gate.
+        local holding = state.opening and FH.ExitHolding and os.clock() - FH.ExitHolding.at < 0.6
+            and FH.ExitHolding.progress >= 0.7
+        if holding then
+            return Ctl.On() or Fly.Active or AH.Down() or FH.AmBeast() or not FH.ExitOpen() or escaped()
+                or not FH.MotionValid(token)
+        end
         if
             not TokOK(token)
             or Ctl.On()
@@ -13677,9 +13693,9 @@ function FH.ExitRoute(token, state, abort)
         -- Hold while the lever keeps progressing. A fixed 12 s from the
         -- start (walking in included) released gates that were almost open
         -- and the game reset their progress (live report).
-        local gainAt, best = os.clock(), -1
+        local gainAt, best, reachedAt = os.clock(), -1, nil
         state.opening = true
-        while not stopped() and os.clock() - started < 40 and os.clock() - gainAt < 4 do
+        while not stopped() and os.clock() - started < 40 and (reachedAt or os.clock() - gainAt < 4) do
             root, hum = RootNow(), GetHumanoid()
             if not (root and hum and state.stand.Parent) then break end
             local distance = FH.ExitTriggerDistance(state.stand, root.Position)
@@ -13701,15 +13717,30 @@ function FH.ExitRoute(token, state, abort)
                 best, gainAt = progress.Value, os.clock()
             end
             if hold.on and best >= 0 then
-                FH.ExitHolding = { at = os.clock(), progress = best }
+                FH.ExitHolding = { at = os.clock(), progress = best, token = token }
             elseif not hold.on then
                 gainAt = math.max(gainAt, os.clock() - 2) -- still walking in
             end
-            if hold.on and progress and type(progress.Value) == "number" and progress.Value >= 0.98 then
-                FH.MarkExitOpened(door)
+            -- Keep holding through the last percent: releasing at 98-99 %
+            -- (the old early break) reset the gate in-game (live report:
+            -- "it always lets go at 99 %"). Done when the game ends the
+            -- action (progress falls back) or it reads full, after reaching
+            -- the top; at most 3 s after it.
+            local value = progress and type(progress.Value) == "number" and progress.Value or nil
+            if hold.on and value and value >= 0.98 then reachedAt = reachedAt or os.clock() end
+            if reachedAt then
+                local ended = (value and value < 0.5)
+                    or (value and value >= 0.999 and os.clock() - reachedAt > 0.3)
+                    or os.clock() - reachedAt > 3
+                if ended then
+                    FH.MarkExitOpened(door)
+                    break
+                end
+            elseif not hold.on and FH.ExitDoorOpen(door, center, state.triggers) then
+                -- Opened by someone else while we walked in. While we hold,
+                -- moving panels must not end the hold early.
                 break
             end
-            if FH.ExitDoorOpen(door, center, state.triggers) then break end
         end
         Follow.Release(token)
         state.opening = nil
@@ -15086,6 +15117,15 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
     forward = forward.Magnitude > 0.1 and forward.Unit or away
     local side = Vector3.new(-forward.Z, 0, forward.X)
     local full, current = AH.ScanSegs * AH.SegLen, Flat(rp - pred).Magnitude
+    -- A weave bias that changes every 1.5-3 s: the line bends left or right
+    -- unpredictably, but never frame to frame (no shake).
+    local nowW = os.clock()
+    local w = AH.Weave
+    if not w or nowW >= w.untilAt then
+        w = { angle = math.rad((math.random() * 2 - 1) * 55), untilAt = nowW + 1.5 + math.random() * 1.5 }
+        AH.Weave = w
+    end
+    local weave = away * math.cos(w.angle) + Vector3.new(-away.Z, 0, away.X) * math.sin(w.angle)
     local headings, candidates = { forward }, {}
     -- Exact travel and threat bearings survive rotation of the map. Scan each
     -- direction once; the old three passes repeated the same expensive rays.
@@ -15112,9 +15152,12 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                 local score = Flat(point - pred).Magnitude
                     + run * 0.8
                     + dir:Dot(away) * 10
-                    + jumps * (juke and 4 or -1.2)
+                    -- Hopping onto/over props breaks the Beast's line: a
+                    -- bonus, not a penalty (it used to run dead straight).
+                    + jumps * (juke and 4 or 2)
                     + (run >= full and 8 or 0)
                     + math.max(dir:Dot(forward), 0) * 6
+                    + math.max(dir:Dot(weave), 0) * 5
                 candidates[#candidates + 1] = { point = point, run = run, dir = dir, score = score }
             end
         end
@@ -15152,7 +15195,9 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                 AH.DeadEnds[#AH.DeadEnds + 1] = { pos = c.point, at = now }
                 if #AH.DeadEnds > 30 then table.remove(AH.DeadEnds, 1) end
             elseif open >= 4 then
-                c.score = c.score + 4 -- open junction: more ways to lose the Beast
+                c.score = c.score + 7 -- open junction/space: more ways to lose the Beast
+            elseif open == 2 then
+                c.score = c.score - 6 -- narrow pocket
             end
         end
     end
@@ -15916,6 +15961,13 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
                 return nil
             end
             AH.Dir = lane.dir
+            -- At the lip the aim is under our feet (zero input, a standing
+            -- beat at the edge): keep pushing on past it until we fall.
+            local over = Flat(lane.point - rp)
+            if over.Magnitude < 1.5 and hum.FloorMaterial ~= Enum.Material.Air then
+                local push = lane.dir and Flat(lane.dir) or over
+                if push.Magnitude > 0.1 then return lane.point + push.Unit * 2.5 end
+            end
             return lane.point
         else
             AH.DropTraversal, AH.DropNextAt = nil, now + 0.35
@@ -16150,7 +16202,9 @@ function AH.Go(tok)
                         oscFlips[#oscFlips + 1] = now
                     end
                     oscDir = heading
-                    while #oscFlips > 0 and now - oscFlips[1] > 1.5 do table.remove(oscFlips, 1) end
+                    -- 3 reversals within 3 s (live: a dead-end shuffle along a
+                    -- wall reversed every ~1.2 s and slipped under 1.5 s).
+                    while #oscFlips > 0 and now - oscFlips[1] > 3 do table.remove(oscFlips, 1) end
                     if #oscFlips >= 3 then
                         table.clear(oscFlips)
                         oscDir = nil
@@ -22315,89 +22369,67 @@ function Follow.LobbyStrollPoint(state, root, board)
     end
     return nil
 end
--- Turn our avatar toward another player the way a person does: never a
--- snap. Each time a different style (slow ease, two-stage glance, casual
--- turn with a slight overshoot that settles), duration scaled by the angle.
-function Follow.FaceToward(targetRoot)
+-- Turn toward another player the way people actually do it in Roblox:
+-- mostly a short tap of a movement key toward them (the avatar turns with
+-- its own native rotation and shuffles a little), sometimes a quick
+-- camera-like flick, a double tap, or a flick that overshoots and corrects.
+-- No slow eased glide (that read as fake).
+function Follow.FaceToward(targetRoot, token)
     local root, hum = RootNow(), GetHumanoid()
     if not (root and hum and targetRoot and targetRoot.Parent) then return end
-    local function yawOf(v) return math.atan2(v.Z, v.X) end
-    local function wrap(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+    local function towardNow()
+        local d = Flat(targetRoot.Position - root.Position)
+        return d.Magnitude > 0.5 and d.Unit or nil
+    end
+    local dir = towardNow()
+    if not dir then return end
     local look = Flat(root.CFrame.LookVector)
-    local toward = Flat(targetRoot.Position - root.Position)
-    if look.Magnitude < 0.1 or toward.Magnitude < 0.5 then return end
-    local startYaw = yawOf(look)
-    local total = wrap(yawOf(toward) - startYaw)
-    if math.abs(total) < math.rad(6) then return end
-    local angleShare = math.abs(total) / math.pi
+    if look.Magnitude > 0.1 and look.Unit:Dot(dir) > 0.97 then return end
+    local function tap(seconds)
+        local d = towardNow()
+        if not d then return end
+        local until_ = os.clock() + seconds
+        while os.clock() < until_ and RootNow() == root and not Ctl.On() do
+            FH.Move(token, hum, root.Position + d * 3)
+            task.wait()
+        end
+        FH.ReleaseMotion(token, true)
+    end
+    local function flick(seconds, overshoot)
+        local d = towardNow()
+        if not d then return end
+        local from = Flat(root.CFrame.LookVector)
+        if from.Magnitude < 0.1 then from = d end
+        local a0 = math.atan2(from.Z, from.X)
+        local diff = (math.atan2(d.Z, d.X) - a0 + math.pi) % (2 * math.pi) - math.pi
+        local target = diff * (overshoot or 1)
+        local autoRotate = hum.AutoRotate
+        pcall(function() hum.AutoRotate = false end)
+        local started = os.clock()
+        while RootNow() == root and not Ctl.On() do
+            local t = math.clamp((os.clock() - started) / seconds, 0, 1)
+            local yaw = a0 + target * t -- linear: a hand flick, not an eased glide
+            local pos = root.Position
+            pcall(function() root.CFrame = CFrame.lookAt(pos, pos + Vector3.new(math.cos(yaw), 0, math.sin(yaw))) end)
+            if t >= 1 then break end
+            task.wait()
+        end
+        pcall(function() hum.AutoRotate = autoRotate end)
+    end
     local roll = math.random()
-    local stages
-    if roll < 0.18 then
-        -- glance the other way first, then turn to them
-        local away = -(0.06 + math.random() * 0.1) * (total > 0 and 1 or -1) / math.max(math.abs(total) / math.pi, 0.25)
-        stages = {
-            { to = math.clamp(away, -0.4, 0), time = 0.3 + math.random() * 0.3 },
-            { pause = 0.1 + math.random() * 0.25 },
-            { to = 1, time = 0.55 + angleShare * (0.6 + math.random() * 0.5) },
-        }
-    elseif roll < 0.32 then
-        -- several small adjustments, like nudging the camera
-        local n = math.random(3, 4)
-        stages = {}
-        for i = 1, n do
-            stages[#stages + 1] = { to = i / n, time = 0.18 + math.random() * 0.22 }
-            if i < n then stages[#stages + 1] = { pause = 0.05 + math.random() * 0.2 } end
-        end
-    elseif roll < 0.4 then
-        -- calm ease-in-out
-        stages = { { to = 1, time = 0.45 + angleShare * (0.6 + math.random() * 0.5) } }
-    elseif roll < 0.7 then
-        -- glance most of the way, a brief beat, then settle
-        local first = 0.55 + math.random() * 0.2
-        stages = {
-            { to = first, time = 0.25 + angleShare * 0.35 + math.random() * 0.15 },
-            { pause = 0.12 + math.random() * 0.3 },
-            { to = 1, time = 0.25 + math.random() * 0.25 },
-        }
+    if roll < 0.45 then
+        tap(0.06 + math.random() * 0.14)
+    elseif roll < 0.65 then
+        flick(0.07 + math.random() * 0.12)
+    elseif roll < 0.82 then
+        tap(0.05 + math.random() * 0.08)
+        task.wait(0.15 + math.random() * 0.45)
+        tap(0.05 + math.random() * 0.1)
     else
-        -- casual turn, slight overshoot, settle back
-        local over = 1 + (0.06 + math.random() * 0.08) * (math.random() < 0.5 and 1 or -1) / math.max(angleShare, 0.3)
-        stages = {
-            { to = math.clamp(over, 0.85, 1.15), time = 0.5 + angleShare * (0.7 + math.random() * 0.6) },
-            { to = 1, time = 0.2 + math.random() * 0.25 },
-        }
+        flick(0.08 + math.random() * 0.1, 1.08 + math.random() * 0.15)
+        task.wait(0.08 + math.random() * 0.25)
+        flick(0.06 + math.random() * 0.08)
     end
-    local autoRotate = hum.AutoRotate
-    pcall(function() hum.AutoRotate = false end)
-    local done = 0
-    for _, stage in ipairs(stages) do
-        if stage.pause then
-            task.wait(stage.pause)
-        else
-            local from, started = done, os.clock()
-            while true do
-                if RootNow() ~= root or not targetRoot.Parent or Ctl.On() then
-                    pcall(function() hum.AutoRotate = autoRotate end)
-                    return
-                end
-                local t = math.clamp((os.clock() - started) / stage.time, 0, 1)
-                local eased = t * t * (3 - 2 * t) -- smoothstep
-                local share = from + (stage.to - from) * eased
-                -- Follow the target if it moves while we turn.
-                local live = Flat(targetRoot.Position - root.Position)
-                if live.Magnitude > 0.5 then total = wrap(yawOf(live) - startYaw) end
-                local yaw = startYaw + total * share
-                local pos = root.Position
-                pcall(function()
-                    root.CFrame = CFrame.lookAt(pos, pos + Vector3.new(math.cos(yaw), 0, math.sin(yaw)))
-                end)
-                if t >= 1 then break end
-                task.wait()
-            end
-            done = stage.to
-        end
-    end
-    pcall(function() hum.AutoRotate = autoRotate end)
 end
 function Follow.LobbyStep(token)
     local state = Follow.Lobby
@@ -22547,7 +22579,7 @@ function Follow.LobbyStep(token)
         -- the body smoothly until it looks straight at their face.
         FH.ReleaseMotion(token, true)
         task.wait(0.05 + math.random() * 0.25) -- settle before turning
-        Follow.FaceToward(buddy.root)
+        Follow.FaceToward(buddy.root, token)
         -- Occasionally drift a little or pick someone else, never a fixed loop.
         local roll = math.random()
         if roll < 0.35 then state.buddy = nil elseif roll < 0.6 then state.buddyOffset = nil end
