@@ -2559,7 +2559,10 @@ local DoorFail = setmetatable({}, { __mode = "k" })
 local DoorOpenedAt = setmetatable({}, { __mode = "k" })
 local DoorTries = setmetatable({}, { __mode = "k" })
 local DoorB = setmetatable({}, { __mode = "k" })
-local PATH_SPECS = { { 2.4, 5 }, { 1.2, 4 } }
+-- Agent heights cover a standing avatar (~5 studs): crawl-only vents are
+-- walls for routing (a 4-stud agent routed through them; the standing
+-- avatar pressed into the vent and shook - live report).
+local PATH_SPECS = { { 2.4, 5.2 }, { 1.2, 5 } }
 -- Movement is owned by one feature at a time; chat only submits feature tokens.
 -- Manual input / flight always wins. Expiring leases cannot strand a stopped task.
 FH.Motion = { token = nil, priority = 0, untilAt = 0, aim = nil, sentAt = 0, hum = nil }
@@ -11559,7 +11562,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                             if floorY and floorY < feetY - 3 and floorY >= goalFloor - 3 then
                                 local point = Vector3.new(c.X, floorY, c.Z)
                                 local after = Flat(goal - point).Magnitude + (feetY - floorY)
-                                if remaining > after + 15 and not FH.LaneRejected(rp, point, feetY) then
+                                -- Jump down a rail/ledge whenever it saves a few studs
+                                -- (stairs/ramps were taken out of habit, live report).
+                                if remaining > after + 6 and not FH.LaneRejected(rp, point, feetY) then
                                     local landing, crossing = Follow.DropLane(hum, root, point, feetY)
                                     local drop = landing and Follow.StartDrop(token, hum, root, landing, crossing)
                                     if drop then
@@ -12412,6 +12417,30 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
 
         -- A valid last metre needs no new path job or tour of the capsule.
         if not near() then contactAdvance() end
+        -- Pod close and a closed door right between us and it: open that
+        -- door (live: the rescue turned away near the pod room and went to
+        -- open some other door, a long detour).
+        if not near() and flatDist() < 30 then
+            local r = RootNow()
+            if r then
+                local hit = Workspace:Raycast(r.Position, trig.Position - r.Position, FH.PodRay(trig))
+                local door = hit and FH.DoorOf(hit.Instance)
+                local g = door and FH.DoorGeom(door, r.Position)
+                local hum = GetHumanoid()
+                if g and hum and FH.DoorOnFloor(g, r.Position, FH.Feet(hum, r)) and FH.DoorBlocked(g)
+                    and os.clock() >= (routeState.directDoorAt or 0) then
+                    routeState.directDoorAt = os.clock() + 4
+                    moving(true)
+                    local passed = Follow.PassDoor(tok, g, function() return stop() or near() end, nil, trig.Position, routeState)
+                    moving(false)
+                    if stop() then
+                        release()
+                        return "stop"
+                    end
+                    if passed then contactAdvance() end
+                end
+            end
+        end
         if not near() then
             local root = RootNow()
             local cands = root and FH.PodApproach(trig, root.Position) or {}
@@ -13703,9 +13732,12 @@ function FH.ExitRoute(token, state, abort)
         -- Hold while the lever keeps progressing. A fixed 12 s from the
         -- start (walking in included) released gates that were almost open
         -- and the game reset their progress (live report).
-        local gainAt, best, reachedAt = os.clock(), -1, nil
+        local gainAt, best, reachedAt, sawLow = os.clock(), -1, nil, false
         state.opening = true
-        while not stopped() and os.clock() - started < 40 and (reachedAt or os.clock() - gainAt < 4) do
+        -- If the action-progress stat never tracks this lever (no low value
+        -- seen while holding), hold on time like the older builds (15 s).
+        while not stopped() and os.clock() - started < 40
+            and (reachedAt or os.clock() - gainAt < 4 or not sawLow and os.clock() - started < 15) do
             root, hum = RootNow(), GetHumanoid()
             if not (root and hum and state.stand.Parent) then break end
             local distance = FH.ExitTriggerDistance(state.stand, root.Position)
@@ -13723,8 +13755,13 @@ function FH.ExitRoute(token, state, abort)
             -- panel geometry looks like (live data: "still closed after
             -- opening", then the bot ran off to open the other exit).
             local progress = FH.Stat(LocalPlayer, FH.HACK_PROGRESS)
-            if progress and type(progress.Value) == "number" and progress.Value > best + 0.001 then
-                best, gainAt = progress.Value, os.clock()
+            local raw = progress and type(progress.Value) == "number" and progress.Value or nil
+            -- Only this hold's progress counts. A stale value left by the
+            -- previous action (e.g. 1.0 after a PC) made the loop think the
+            -- gate was done at once and let go - the gate never opened.
+            if hold.on and raw and raw < 0.9 then sawLow = true end
+            if hold.on and sawLow and raw and raw > best + 0.001 then
+                best, gainAt = raw, os.clock()
             end
             if hold.on and best >= 0 then
                 FH.ExitHolding = { at = os.clock(), progress = best, token = token }
@@ -13736,7 +13773,7 @@ function FH.ExitRoute(token, state, abort)
             -- "it always lets go at 99 %"). Done when the game ends the
             -- action (progress falls back) or it reads full, after reaching
             -- the top; at most 3 s after it.
-            local value = progress and type(progress.Value) == "number" and progress.Value or nil
+            local value = sawLow and raw or nil
             if hold.on and value and value >= 0.98 then reachedAt = reachedAt or os.clock() end
             if reachedAt then
                 local ended = (value and value < 0.5)
@@ -13746,9 +13783,10 @@ function FH.ExitRoute(token, state, abort)
                     FH.MarkExitOpened(door)
                     break
                 end
-            elseif not hold.on and FH.ExitDoorOpen(door, center, state.triggers) then
-                -- Opened by someone else while we walked in. While we hold,
-                -- moving panels must not end the hold early.
+            elseif (not hold.on or not sawLow and os.clock() - started > 3)
+                and FH.ExitDoorOpen(door, center, state.triggers) then
+                -- Opened by someone else while we walked in (or, without a
+                -- progress stat, the gate itself shows open).
                 break
             end
         end

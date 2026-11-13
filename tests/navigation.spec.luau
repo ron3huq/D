@@ -1896,6 +1896,33 @@ scenario("the exit lever is held through the last percent until the gate opens",
     FH.MarkExitOpened = marked
     check(exit.open and not released, "the lever was released at 98-99 % before the gate opened")
 end)
+scenario("a stale full action progress from a PC does not end the exit hold at once", function()
+    local exit = openExit(8)
+    exit.open = false
+    exitPlayers()
+    local marked = FH.MarkExitOpened
+    FH.MarkExitOpened = function() end
+    stats.ActionProgress.Value = 1 -- left over from the last computer
+    local state, began = {}, false
+    local function tick()
+        if not exit.open then
+            if state.opening then
+                if not began then
+                    began = true
+                    stats.ActionProgress.Value = 0 -- the game starts this lever
+                else
+                    stats.ActionProgress.Value = math.min(stats.ActionProgress.Value + 0.1, 1)
+                    if stats.ActionProgress.Value >= 1 then exit.open = true end
+                end
+            end
+            if now < 130 then task.delay(0.2, tick) end
+        end
+    end
+    task.delay(0.2, tick)
+    FH.ExitRoute(7, state)
+    FH.MarkExitOpened = marked
+    check(exit.open, "a stale 100 % progress ended the exit hold before the lever even started")
+end)
 scenario("two open exits still produce approach and stable waiting", function()
     local exit = openExit(30); openExit(-70)
     exitPlayers()

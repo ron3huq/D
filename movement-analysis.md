@@ -772,3 +772,19 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   Panel movement now counts only after the panels stayed put for 2 s, and while waiting the bot
   checks once a second for a solid panel of that gate between it and the gate centre; if found it
   drops the mark and goes to open it.
+
+## Round 18 (Workspace_3 = the same two recordings as Workspace_2; fixes from the report + code review)
+
+- Exit gate not opening (likely since round 16): the hold read the action-progress stat without
+  checking it belonged to this hold. A stale value (1.0 left by the previous computer) counted
+  as "reached the top" at once and the lever was let go after 0.3 s. Only progress seen rising
+  from a low value (< 0.9) during this hold counts; if the stat never tracks the lever, the
+  hold runs on time like the older builds (15 s, earlier if the gate itself shows open). Test:
+  round 17 fails it (0.21 s), this build passes.
+- Vents: the narrow route profile used a 4-stud agent height, so routes could lead through
+  crawl-only openings the standing avatar cannot pass (pressing and shaking). Agent heights are
+  5.2 / 5 now - vents are walls for routing.
+- Drop shortcuts (jump a rail/ledge down instead of walking the stairs/ramp) are taken when they
+  save 6+ studs (was 15).
+- Rescue: with the pod within 30 studs and a closed door straight between us and it, that door is
+  opened directly instead of a door-route search that could pick a different, far door.
