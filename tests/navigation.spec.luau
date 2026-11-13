@@ -972,6 +972,8 @@ scenario("rescue/AutoHide hand-over holds instead of flipping at the line", func
     check(AR.ThreatPreempts(), "hand-over flipped back as soon as the Beast crossed 6 studs")
     world.threat = Vec.new(30, 3, 0)
     task.wait(1.6)
+    check(AR.ThreatPreempts(), "rescue resumed too soon after a close Beast (ran back into it)")
+    task.wait(1.1)
     check(not AR.ThreatPreempts(), "hand-over stayed latched after the Beast left")
 end)
 scenario("lobby is recognised from a Folder of lobby objects (no pivot)", function()
@@ -1014,6 +1016,17 @@ scenario("the end of a partial route short of the goal does not stand still", fu
     FH.BanDirect = now + 20
     local result = Follow.WalkTo(7, function() return Vec.new(20, 3, 0) end, 1, nil, { noDoor = true, maxTime = 3 })
     check(root.Position.X > 10, "stood at the end of a partial route: x=" .. tostring(root.Position.X) .. " " .. tostring(result))
+end)
+scenario("input heading turns like a player's hand in open space, exact near walls", function()
+    if not FH.SmoothHeading then return end
+    root.AssemblyLinearVelocity = Vec.new(16, 0, 0)
+    FH.SmoothDir = { dir = Vec.new(1, 0, 0), at = now, root = root }
+    local out = FH.SmoothHeading(Vec.new(0, 0, 1), 0.016, root, 20)
+    check(out.Z < 0.5 and out.Z > 0, "a 90-degree turn in open space snapped instead of turning smoothly")
+    box("NearWall", Vec.new(-5, 0, 2), Vec.new(5, 10, 3))
+    FH.SmoothDir = { dir = Vec.new(1, 0, 0), at = now, root = root }
+    local exact = FH.SmoothHeading(Vec.new(0, 0, 1), 0.016, root, 20)
+    check(exact.Z > 0.99, "next to a wall the heading was rounded (scrapes the wall)")
 end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
@@ -1768,6 +1781,15 @@ scenario("a solid exit panel in front revokes a stale 'opened' mark", function()
     FH.MarkExitOpened = FH.MarkExitOpened or function() end
     panel.CanCollide = false
     check(not FH.ExitPanelAhead(exit, root, Vec.new(1, 0, 0)), "a non-colliding (opened) panel still read as shut")
+end)
+scenario("a Beast guarding the pod holds the rescue back until it leaves", function()
+    if not AR.BeastCampsPod then return end
+    local info = pod(30)
+    local beast, br = actor("GuardBeast", Vec.new(36, 3, 0), true)
+    world.players = { LocalPlayer, beast }
+    check(AR.BeastCampsPod(info.trig), "a Beast 6 studs from the pod was not seen as guarding it")
+    br.Position = Vec.new(80, 3, 0)
+    check(not AR.BeastCampsPod(info.trig), "a Beast far from the pod still blocked the rescue")
 end)
 scenario("rescue adopts the forward segment after passing an old waypoint", function()
     root.Position = Vec.new(11, 3, 0); updateParts()

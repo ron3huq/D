@@ -703,3 +703,26 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   marks the round free for AutoHide; "not free" etc. cancels it. Ends with the round.
 - Lobby face-to-face: the avatar now turns its body smoothly to face the other player squarely
   (a 0.6-stud step was below the input threshold and left it side-on).
+
+## Round 14 (Workspace, 45 files)
+
+- The recorder only flags stands >= 1.2 s, so the "one step, one beat" stutter was measured from
+  the 0.1 s samples: 74 in-match micro-stops (0.15-0.9 s), almost all AutoFarm holding position.
+  - No local lane while a plan is computed: the controller now keeps moving on an open heading
+    toward the goal at once (non-rescue) instead of holding until the breaker.
+  - The "goal right under the feet" rule waited 0.4 s still; it now only needs ground contact and
+    a small vertical speed. Without an edge it keeps walking while it looks.
+- Low health (<10%) stutter: with a captive in a pod, AutoFarm released movement every tick for
+  AutoHelp, and AutoHide yielded to "pods pending", although the rescue never started (health
+  gate). Both now use `AR.Pending()` (one gate), so the farm/hide continue normally.
+- Natural turning: `FH.SmoothHeading` turns the input heading at a bounded rate (14 rad/s, 18 for
+  near reversals) like a hand on the keys - only in open space at speed with the aim > 6 studs
+  ahead; small corrections (< 25 deg), corners, walls and doorways stay exact.
+- Pod behind a wall (Ghost Town: route around a platform, plan refresh unusable, local steering
+  pulled at the pod behind the wall, next plan led back around): an unusable replan within 5 s of
+  a good route keeps walking that route from the nearest point.
+- Rescue vs Beast: a Beast within 16 studs of the pod (guarding it) holds the rescue back
+  (farm/hide continue) until it leaves; free round / AFK Beast excepted. After a hand-over to
+  AutoHide the rescue resumes only after 2.5 s and with the Beast beyond 18 studs (max 5 s).
+- Lobby face-to-face: varied, human-paced turns (calm ease-in-out, two-stage glance with a beat,
+  casual turn with a slight overshoot that settles), duration scaled by the angle.

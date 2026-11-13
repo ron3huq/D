@@ -4807,9 +4807,63 @@ function FH.GroundMoveStep(dt)
     then
         return
     end
-    if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); return end
+    if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); FH.SmoothDir = nil; return end
     local direction = Flat(motion.aim - root.Position)
-    hum:Move(direction.Magnitude > 0.5 and direction.Unit or Vector3.new(0, 0, 0), false)
+    if direction.Magnitude <= 0.5 then
+        FH.SmoothDir = nil
+        hum:Move(Vector3.new(0, 0, 0), false)
+        return
+    end
+    hum:Move(FH.SmoothHeading(direction.Unit, dt, root, direction.Magnitude), false)
+end
+-- Turn the input heading like a player's hand on the keys: a bounded turn
+-- rate (fast enough for doorways, ~0.1 s per 90 deg) instead of snapping
+-- between headings every frame, which read as jerky shaking.
+function FH.SmoothHeading(want, dt, root, reach)
+    local now = os.clock()
+    local state = FH.SmoothDir
+    if not state or state.root ~= root or now - state.at > 0.25 then
+        FH.SmoothDir = { dir = want, at = now, root = root }
+        return want
+    end
+    local cur = state.dir
+    local a0 = math.atan2(cur.Z, cur.X)
+    local a1 = math.atan2(want.Z, want.X)
+    local diff = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
+    -- Small corrections (wall hugging, doorway centring) pass at once.
+    if math.abs(diff) < math.rad(25) then
+        state.dir, state.at = want, now
+        return want
+    end
+    -- Only in open space: next to walls, frames and doorways the exact
+    -- heading matters more than a rounded turn (a rounded turn scrapes).
+    local origin = root.Position
+    local speed = Flat(root.AssemblyLinearVelocity).Magnitude
+    -- Near a corner / waypoint the exact heading matters (cutting it scrapes
+    -- the corner): only round turns toward an aim still well ahead.
+    local open = speed > 8 and (reach or 0) > 6
+    if open then
+        for _, deg in ipairs({ 0, 45, -45, 90, -90 }) do
+            for _, base in ipairs({ want, cur }) do
+                local r = math.rad(deg)
+                local d = Vector3.new(base.X * math.cos(r) - base.Z * math.sin(r), 0,
+                    base.X * math.sin(r) + base.Z * math.cos(r))
+                if Workspace:Raycast(origin, d * 4, rayParams) then open = false break end
+            end
+            if not open then break end
+        end
+    end
+    if not open then
+        state.dir, state.at = want, now
+        return want
+    end
+    -- Near reversals are deliberate (a juke or a flight): turn faster.
+    local rate = math.abs(diff) > 2.4 and 18 or 14
+    local maxStep = rate * math.clamp(dt or 0.016, 0.005, 0.1)
+    local a = a0 + math.clamp(diff, -maxStep, maxStep)
+    local out = Vector3.new(math.cos(a), 0, math.sin(a))
+    state.dir, state.at = out, now
+    return out
 end
 -- Share a short, verified uphill sample between navigation and the render
 -- recovery loop. Flat walking needs only the coarse profile and one floor ray.
@@ -10233,6 +10287,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local lastPos, lastCheck, stuck = nil, os.clock(), 0
     local dropShortcutAt, dropShortcutTries = 0, 0
     local breaker, breakerAt, overheadDrop
+    local lastRoute, restoringRoute
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
     local fails, doorTries, radIdx, escTries = 0, 0, 1, 0
@@ -10405,6 +10460,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         mode, wps, wpi, wpFull = "path", w, index, full
+        if not restoringRoute then lastRoute = { w = w, full = full, at = os.clock() } end
         if opts.rescueJuke then pendingSteer.retreatOrigin, pendingSteer.verticalLane = nil, nil end
         activePath, laIdx = path, nil
         if path then
@@ -11202,6 +11258,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     fails = 0
                 else
                     if FH.Diag then FH.Diag("plan", "result-unusable:" .. tostring(j.res and j.res.mode)) end
+                    -- A replan came back unusable right after a good route
+                    -- (live: around a wall to a pod - local steering then
+                    -- pulled straight at the pod behind the wall, the next
+                    -- plan led back around, again and again). Keep walking
+                    -- the recent route from where we are instead.
+                    if mode ~= "path" and lastRoute and os.clock() - lastRoute.at < 5 then
+                        restoringRoute = true
+                        local ok = setPath(lastRoute.w, lastRoute.full, nil)
+                        restoringRoute = false
+                        if ok then
+                            if FH.Diag then FH.Diag("plan", "kept-recent-route") end
+                            nextPlan = os.clock() + 0.6
+                            continue
+                        end
+                    end
                     fails = fails + 1
                     -- Remember where plans keep failing (across WalkTo calls).
                     local spot = FH.PlanFailSpot
@@ -11315,7 +11386,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- made the feet briefly "above" the goal, it stepped off, climbed
         -- back and stepped off again - violent shaking, live data).
         local grounded = hum.FloorMaterial ~= Enum.Material.Air
-        local below = grounded and now - progressAt > 0.4 and goalFlat < 2.5 and goal.Y < feetY - 2.5
+        local below = grounded and math.abs(root.AssemblyLinearVelocity.Y) < 3 and goalFlat < 2.5 and goal.Y < feetY - 2.5
         -- No route found twice to a target a floor below (live: 35 s
         -- shuffling on an upper floor, every plan unusable): go down the
         -- nearest edge toward it instead of pacing.
@@ -11389,7 +11460,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 fallThrough = true
             elseif overheadDrop then
                 FH.Move(token, hum, overheadDrop.aim)
-            elseif now - progressAt > 1.5 and not job then
+            elseif goal.Y < rp.Y or now - progressAt > 1.5 and not job then
+                -- No edge found yet: keep walking (an open heading) while
+                -- looking, instead of a standing beat.
                 local dir = Follow.BreakerDirection(rp, rp + Flat(root.CFrame.LookVector) * 5, feetY)
                 overheadDrop = { aim = rp + dir * 6, untilAt = now + 0.8 }
                 FH.Move(token, hum, overheadDrop.aim)
@@ -11415,15 +11488,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- after 1.5 s without progress, walk out blind for 0.7 s.
                 -- Also while a slow route search runs (live: 2 s standing in
                 -- a corner waiting for the planner): after 0.6 s, walk out.
-                if now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
-                    and hum.FloorMaterial ~= Enum.Material.Air then
+                -- No local lane while a plan is computed: keep moving on an
+                -- open heading toward the goal right away (the old wait
+                -- here was the "one step, one beat, one step" stutter).
+                local quick = not opts.rescueJuke
+                    and (job or now - progressAt > 0.3 or now - (breakerAt or 0) > 1.3)
+                local slow = now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
+                if hum.FloorMaterial ~= Enum.Material.Air and (quick or slow) then
                     local dir = Follow.BreakerDirection(rp, goal, feetY)
                     breaker = { aim = rp + dir * 6, untilAt = now + 0.7 }
                     breakerAt = now
                     if FH.Diag then FH.Diag("walk", "stall-breaker") end
                     FH.Move(token, hum, breaker.aim)
                 else
-                    -- Only stop if every locally scanned direction is obstructed.
                     FH.Move(token, hum, rp, false, goal)
                 end
             end
@@ -14165,7 +14242,11 @@ function Follow.Main(token, player)
             exitStage()
             return
         end
-        local pod = nearestPod(nil)
+        -- Only yield to a rescue that will really run. With AutoHelp on but
+        -- not rescuing (health < 10%, ...) this used to release the farm
+        -- every tick: walk, beat, walk, beat (live report).
+        local pod = (not AR.LowHealth()) and nearestPod(nil) or nil
+        if pod and AR.Active and not AR.Pending() then pod = nil end
         if pod then
             if AR.Active then
                 -- AutoHelp owns the close-contact rescue and rescue-only speed.
@@ -14680,7 +14761,10 @@ end
 function AH.PodsPending()
     if FH.AmBeast() or FH.ExitEscapePending() then return false end
     local rescue = AH.RescueContext()
-    if not rescue and (not AR.Active or #AR.Pods() == 0) then return false end
+    -- Same gate as the rescue itself (health >= 10%, in the match, pod in
+    -- this map ...). Counting captives alone made AutoHide yield to a
+    -- rescue that never started (low health): a stop-go-stop stutter.
+    if not rescue and (not AR.Active or #AR.Pods() == 0 or not AR.Pending()) then return false end
     local threat = AH.Eval()
     -- Rescue only yields inside its reduced red alert. Outside rescue keep
     -- the ordinary escape lease until the same safe-distance checks finish.
@@ -16492,6 +16576,27 @@ function AR.Pods(ignoreSkip)
     AR.PodAt, AR.PodList = now, res
     return res
 end
+-- A Beast standing guard at the pod (live: the rescue ran into it, fled,
+-- and ran straight back 1.5 s later, again and again): wait it out - the
+-- farm/hide keep working - and rescue once it walks away. A free round or an
+-- AFK Beast does not count.
+function AR.BeastCampsPod(trig)
+    if not trig then return false end
+    local threat = AH.Active and AH.Eval and AH.Eval() or nil
+    if threat and (threat.free or threat.afk) then return false end
+    local tp = trig.Position
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and FH.True(player, FH.BEASTN) then
+            local br = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            local bhum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+            if br and bhum and bhum.Health > 0 and math.abs(br.Position.Y - tp.Y) < Follow.MaxDY + 2
+                and Flat(br.Position - tp).Magnitude <= 16 then
+                return true
+            end
+        end
+    end
+    return false
+end
 -- Below 10% health a rescue is too likely to end in our own capture: leave
 -- the captives to the others and keep only AutoFarm + AutoHide.
 function AR.LowHealth()
@@ -16529,6 +16634,7 @@ function AR.Pending()
         local info = AR.PodInfo(cached.trig, map)
         if info and info.occupant == cached.occupant then
             local root = RootNow()
+            if AR.BeastCampsPod(info.trig) then return false end
             return not (root and (info.trig.Position - root.Position).Magnitude > 450)
         end
         -- Release/recapture is live, even inside the discovery cache window.
@@ -16566,6 +16672,7 @@ function AR.Pending()
     -- pod is 450+ studs away from a player standing in that map.
     local root = RootNow()
     if AR.PendingPick and root and (AR.PendingPick.trig.Position - root.Position).Magnitude > 450 then return false end
+    if AR.PendingPick and AR.BeastCampsPod(AR.PendingPick.trig) then return false end
     return AR.PendingPick ~= nil
 end
 function AR.Nearest()
@@ -16754,8 +16861,8 @@ function AR.ThreatPreempts()
         return false
     end
     local threat = AH.Eval()
-    local near = threat.danger and threat.pos and root and Flat(threat.pos - root.Position).Magnitude <= 14
-    if now - latch.last < 1.5 or near and now - latch.since < 4 then return true end
+    local near = threat.danger and threat.pos and root and Flat(threat.pos - root.Position).Magnitude <= 18
+    if now - latch.last < 2.5 or near and now - latch.since < 5 then return true end
     AR.PreemptLatch = nil
     return false
 end
@@ -22190,31 +22297,71 @@ function Follow.LobbyStrollPoint(state, root, board)
     end
     return nil
 end
--- Smooth yaw turn of our avatar toward another root (lobby chat pose).
-function Follow.FaceToward(targetRoot, seconds)
+-- Turn our avatar toward another player the way a person does: never a
+-- snap. Each time a different style (slow ease, two-stage glance, casual
+-- turn with a slight overshoot that settles), duration scaled by the angle.
+function Follow.FaceToward(targetRoot)
     local root, hum = RootNow(), GetHumanoid()
     if not (root and hum and targetRoot and targetRoot.Parent) then return end
-    local started = os.clock()
+    local function yawOf(v) return math.atan2(v.Z, v.X) end
+    local function wrap(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+    local look = Flat(root.CFrame.LookVector)
+    local toward = Flat(targetRoot.Position - root.Position)
+    if look.Magnitude < 0.1 or toward.Magnitude < 0.5 then return end
+    local startYaw = yawOf(look)
+    local total = wrap(yawOf(toward) - startYaw)
+    if math.abs(total) < math.rad(6) then return end
+    local angleShare = math.abs(total) / math.pi
+    local roll = math.random()
+    local stages
+    if roll < 0.4 then
+        -- calm ease-in-out
+        stages = { { to = 1, time = 0.45 + angleShare * (0.6 + math.random() * 0.5) } }
+    elseif roll < 0.7 then
+        -- glance most of the way, a brief beat, then settle
+        local first = 0.55 + math.random() * 0.2
+        stages = {
+            { to = first, time = 0.25 + angleShare * 0.35 + math.random() * 0.15 },
+            { pause = 0.12 + math.random() * 0.3 },
+            { to = 1, time = 0.25 + math.random() * 0.25 },
+        }
+    else
+        -- casual turn, slight overshoot, settle back
+        local over = 1 + (0.06 + math.random() * 0.08) * (math.random() < 0.5 and 1 or -1) / math.max(angleShare, 0.3)
+        stages = {
+            { to = math.clamp(over, 0.85, 1.15), time = 0.5 + angleShare * (0.7 + math.random() * 0.6) },
+            { to = 1, time = 0.2 + math.random() * 0.25 },
+        }
+    end
     local autoRotate = hum.AutoRotate
     pcall(function() hum.AutoRotate = false end)
-    while os.clock() - started < seconds do
-        local live = RootNow()
-        if live ~= root or not targetRoot.Parent or Ctl.On() then break end
-        local toward = Flat(targetRoot.Position - root.Position)
-        if toward.Magnitude < 0.5 then break end
-        local look = Flat(root.CFrame.LookVector)
-        if look.Magnitude < 0.1 then look = toward end
-        local a = math.clamp((os.clock() - started) / seconds + 0.25, 0, 1)
-        local dir = (look.Unit:Lerp(toward.Unit, a))
-        if dir.Magnitude < 0.05 then dir = toward.Unit end
-        local pos = root.Position
-        pcall(function() root.CFrame = CFrame.lookAt(pos, pos + dir.Unit) end)
-        task.wait()
-    end
-    local final = Flat(targetRoot.Position - root.Position)
-    if final.Magnitude > 0.5 and RootNow() == root then
-        local pos = root.Position
-        pcall(function() root.CFrame = CFrame.lookAt(pos, pos + final.Unit) end)
+    local done = 0
+    for _, stage in ipairs(stages) do
+        if stage.pause then
+            task.wait(stage.pause)
+        else
+            local from, started = done, os.clock()
+            while true do
+                if RootNow() ~= root or not targetRoot.Parent or Ctl.On() then
+                    pcall(function() hum.AutoRotate = autoRotate end)
+                    return
+                end
+                local t = math.clamp((os.clock() - started) / stage.time, 0, 1)
+                local eased = t * t * (3 - 2 * t) -- smoothstep
+                local share = from + (stage.to - from) * eased
+                -- Follow the target if it moves while we turn.
+                local live = Flat(targetRoot.Position - root.Position)
+                if live.Magnitude > 0.5 then total = wrap(yawOf(live) - startYaw) end
+                local yaw = startYaw + total * share
+                local pos = root.Position
+                pcall(function()
+                    root.CFrame = CFrame.lookAt(pos, pos + Vector3.new(math.cos(yaw), 0, math.sin(yaw)))
+                end)
+                if t >= 1 then break end
+                task.wait()
+            end
+            done = stage.to
+        end
     end
     pcall(function() hum.AutoRotate = autoRotate end)
 end
@@ -22365,7 +22512,8 @@ function Follow.LobbyStep(token)
         -- input threshold, so the avatar ended up side-on): stop, then turn
         -- the body smoothly until it looks straight at their face.
         FH.ReleaseMotion(token, true)
-        Follow.FaceToward(buddy.root, 0.35)
+        task.wait(0.05 + math.random() * 0.25) -- settle before turning
+        Follow.FaceToward(buddy.root)
         -- Occasionally drift a little or pick someone else, never a fixed loop.
         local roll = math.random()
         if roll < 0.35 then state.buddy = nil elseif roll < 0.6 then state.buddyOffset = nil end

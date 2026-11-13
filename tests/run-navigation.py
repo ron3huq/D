@@ -37,7 +37,7 @@ FH.LaneRevision FH.RejectLane FH.LaneRejected FH.PathLaneRejected FH.AddBad FH.I
 FH.JumpReady FH.RecordTakeoff FH.CompTriggers FH.CanHold FH.Feet FH.Space Follow.RescueGrounded FH.TakeoffSupported FH.NormalJump
 FH.ConfirmNormalTakeoff FH.NoteNormalTakeoff FH.Jump FH.Tick FH.JumpTickStep FH.MotionProfile FH.PreciseMove FH.JumpMoveStep
 FH.MotionGuardedStep FH.MotionStep FH.ForwardLane FH.ReleaseForward FH.ForwardOwner FH.PressForward FH.ForwardWatchStep
-FH.PeriodicComputerBlocked FH.PeriodicSpaceStep FH.GroundMoveStep FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
+FH.PeriodicComputerBlocked FH.PeriodicSpaceStep FH.GroundMoveStep FH.SmoothHeading FH.StairProbe FH.StairJumpStep FH.ReleaseSpace FH.CanDoubleInput
 FH.NativeJumpLimits FH.SupportVelocityY FH.TraversalOwned FH.TraversalSweep FH.TraversalStairs
 FH.TraversalLane FH.TryJump FH.ApproachClear FH.StairLane FH.Profile FH.Seg FH.Line
 FH.Ground FH.Path FH.Len FH.RouteCost FH.PathAny Follow.Hold Follow.Release Follow.PlanClear
@@ -49,7 +49,7 @@ Follow.WalkTo FH.PodRay FH.PodRouteGoal FH.PodApproach FH.RescueJuke FH.RescuePo
 AR.Loop Follow.EscapeRoom Follow.FindDoorRoute Follow.DoorRoute Follow.PlanDoor Follow.Pick AH.Scan AR.Nearest
 Follow.RescueDoorState Follow.RescueDoorDir Follow.RescueRouteReturns Follow.RescueDoorKind Follow.RescueDoorCrossed
 Follow.DoorOpening Follow.PassDoor Follow.ActiveDoor Follow.Push FH.Triggers FH.DoorStand FH.DoorCanHold
-Follow.CenterAim Follow.BreakerDirection FH.ExitSpan FH.ExitLane FH.ExitTriggerDistance FH.ExitTeamPull FH.BeastNearPoint FH.ExitWaitExpired FH.RescueBeastAhead AH.ContactThreat AH.NoteMeet AH.RoundStep AH.PanicSuppressed AH.PanicChaser AH.SeerActive FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing FH.ExitPanelAhead FH.RevokeExitOpened AH.OnBeastChat AH.ChatFreeRound
+Follow.CenterAim Follow.BreakerDirection FH.ExitSpan FH.ExitLane FH.ExitTriggerDistance FH.ExitTeamPull FH.BeastNearPoint FH.ExitWaitExpired FH.RescueBeastAhead AH.ContactThreat AH.NoteMeet AH.RoundStep AH.PanicSuppressed AH.PanicChaser AH.SeerActive FH.ExitEscapePending AH.PodsPending FH.SetEndgame FH.ActiveSurvivor FH.ExitPolicy FH.ExitDanger FH.ExitThreat FH.ExitPriority FH.ExitRoute FH.ExitTraversalClear FH.ExitTraverse AH.Pursuing FH.ExitPanelAhead FH.RevokeExitOpened AH.OnBeastChat AH.ChatFreeRound AR.BeastCampsPod
 """.split()
 functions = "\n".join(function(n) for n in names)
 functions += "\n" + function("AH.Eval").replace("function AH.Eval(", "function AH.TestEval(", 1)
