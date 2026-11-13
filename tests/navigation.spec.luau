@@ -1007,6 +1007,14 @@ scenario("a rejected lane is slid past on one side instead of standing still", f
     local again = FH.Motion.aim
     check(again and (again.Z > 0) == side, "slide side flipped between frames (left-right shake)")
 end)
+scenario("the end of a partial route short of the goal does not stand still", function()
+    world.route = function(from)
+        return { { Position = Vec.new(from.X, 0, from.Z), Action = "Walk" }, { Position = Vec.new(6, 0, 0), Action = "Walk" } }
+    end
+    FH.BanDirect = now + 20
+    local result = Follow.WalkTo(7, function() return Vec.new(20, 3, 0) end, 1, nil, { noDoor = true, maxTime = 3 })
+    check(root.Position.X > 10, "stood at the end of a partial route: x=" .. tostring(root.Position.X) .. " " .. tostring(result))
+end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
     world.threat = Vec.new(3, 3, 0)
