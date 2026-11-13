@@ -1,7 +1,14 @@
 -- FTF stall recorder (D companion). Standalone: run it alongside D.
--- Only observes. Never moves the avatar, presses keys, fires remotes or
--- uses HTTP. Records why/where the avatar stands still, paces back and
+-- The recorder only observes: it never moves the avatar, presses keys or
+-- fires remotes. Records why/where the avatar stands still, paces back and
 -- forth, or jitters, for long AFK sessions over many rounds.
+--
+-- AutoHop (on at load, active 10 s later): changes server (a random public
+-- server with room via the games API, else a plain rejoin) when
+--   1) a round runs without us (joined mid-round, waiting in the lobby),
+--   2) we were caught and are out while teammates are still playing,
+--   3) we are the Beast.
+-- Escaped players are not "out". The Stop button ends recording and AutoHop.
 --
 -- Output (executor Workspace root, no subfolder):
 --   D_stall_<date>_<time>_p<part>.txt  — JSON Lines (one JSON object per line)
@@ -461,6 +468,114 @@ local function step()
     end
 end
 
+-- ---------- AutoHop ----------
+local Hop = { active = true, armedAt = os.clock() + 10, since = nil, nextTry = 0 }
+R.Hop = Hop
+local function lobbyBounds()
+    local now = os.clock()
+    if Hop.lobby and now - Hop.lobby.at < 5 then return Hop.lobby end
+    local objects = World:FindFirstChild("LobbyInteractiveObjects")
+    local lo, hi
+    if objects then
+        for _, part in ipairs(objects:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local q = part.Position
+                lo = lo and Vector3.new(math.min(lo.X, q.X), math.min(lo.Y, q.Y), math.min(lo.Z, q.Z)) or q
+                hi = hi and Vector3.new(math.max(hi.X, q.X), math.max(hi.Y, q.Y), math.max(hi.Z, q.Z)) or q
+            end
+        end
+    end
+    Hop.lobby = { at = now, lo = lo, hi = hi }
+    return Hop.lobby
+end
+local function inLobby(position)
+    local b = lobbyBounds()
+    if not b.lo then return false end
+    local m = 180
+    return position.X >= b.lo.X - m and position.X <= b.hi.X + m
+        and position.Z >= b.lo.Z - m and position.Z <= b.hi.Z + m
+        and position.Y >= b.lo.Y - 60 and position.Y <= b.hi.Y + 60
+end
+local function inRound(target, map)
+    local root = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not root or inLobby(root.Position) then return false end
+    local ok, cf, size = pcall(function() return map:GetBoundingBox() end)
+    if not ok or not cf then return true end
+    local d = root.Position - cf.Position
+    local h = size / 2 + Vector3.new(40, 60, 40)
+    return math.abs(d.X) <= h.X and math.abs(d.Y) <= h.Y and math.abs(d.Z) <= h.Z
+end
+local function hopReason()
+    local map = currentMap()
+    if not map then return nil end
+    if flag(player, "IsBeast") then return "beast" end
+    if flag(player, "Escaped") then return nil end
+    if inRound(player, map) then return nil end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player and stats(p) and not flag(p, "IsBeast") and not flag(p, "Escaped") then
+            local hp = stats(p):FindFirstChild("Health")
+            local alive = not hp or type(hp.Value) ~= "number" or hp.Value > 0
+            if alive and inRound(p, map) then return "round running without us" end
+        end
+    end
+    return nil
+end
+local function hopServers()
+    local url = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId)
+        .. "/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true"
+    local body
+    pcall(function() body = game:HttpGet(url) end)
+    if type(body) ~= "string" then
+        local requester = (syn and syn.request) or (http and http.request) or http_request or request
+        if type(requester) == "function" then
+            pcall(function()
+                local res = requester({ Url = url, Method = "GET" })
+                body = res and res.Body
+            end)
+        end
+    end
+    local list = {}
+    local ok, data = pcall(function() return Http:JSONDecode(body) end)
+    if ok and type(data) == "table" and type(data.data) == "table" then
+        for _, server in ipairs(data.data) do
+            local playing, max = tonumber(server.playing), tonumber(server.maxPlayers)
+            if server.id ~= game.JobId and playing and max and playing >= 2 and playing < max - 1 then
+                list[#list + 1] = server.id
+            end
+        end
+    end
+    return list
+end
+local function hopGo(reason)
+    local Teleport = game:GetService("TeleportService")
+    writeLine({ k = "hop", reason = reason, utc = os.date("!%H:%M:%S") })
+    flush()
+    local servers = hopServers()
+    if #servers > 0 then
+        local id = servers[math.random(1, #servers)]
+        if pcall(function() Teleport:TeleportToPlaceInstance(game.PlaceId, id, player) end) then return end
+    end
+    pcall(function() Teleport:Teleport(game.PlaceId, player) end)
+end
+task.spawn(function()
+    while Hop.active do
+        local now = os.clock()
+        local ok, reason = pcall(hopReason)
+        reason = ok and now >= Hop.armedAt and reason or nil
+        if reason then
+            Hop.since = Hop.since or now
+            -- Held a moment so round start/end transitions do not trigger it.
+            if now - Hop.since >= (reason == "beast" and 2 or 4) and now >= Hop.nextTry then
+                Hop.nextTry = now + 10
+                pcall(hopGo, reason)
+            end
+        else
+            Hop.since = nil
+        end
+        task.wait(0.5)
+    end
+end)
+
 -- ---------- status panel ----------
 local guiParent
 pcall(function() if type(gethui) == "function" then guiParent = gethui() end end)
@@ -471,48 +586,24 @@ gui.Name = "DStallRecorder"
 gui.ResetOnSpawn = false
 pcall(function() gui.Parent = guiParent end)
 if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 260, 0, 64)
-frame.Position = UDim2.new(0, 8, 1, -150)
-frame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
-frame.BackgroundTransparency = 0.25
-frame.Active = true
-frame.Draggable = true
-frame.Parent = gui
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(1, -60, 1, 0)
-label.Position = UDim2.new(0, 6, 0, 0)
-label.BackgroundTransparency = 1
-label.TextColor3 = Color3.fromRGB(235, 235, 235)
-label.TextXAlignment = Enum.TextXAlignment.Left
-label.TextYAlignment = Enum.TextYAlignment.Center
-label.TextWrapped = true
-label.Font = Enum.Font.Code
-label.TextSize = 11
-label.Parent = frame
+-- Compact: just one small "Stop" button (drag to move).
 local button = Instance.new("TextButton")
-button.Size = UDim2.new(0, 50, 0, 26)
-button.Position = UDim2.new(1, -54, 0.5, -13)
+button.Size = UDim2.new(0, 56, 0, 26)
+button.Position = UDim2.new(0, 8, 1, -120)
 button.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+button.BackgroundTransparency = 0.15
 button.TextColor3 = Color3.new(1, 1, 1)
 button.Text = "Stop"
 button.Font = Enum.Font.GothamBold
-button.TextSize = 12
-button.Parent = frame
-
-local function refreshLabel()
-    local saved = R.lastSaveOk == nil and "..." or (R.lastSaveOk and "OK" or ("LOI: " .. tostring(R.lastError)))
-    label.Text = ("REC %s  stall %d  pace %d  jitter %d\n%s  %.1f MB  luu: %s%s"):format(
-        R.running and "ON" or "OFF",
-        R.counts.stall or 0,
-        R.counts.pacing or 0,
-        R.counts.jitter or 0,
-        fileName(),
-        R.totalBytes / 1048576,
-        saved,
-        R.full and "  (DAY - het dung luong)" or ""
-    )
-end
+button.TextSize = 13
+button.Active = true
+button.Draggable = true
+button.Parent = gui
+pcall(function()
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = button
+end)
 
 function R.Stop()
     if not R.running then return end
@@ -520,11 +611,12 @@ function R.Stop()
     writeLine({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts })
     flush()
     for _, c in ipairs(R.connections) do pcall(function() c:Disconnect() end) end
-    refreshLabel()
-    button.Text = "Close"
+    Hop.active = false
+    pcall(function() gui:Destroy() end)
 end
 button.MouseButton1Click:Connect(function()
-    if R.running then R.Stop() else gui:Destroy() end
+    R.Stop()
+    gui:Destroy()
 end)
 
 -- Header + immediate save so the file exists right away.
@@ -549,10 +641,4 @@ print(("[DStallRecorder] ghi vao %s (appendfile=%s, D hook=%s)"):format(
 R.connections[#R.connections + 1] = Run.Heartbeat:Connect(function()
     local ok, err = pcall(step)
     if not ok then R.lastError = "step: " .. tostring(err) end
-end)
-task.spawn(function()
-    while gui.Parent do
-        pcall(refreshLabel)
-        task.wait(0.5)
-    end
 end)

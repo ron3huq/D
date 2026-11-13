@@ -1798,7 +1798,6 @@ local buttonDefs = {
     { "AutoHide", "AutoHide", function() AH.Toggle() end, 8 },
     { "AutoRescue", "AutoHelp", function() AR.Toggle() end, 9 },
     { "Panic", "Panic [8]", function() if AH.PanicToggle then AH.PanicToggle() end end, 9 },
-    { "Hop", "AutoHop [9]", function() if AH.HopToggle then AH.HopToggle() end end, 9 },
     { "Spectate", "Spectate [7]", function() EX.ToggleSpectate() end, 10 },
     { "Invis", "Invis [Z]", ToggleInvisUI, 11 },
     { "AutoHelp", "Silent Help [H]", TriggerAutoHelpSilent, 12 },
@@ -3130,8 +3129,42 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
         goal = FH.RecoveryAim(token, hum, goal, intentGoal)
     end
     if rejected(goal) then
-        if FH.Diag then FH.Diag("move-refused", "lane-rejected") end
-        return false
+        -- Standing until the rejection expires was the most common stall
+        -- (live: the last-resort route led into the rejected lane, the move
+        -- was refused for seconds). Slide past it on one side instead; the
+        -- side is kept for a moment so it cannot flip left/right.
+        local slid
+        if root and not force then
+            local delta = Flat(goal - root.Position)
+            if delta.Magnitude > 0.6 then
+                local feet = FH.Feet(hum, root)
+                local base = delta.Unit
+                local reach = math.min(delta.Magnitude, 4)
+                local keep = FH.SlideSide
+                local first = keep and keep.root == root and os.clock() < keep.untilAt and keep.side or 1
+                for _, deg in ipairs({ 40, 75, 110 }) do
+                    for _, side in ipairs({ first, -first }) do
+                        local a = math.rad(deg) * side
+                        local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
+                        local candidate = root.Position + dir * reach
+                        local origin = Vector3.new(root.Position.X, feet + 1.5, root.Position.Z)
+                        if not FH.LaneRejected(root.Position, candidate, feet)
+                            and not Workspace:Raycast(origin, dir * (reach + 0.5), rayParams) then
+                            slid = candidate
+                            FH.SlideSide = { root = root, side = side, untilAt = os.clock() + 1.2 }
+                            break
+                        end
+                    end
+                    if slid then break end
+                end
+            end
+        end
+        if not slid then
+            if FH.Diag then FH.Diag("move-refused", "lane-rejected") end
+            return false
+        end
+        if FH.Diag then FH.Diag("move-slide", "around-rejected-lane") end
+        goal = slid
     end
     if FH.Diag and root and Flat(goal - root.Position).Magnitude < 0.6 then FH.Diag("move-stand", "aim-at-self") end
     local m, now = FH.Motion, os.clock()
@@ -3601,7 +3634,9 @@ function FH.ComputerContact(token, comp, trig, stopped)
             local goal = FH.ContactGoal(trig, root.Position, 0.2)
             FH.SetContactApproach(token, hum, root, trig, comp, goal, "computer")
             if not FH.Move(token, hum, goal) then return finish("lost") end
-            if now - progressAt > 1.4 then return finish("blocked") end
+            -- Pressing into an invisible barrier by the desk (live): give up
+            -- this side quickly; the caller picks another slot/side.
+            if now - progressAt > 0.8 then return finish("blocked") end
         end
         if inputAt and not progressing and now - inputAt >= 4 and attempts >= 2 then
             local seen = FH.Stat(LocalPlayer, FH.HACK_INPUT)
@@ -11078,7 +11113,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if breaker and now < breaker.untilAt + 0.3 then
             progressPosition = rp
         elseif progressPosition and (Flat(rp - progressPosition).Magnitude >= 0.75
-            or opts.rescueJuke and not flying and rp.Y - progressPosition.Y >= 0.5
+            or not flying and math.abs(rp.Y - progressPosition.Y) >= 0.5
+                and math.abs(goal.Y - rp.Y) < math.abs(goal.Y - progressPosition.Y)
                 and Follow.RescueGrounded(hum, root, true)) then
             progressPosition, progressAt = rp, now
         elseif not progressPosition then
@@ -11091,7 +11127,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             and not FH.IsWorking(token) and not Follow.KeyDown and not AR.KeyDown
             and not Follow.Held and not AR.Held and not Follow.ActiveEscape(token, hum, root) then
             local attempted = FH.Motion.token == token and FH.Motion.aim
-            if attempted and Flat(attempted - rp).Magnitude > 1.2 then FH.RejectLane(token, hum, attempted, 3) end
+            if attempted and Flat(attempted - rp).Magnitude > 1.2 then
+                FH.RejectLane(token, hum, attempted, opts.rescueJuke and 3 or 1.5)
+            end
             reset()
             nextPlan = 0
             progressPosition, progressAt = rp, now
@@ -11143,6 +11181,13 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 else
                     if FH.Diag then FH.Diag("plan", "result-unusable:" .. tostring(j.res and j.res.mode)) end
                     fails = fails + 1
+                    -- Remember where plans keep failing (across WalkTo calls).
+                    local spot = FH.PlanFailSpot
+                    if spot and Flat(spot.pos - rp).Magnitude < 10 and now - spot.at < 20 then
+                        spot.n, spot.at = spot.n + 1, now
+                    else
+                        FH.PlanFailSpot = { pos = rp, n = 1, at = now }
+                    end
                     if mode ~= "path" then mode = nil end
                     nextPlan = os.clock() + math.min(0.15 * fails, 0.6)
                     if fails >= 3 and mode == nil then
@@ -11245,14 +11290,24 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- pod enclosure wall, live: goal 3.9 below, held in place + shaking).
         local goalFlat = Flat(goal - rp).Magnitude
         local below = goalFlat < 2.5 and goal.Y < feetY - 2.5
-        local overhead = goalFlat < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY or below
+        -- No route found twice to a target a floor below (live: 35 s
+        -- shuffling on an upper floor, every plan unusable): go down the
+        -- nearest edge toward it instead of pacing.
+        local failSpot = FH.PlanFailSpot
+        -- Plans failed 3+ times around here (live: farm and rescue both
+        -- paced 30 s on one raised open area): treat it as an island and
+        -- go down the nearest edge whatever the goal height.
+        local island = not mode and failSpot ~= nil and failSpot.n >= 3
+            and Flat(failSpot.pos - rp).Magnitude < 10 and now - failSpot.at < 20
+        local stuckAbove = not mode and (fails >= 2 and goal.Y < feetY - 6 or island)
+        local overhead = goalFlat < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY or below or stuckAbove
         if (not mode or mode == "path" and below) and not flying and overhead then
             if not overheadDrop or now > overheadDrop.untilAt then
                 overheadDrop = nil
-                if goal.Y < rp.Y then
+                if goal.Y < rp.Y or island then
                     local base = Flat(root.CFrame.LookVector)
                     -- Prefer stepping off toward the pod/target side.
-                    local toward = opts.rescueJuke and Flat(opts.rescueJuke - rp)
+                    local toward = Flat((opts.rescueJuke or goal) - rp)
                     if toward and toward.Magnitude > 0.5 then base = toward end
                     if base.Magnitude < 0.1 then base = Vector3.new(1, 0, 0) end
                     base = base.Unit
@@ -11276,7 +11331,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     -- No verified edge within reach: walk to the nearest edge
                     -- (or into the pit) and simply step off; no jump needed.
                     if not overheadDrop then
-                        local bestDir, bestLen
+                        local bestDir, bestLen, bestScore
                         for k = 0, 7 do
                             local a = k * math.pi / 4
                             local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
@@ -11286,7 +11341,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                                 if wall and wall.Normal.Y < 0.6 then break end
                                 local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -40, 0), rayParams)
                                 if not hit or hit.Position.Y < feetY - 3 then
-                                    if not bestLen or length < bestLen then bestDir, bestLen = dir, length end
+                                    -- Nearest edge, preferring the target's side.
+                                    local score = length - dir:Dot(base) * 4
+                                    if not bestScore or score < bestScore then
+                                        bestDir, bestLen, bestScore = dir, length, score
+                                    end
                                     break
                                 end
                             end
@@ -11298,7 +11357,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     end
                 end
             end
-            if overheadDrop then
+            local fallThrough = false
+            if stuckAbove and not below and not overheadDrop and not (goalFlat < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY) then
+                -- No edge nearby: keep the normal local steering below.
+                fallThrough = true
+            elseif overheadDrop then
                 FH.Move(token, hum, overheadDrop.aim)
             elseif now - progressAt > 1.5 and not job then
                 local dir = Follow.BreakerDirection(rp, rp + Flat(root.CFrame.LookVector) * 5, feetY)
@@ -11307,8 +11370,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             else
                 FH.Move(token, hum, rp, false, goal)
             end
-            task.wait(0.03)
-            continue
+            if not fallThrough then
+                task.wait(0.03)
+                continue
+            end
         end
         if not mode then
             if breaker and now < breaker.untilAt then
@@ -11909,7 +11974,7 @@ function FH.RescueBeastAhead(tok, root, aim, podGoal)
                     local hit = Workspace:Raycast(origin, (rp + Vector3.new(0, 1, 0)) - origin, rayParams)
                     if hit == nil then
                         local now = os.clock()
-                        if distance < 20 and now >= (AR.BeastAvoidAt or 0) then
+                        if distance < 32 and now >= (AR.BeastAvoidAt or 0) then
                             -- Planner cost ring around the Beast: the native route
                             -- search returns the shortest way around, not through it.
                             AR.BeastAvoidAt = now + 1
@@ -12266,8 +12331,11 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
                     -- WalkTo plans in the background while steering; do not wait for
                     -- another ComputeAsync here before starting the approach.
                     moving(true)
+                    -- Another side may need a detour (door, window, around the
+                    -- wall): 4 s gave up before reaching it.
+                    local sideTime = math.clamp(Flat(c.p - (RootNow() and RootNow().Position or c.p)).Magnitude / 16 * 2.5 + 3, 4, 12)
                     Follow.WalkTo(tok, function() return c.p end, 0.8, function() return stop() or near() end, {
-                        maxTime = 4,
+                        maxTime = sideTime,
                         nearOk = 1,
                         approachModel = pod,
                         windows = true,
@@ -13221,7 +13289,7 @@ function FH.ExitRoute(token, state, abort)
         if state.map == GetCurrentMap() and state.character == LocalPlayer.Character then
             -- Becoming the last survivor repicks only a pending approach/opening.
             -- An escape already committed through an open gate must not restart.
-            if state.solo == false and not state.escaping and not state.waiting then
+            if state.solo == false and not state.escaping and not state.waiting and not state.opening then
                 local _, active = FH.ExitPolicy()
                 if active == 1 and FH.ActiveSurvivor(LocalPlayer) then
                     state.solo = true
@@ -13426,8 +13494,12 @@ function FH.ExitRoute(token, state, abort)
     end
     if not open and state.stand then
         local started, hold = os.clock(), { on = false }
+        -- Hold while the lever keeps progressing. A fixed 12 s from the
+        -- start (walking in included) released gates that were almost open
+        -- and the game reset their progress (live report).
+        local gainAt, best = os.clock(), -1
         state.opening = true
-        while not stopped() and os.clock() - started < 12 do
+        while not stopped() and os.clock() - started < 40 and os.clock() - gainAt < 4 do
             root, hum = RootNow(), GetHumanoid()
             if not (root and hum and state.stand.Parent) then break end
             local distance = FH.ExitTriggerDistance(state.stand, root.Position)
@@ -13445,6 +13517,14 @@ function FH.ExitRoute(token, state, abort)
             -- panel geometry looks like (live data: "still closed after
             -- opening", then the bot ran off to open the other exit).
             local progress = FH.Stat(LocalPlayer, FH.HACK_PROGRESS)
+            if progress and type(progress.Value) == "number" and progress.Value > best + 0.001 then
+                best, gainAt = progress.Value, os.clock()
+            end
+            if hold.on and best >= 0 then
+                FH.ExitHolding = { at = os.clock(), progress = best }
+            elseif not hold.on then
+                gainAt = math.max(gainAt, os.clock() - 2) -- still walking in
+            end
             if hold.on and progress and type(progress.Value) == "number" and progress.Value >= 0.98 then
                 FH.MarkExitOpened(door)
                 break
@@ -13453,6 +13533,7 @@ function FH.ExitRoute(token, state, abort)
         end
         Follow.Release(token)
         state.opening = nil
+        FH.ExitHolding = nil
         if stopped() then return interrupted() end
         open = FH.ExitDoorOpen(door, center, state.triggers)
     end
@@ -15372,19 +15453,57 @@ function AH.CornerAim(rp, bp, feetY, forward)
     end
     return best, bestKind, bestSill
 end
+-- Cornered / dead end (left-right shaking in place): leave by a real route.
+-- Candidates are the open straight run (AH.PickFlee), the far side of nearby
+-- doors, and points ~28 studs away on the side away from the Beast even if
+-- a wall is in between (the planner then finds the stairs/door/window).
 function AH.PathEscape(tok)
     local e = AH.Last
     local root = RootNow()
     if not (root and e.pos) then return end
-    local goal = AH.PickFlee(root.Position, e.pos)
+    local rp, bp = root.Position, e.pos
+    local away = Flat(rp - bp)
+    away = away.Magnitude > 0.5 and away.Unit or Vector3.new(1, 0, 0)
+    local myGap = Flat(rp - bp).Magnitude
+    local cands = {}
+    local function add(point, bonus)
+        if not point then return end
+        local dB, dMe = Flat(point - bp).Magnitude, Flat(point - rp).Magnitude
+        -- Never a goal the Beast is nearer to than we are.
+        if dB < dMe + 2 or dB < myGap then return end
+        cands[#cands + 1] = { p = point, score = dB - dMe * 0.25 + (bonus or 0) + math.random() * 3 }
+    end
+    add(AH.PickFlee(rp, bp), 0)
+    for _, door in ipairs(Doors) do
+        if door.Parent and not (ExitDoors and table.find(ExitDoors, door)) then
+            local center = FH.DoorBounds(door)
+            if center and Flat(center - rp).Magnitude <= 30 and math.abs(center.Y - rp.Y) <= 8 then
+                local g = FH.DoorGeom(door, rp)
+                if g and g.Dir then
+                    local side = g.Dir:Dot(Flat(rp - g.Center)) >= 0 and -1 or 1
+                    add(FH.Ground(g.Center + g.Dir * side * 6), 6)
+                end
+            end
+        end
+    end
+    for i = 0, 7 do
+        local a = i * math.pi / 4
+        local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+        if dir:Dot(away) > -0.2 then
+            local point, hit = FH.Ground(rp + dir * 28)
+            if hit and hit.Normal.Y > 0.6 and math.abs(point.Y - rp.Y) < 20 then add(point, 0) end
+        end
+    end
+    table.sort(cands, function(a, b) return a.score > b.score end)
+    local goal = cands[1] and cands[1].p
     if not goal then return end
     local t0 = os.clock()
     Follow.WalkTo(
         tok,
         function() return goal end,
         3.5,
-        function() return not tok.ok() or os.clock() - t0 > 2.5 or AH.Down() or AH.PodsPending() end,
-        { noDoor = true, maxTime = 3, nearOk = 6, evade = true, windows = true }
+        function() return not tok.ok() or os.clock() - t0 > 4 or AH.Down() or AH.PodsPending() end,
+        { noDoor = false, maxTime = 4, nearOk = 6, evade = true, windows = true }
     )
 end
 function AH.DropLane(hum, root, point, feetY)
@@ -16049,85 +16168,6 @@ function AH.PanicToggle()
         end
     end
 end
--- Key 9: AutoHop. Armed 10 s after it is switched on; then it changes server
--- (another public server, else a plain rejoin) when:
---   1) the round already runs without us (joined mid-round, waiting in the lobby),
---   2) we were caught and are out while teammates are still in the round,
---   3) we are the Beast.
--- Escaped players are not "out": they wait for the round to end.
-function AH.HopReason()
-    if not FH.MatchOn() then return nil end
-    if FH.AmBeast() then return "beast" end
-    if FH.True(LocalPlayer, FH.ESC) then return nil end
-    local root = RootNow()
-    if not root then return nil end
-    if FH.InMatchPlayer(LocalPlayer) then return nil end
-    if FH.OthersRemain() then return "round running without us" end
-    return nil
-end
-function AH.HopServers()
-    local placeId, jobId = game.PlaceId, game.JobId
-    local url = "https://games.roblox.com/v1/games/" .. tostring(placeId)
-        .. "/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true"
-    local body
-    local okGet = pcall(function() body = game:HttpGet(url) end)
-    if (not okGet or type(body) ~= "string") then
-        local requester = (syn and syn.request) or (http and http.request) or http_request or request
-        if type(requester) == "function" then
-            pcall(function()
-                local res = requester({ Url = url, Method = "GET" })
-                body = res and res.Body
-            end)
-        end
-    end
-    if type(body) ~= "string" then return {} end
-    local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
-    local list = {}
-    if ok and type(data) == "table" and type(data.data) == "table" then
-        for _, server in ipairs(data.data) do
-            if type(server) == "table" and server.id ~= jobId and tonumber(server.playing)
-                and tonumber(server.maxPlayers) and server.playing < server.maxPlayers - 1 and server.playing >= 2 then
-                list[#list + 1] = server.id
-            end
-        end
-    end
-    return list
-end
-function AH.HopGo()
-    local TeleportService = game:GetService("TeleportService")
-    local servers = AH.HopServers()
-    if #servers > 0 then
-        local id = servers[math.random(1, #servers)]
-        local ok = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, id, LocalPlayer) end)
-        if ok then return true end
-    end
-    return pcall(function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-end
-function AH.HopLoop(token)
-    local since, nextTry = nil, 0
-    while not unloaded and AH.HopActive and AH.HopToken == token do
-        local now = os.clock()
-        local reason = now >= AH.HopArmedAt and AH.HopReason() or nil
-        if reason then
-            since = since or now
-            -- Held a moment so round start/end transitions do not trigger it.
-            if now - since >= (reason == "beast" and 2 or 4) and now >= nextTry then
-                nextTry = now + 10
-                AH.HopGo()
-            end
-        else
-            since = nil
-        end
-        task.wait(0.5)
-    end
-end
-function AH.HopToggle()
-    AH.HopActive = not AH.HopActive
-    AH.HopToken = (AH.HopToken or 0) + 1
-    AH.HopArmedAt = os.clock() + 10
-    SetOn(Btn.Hop, AH.HopActive)
-    if AH.HopActive then task.spawn(AH.HopLoop, AH.HopToken) end
-end
 -- Virtual chaser ~10 studs behind our heading; it drifts so the route varies.
 function AH.PanicChaser(mr, now)
     local state = AH.PanicThreat
@@ -16315,6 +16355,9 @@ function AR.Pending()
         or not FH.ActiveSurvivor(LocalPlayer)
         or AH.Down()
         or AR.LowHealth()
+        -- Half-opened exit gate in our hands: finish it first (releasing
+        -- resets the game's progress).
+        or FH.ExitHolding and os.clock() - FH.ExitHolding.at < 0.6 and FH.ExitHolding.progress >= 0.5
     then
         return false
     end
@@ -16504,7 +16547,8 @@ end
 function AR.Rescue(tok, info, alive)
     local res = FH.RescuePod(
         tok,
-        alive or function() return tok.ok() end,
+        -- Health dropping under 10% mid-rescue ends it (AutoHide continues).
+        alive or function() return tok.ok() and not AR.LowHealth() end,
         info,
         nil,
         function(ev, remoteOnly) return AR.Hold(ev, remoteOnly, tok) end,
@@ -16582,6 +16626,12 @@ function AR.ThreatPreemptsRaw()
             and beastLook.Unit:Dot(toMe) >= 0.85 and mine.Unit:Dot(-toMe) >= 0.85
     end
     local reach = headOn and 12 or 6
+    -- A head-on Beast that is charging at us: react earlier, by how fast
+    -- the gap closes (16 studs/s -> ~22 studs). Static facing keeps 12.
+    if headOn and threat.vel then
+        local closing = Flat(threat.vel):Dot(-flatDelta.Unit)
+        if closing > 4 then reach = math.min(12 + closing * 0.6, 24) end
+    end
     if flatDelta.Magnitude > math.max(8, reach) then return false end
     FH.RefreshFilter()
     if delta.Magnitude < 0.1 then return true end
@@ -16649,6 +16699,15 @@ function AR.Step(tok)
         FH.ReleaseMotion(tok, false)
         AR.SetBusy(false)
         task.wait(0.03)
+        return
+    end
+    -- One gate for every rescue: the same checks as AR.Pending (in the
+    -- match, not in the lobby, health >= 10%, pod in this map ...). The
+    -- loop used to pick pods without it, so those rules were bypassed.
+    if not AR.Pending() then
+        if AR.BusyFlag then AR.Release(tok) end
+        AR.SetBusy(false)
+        task.wait(0.15)
         return
     end
     local pod = AR.Nearest()
@@ -25400,10 +25459,7 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
         EX.ToggleEmote()
         return
     end
-    if keyCode == Enum.KeyCode.Nine or keyCode == Enum.KeyCode.KeypadNine then
-        AH.HopToggle()
-        return
-    end
+    -- 9 is free (AutoHop lives in the separate recorder script).
     if keyCode == Enum.KeyCode.Eight or keyCode == Enum.KeyCode.KeypadEight then
         AH.PanicToggle()
         return
@@ -25431,5 +25487,4 @@ task.delay(1, function()
     if unloaded then return end
     pcall(function() if not espPlayerActive then TogglePlayerESP() end end)
     pcall(function() Follow.AutoAll(true) end)
-    pcall(function() if not AH.HopActive then AH.HopToggle() end end)
 end)

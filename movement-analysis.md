@@ -642,3 +642,29 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - AutoHide red-alert E taps are suppressed within 7 studs of a computer (a tap started a hack and
   rooted the flight for 1.3 s); door-closing taps still work.
 - AutoFarm/exit walks use the Beast-ahead veer (head-on Beast avoidance) that rescue used.
+
+## Round 11 (Workspace_10)
+
+- AutoHop moved out of D into `stall-recorder.luau` (self-contained, on at load, active after
+  10 s). Key 9 in D is free again. The recorder UI is a single small draggable "Stop" button.
+- Rescue rules bypassed: `AR.Step` picked pods without `AR.Pending()`, so the 10% health rule,
+  the lobby check and the 450-stud guard were skipped (live: rescues from the lobby toward pods
+  ~600 studs away). Every rescue now passes `AR.Pending()`, and a rescue in progress ends when
+  health drops below 10%.
+- Head-on hand-over keeps the user's 12 studs; a charging head-on Beast adds 0.6 x closing speed
+  (up to 24). The Beast-ahead avoidance ring starts at 32 studs (was 20).
+- Most common stall: a move into a rejected lane was refused for its whole TTL while the
+  last-resort route led into it. `FH.Move` now slides past on one kept side (40/75/110 deg,
+  wall-checked). Non-rescue lane rejections last 1.5 s (rescue 3 s).
+- Exit lever: the 12 s cap (counted from the start, walking included) released nearly open
+  gates. It now holds while progress rises (stop after 4 s without gain, cap 40 s). Becoming the
+  last survivor no longer repicks during opening; AutoHelp waits while we hold a gate >= 50%.
+- Vertical progress (climbing stairs toward a higher goal) counts as route progress for every
+  owner (live: the route was dropped at the top of the stairs and the avatar walked back down).
+- Repeated plan failures at one spot (3 in 20 s within 10 studs) or a goal a floor below after
+  2 failures: step off the nearest edge (preferring the goal side) instead of pacing.
+- `AH.PathEscape` (cornered / dead end): candidates include the far side of nearby doors and
+  points 28 studs away from the Beast behind walls (the planner finds stairs/doors/windows);
+  doors allowed, 4 s budget.
+- Pod side retries get time for detours (up to 12 s instead of 4 s). Computer contact gives up
+  a blocked side after 0.8 s (was 1.4 s).

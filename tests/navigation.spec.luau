@@ -237,6 +237,7 @@ function AH.Eval()
         danger = world.threat ~= nil,
         pos = world.threat,
         look = world.threatLook,
+        vel = world.threatVel,
         dist = world.threat and Flat(world.threat - root.Position).Magnitude or math.huge,
     }
 end
@@ -946,13 +947,21 @@ scenario("a Beast just behind a closed door preempts the rescue; a solid wall do
     panel.door = true
     check(AR.ThreatPreempts(), "rescue kept waiting at a door with the Beast right behind it")
 end)
-scenario("mutual head-on line hands the rescue over at 16 studs; a Beast looking away does not", function()
+scenario("mutual head-on line hands over at 12 studs, earlier for a charging Beast; a Beast looking away does not", function()
     AH.Active = true
+    AR.Pick, AR.PendingPick, AR.PreemptLatch = nil, nil, nil
+    root.AssemblyLinearVelocity = Vec.new()
     root.CFrame = cf(root.Position, Vec.new(1, 0, 0))
-    world.threat, world.threatLook = Vec.new(14, 3, 0), Vec.new(0, 0, 1)
-    check(not AR.ThreatPreempts(), "a Beast not facing me preempted at 14 studs")
+    world.threat, world.threatLook = Vec.new(10, 3, 0), Vec.new(0, 0, 1)
+    check(not AR.ThreatPreempts(), "a Beast not facing me preempted at 10 studs")
     world.threatLook = Vec.new(-1, 0, 0)
-    check(AR.ThreatPreempts(), "mutual head-on Beast at 14 studs did not hand over")
+    check(AR.ThreatPreempts(), "mutual head-on Beast at 10 studs did not hand over")
+    AR.PreemptLatch = nil
+    world.threat = Vec.new(19, 3, 0)
+    check(not AR.ThreatPreempts(), "a standing head-on Beast at 19 studs preempted")
+    world.threatVel = Vec.new(-16, 0, 0)
+    check(AR.ThreatPreempts(), "a charging head-on Beast at 19 studs was left until too close")
+    world.threatVel = nil
 end)
 scenario("rescue/AutoHide hand-over holds instead of flipping at the line", function()
     AH.Active = true
@@ -984,6 +993,19 @@ scenario("AutoHelp stays off below 10% health", function()
     check(AR.LowHealth(), "9% health still allowed a rescue")
     hum.Health = 60
     check(not AR.LowHealth(), "healthy player refused rescues")
+end)
+scenario("a rejected lane is slid past on one side instead of standing still", function()
+    FH.Move(7, hum, Vec.new(8, 3, 0))
+    task.wait(0.05)
+    check(FH.RejectLane(7, hum, Vec.new(8, 3, 0), 3), "fixture could not reject the forward lane")
+    local moved = FH.Move(7, hum, Vec.new(8, 3, 0))
+    local aim = FH.Motion.aim
+    check(moved and aim and math.abs(aim.Z) > 0.5, "move toward a rejected lane was refused (avatar stood still)")
+    local side = aim and aim.Z > 0
+    task.wait(0.1)
+    FH.Move(7, hum, Vec.new(8, 3, 0))
+    local again = FH.Motion.aim
+    check(again and (again.Z > 0) == side, "slide side flipped between frames (left-right shake)")
 end)
 scenario("immediate visible Beast can interrupt unsafe travel", function()
     AH.Active = true
@@ -1759,6 +1781,26 @@ scenario("two open exits keep approaching after landing on an obstacle", functio
     check(result == "waiting" and root.Position.X > 17 and not stats.Escaped.Value,
         "open exit route lost its approach after landing on a prop: " .. tostring(result))
     check(now < 104 and world.blocked < 10, "exit spent too long stalled at the prop edge")
+end)
+scenario("a slow exit lever is held until it opens, not released after 12 s", function()
+    local exit = openExit(8)
+    exit.open = false
+    exitPlayers()
+    local marked = FH.MarkExitOpened
+    FH.MarkExitOpened = function(door) door.open = true end
+    local state = {}
+    local function tick()
+        if state.opening and not exit.open then
+            stats.ActionProgress.Value = math.min(stats.ActionProgress.Value + 0.03, 1)
+            if stats.ActionProgress.Value >= 0.98 then exit.open = true end
+        end
+        if not exit.open and now < 140 then task.delay(0.5, tick) end
+    end
+    task.delay(0.5, tick)
+    FH.ExitRoute(7, state)
+    check(exit.open, "exit hold was released before the slow lever finished: progress="
+        .. tostring(stats.ActionProgress.Value))
+    FH.MarkExitOpened = marked
 end)
 scenario("two open exits still produce approach and stable waiting", function()
     local exit = openExit(30); openExit(-70)
