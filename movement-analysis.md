@@ -850,3 +850,13 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   no-progress rule replans without marking a doorway lane as blocked.
 - Micro-stops in these files: 2. The AutoHide flight in the recording kept full speed while
   hopping onto a table (no stall to fix there).
+
+## Round 24 (Workspace_10, 2 new files)
+
+- Lobby strolling looked like a twitchy bot: random 4-13 stud hops around other players, the
+  next often behind us (U-turns), some across the vote boxes. Stroll legs are now 8-26 studs,
+  mostly ahead of where we face (within ~75 deg), never within 5 studs of a vote box, with an
+  occasional short idle between legs.
+- Twitching between the route and a sideways slide (lobby spawn and in-match): a rejected lane
+  no longer changes the input at all (no refusal, no slide); it only steers the planner. Walls
+  are handled by the no-progress rules (doorway exception and replan throttles from rounds 21-23).

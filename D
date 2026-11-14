@@ -3138,48 +3138,11 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
     else
         goal = FH.RecoveryAim(token, hum, goal, intentGoal)
     end
-    if rejected(goal) then
-        -- Standing until the rejection expires was the most common stall
-        -- (live: the last-resort route led into the rejected lane, the move
-        -- was refused for seconds). Slide past it on one side instead; the
-        -- side is kept for a moment so it cannot flip left/right.
-        local slid
-        if root and not force and not precision then
-            local delta = Flat(goal - root.Position)
-            if delta.Magnitude > 4 then
-                local feet = FH.Feet(hum, root)
-                local base = delta.Unit
-                local reach = math.min(delta.Magnitude, 4)
-                local keep = FH.SlideSide
-                local kept = keep and keep.root == root and os.clock() < keep.untilAt
-                local first = kept and keep.side or 1
-                -- Never flip sides while a slide is kept (left-right-left was
-                -- the shake at doors, live data).
-                local sides = kept and { first } or { first, -first }
-                for _, deg in ipairs({ 40, 75, 110 }) do
-                    for _, side in ipairs(sides) do
-                        local a = math.rad(deg) * side
-                        local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
-                        local candidate = root.Position + dir * reach
-                        local origin = Vector3.new(root.Position.X, feet + 1.5, root.Position.Z)
-                        if not FH.LaneRejected(root.Position, candidate, feet)
-                            and not Workspace:Raycast(origin, dir * (reach + 0.5), rayParams) then
-                            slid = candidate
-                            if not kept then FH.SlideSide = { root = root, side = side, untilAt = os.clock() + 1.5 } end
-                            break
-                        end
-                    end
-                    if slid then break end
-                end
-            end
-        end
-        if not slid then
-            if FH.Diag then FH.Diag("move-refused", "lane-rejected") end
-            return false
-        end
-        if FH.Diag then FH.Diag("move-slide", "around-rejected-lane") end
-        goal = slid
-    end
+    -- A rejected lane only steers the planner. At the input level neither a
+    -- refusal (a standing beat) nor a sideways slide (a sharp twitch that
+    -- alternated with the route) is applied - both read as bot-like shaking
+    -- in the recordings. Real walls are handled by the no-progress rules.
+    if rejected(goal) and FH.Diag then FH.Diag("move", "into-rejected-lane") end
     if FH.Diag and root and Flat(goal - root.Position).Magnitude < 0.6 then FH.Diag("move-stand", "aim-at-self") end
     local m, now = FH.Motion, os.clock()
     if m.token ~= token or m.hum ~= hum then
@@ -22549,17 +22512,31 @@ function Follow.LobbyStrollPoint(state, root, board)
     end
     if #anchors == 0 then anchors[1] = state.anchor or rp end
     state.visited = state.visited or {}
-    for _ = 1, 12 do
+    -- Walk like a person: a longer leg, mostly ahead of where we face (no
+    -- U-turns between short random hops - that looked like a twitchy bot),
+    -- and never across the vote boxes.
+    local look = Flat(root.CFrame.LookVector)
+    look = look.Magnitude > 0.1 and look.Unit or nil
+    local boxes = {}
+    pcall(function()
+        for _, pad in ipairs((Follow.LobbyVotePads())) do boxes[#boxes + 1] = pad.part.Position end
+    end)
+    for attempt = 1, 16 do
         local base = anchors[math.random(1, #anchors)]
         local angle = math.random() * math.pi * 2
         local reach = 4 + math.random() * 9
         local candidate = base + Vector3.new(math.cos(angle) * reach, 0, math.sin(angle) * reach)
-        local fresh = Flat(candidate - rp).Magnitude > 5
+        local leg = Flat(candidate - rp)
+        local fresh = leg.Magnitude > 8 and leg.Magnitude < 26
+        if fresh and look and attempt <= 12 and leg.Unit:Dot(look) < 0.25 then fresh = false end
         for _, v in ipairs(state.visited) do
             if Flat(candidate - v).Magnitude < 6 then
                 fresh = false
                 break
             end
+        end
+        for _, b in ipairs(boxes) do
+            if Flat(candidate - b).Magnitude < 5 then fresh = false break end
         end
         local ground, hit = FH.Ground(Vector3.new(candidate.X, rp.Y, candidate.Z))
         if fresh and hit and hit.Normal.Y > 0.6 and math.abs(ground.Y - (rp.Y - 3)) < 6 then
@@ -22737,6 +22714,8 @@ function Follow.LobbyStep(token)
                     return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)
                 end, { maxTime = 6, nearOk = 3 })
             end
+            -- Now and then a short idle, like a person looking around.
+            if math.random() < 0.3 then state.chatAt = os.clock() + 0.6 + math.random() * 1.8 end
             return
         end
         -- Only players around the map-vote area (not someone far across
