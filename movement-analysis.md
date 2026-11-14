@@ -946,3 +946,23 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - WalkTo: when plans fail twice in a row (shut in a small room, live Homestead
   rescue bouncing for seconds), open the nearest closed door on our floor
   within 12 studs and pass it, then replan; each door tried at most once per 5 s.
+
+### Round 30b (same Workspace_1 data)
+
+- AutoHide dead ends: a straight run that reaches the 20-stud scan limit is now
+  judged one more scan ahead (Airport: ran 20 studs into a closed corridor
+  and spun 180 degrees). Ends with <= 1 open heading cost -20 and are
+  remembered with the other dead ends. Shared AH.OpenAt helper (cached).
+- AutoHide stuck check every 0.18 s / 0.55 studs (was 0.25 s / 0.7): the
+  0.45 s press into an invisible ComputerTable barrier is cut short.
+- AutoHide: headings that change floor (stairs/ramps, >= 3 studs) +6.
+- WalkTo entry test: a native route whose first leg failed our ray test was
+  thrown away (entry-rejected, then local steering bouncing for seconds in
+  Abandoned Prison / Homestead). A first waypoint within 10 studs and at most
+  5 studs up is now trusted ("entry-trusted").
+- Doors: no 8 s give-up just because the approach ended short of the
+  trigger; the hold loop steps on and presses. Face the door once before the
+  first press.
+- Hand-over to AutoHelp: rescue keeps moving on its arrival momentum (or an
+  open heading) while its first route is computed - it stood ~0.3 s at every
+  hand-over. AutoHelp loop polls every 0.06 s while idle (was 0.15 s).

@@ -8634,15 +8634,16 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
             Follow.Release(token)
             return false
         end
-        if
-            not FH.DoorOnFloor(g, root.Position)
-            or (FH.DoorBlocked(g) and not FH.DoorCanHold(g, list[1], root.Position, stand))
-        then
+        -- Just short of the trigger is not a failed door (live: stood in front
+        -- of it under a second, then gave up for 8 s): the hold loop below
+        -- steps onto the stand and presses.
+        if not FH.DoorOnFloor(g, root.Position) then
             DoorFail[d] = os.clock() + 8
             Follow.Release(token)
             return false
         end
         local opened, ti = false, 1
+        local facedDoor = false
         local t0 = os.clock()
         local limit = math.min(holdSecs or 6, 8)
         local switchAt = t0 + 1.8
@@ -8673,6 +8674,18 @@ function Follow.PassDoor(token, g, abort, holdSecs, rescueGoal, rescueState)
                     -- stale approach MoveTo or repeated E reset cancels it.
                     FH.Move(token, hum, stableDoor and root.Position or stand, stableDoor and not contactStopped)
                     contactStopped = true
+                    -- Face the door once before pressing (live: pressed while
+                    -- turned side-on and the door did not open).
+                    if not facedDoor then
+                        facedDoor = true
+                        local toward = Flat(g.Center - root.Position)
+                        if toward.Magnitude < 0.5 then toward = Flat(tg.Position - root.Position) end
+                        local look = Flat(root.CFrame.LookVector)
+                        if toward.Magnitude > 0.3 and not (look.Magnitude > 0.1 and look.Unit:Dot(toward.Unit) > 0.9) then
+                            local pos = root.Position
+                            pcall(function() root.CFrame = CFrame.lookAt(pos, pos + toward.Unit) end)
+                        end
+                    end
                     -- An E press made before the game selected this trigger may
                     -- be ignored. Retry only while it is not opening; a live
                     -- opening keeps one continuous hold until the panel clears.
@@ -10430,6 +10443,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 local first = w[2].Position
                 if FH.Line(root.Position, first, feet, first.Y, 1.5) then index = 2 end
             end
+            if not index then
+                -- The native planner computed this route from where we stand
+                -- for our body size. Our own ray test rejecting its first leg
+                -- (rails, frames, uneven floor) threw good routes away and
+                -- local steering bounced back and forth for seconds (live,
+                -- Abandoned Prison / Homestead). Trust a near first leg.
+                local first = w[2].Position
+                if Flat(first - root.Position).Magnitude <= 10 and first.Y - feet <= 5 then
+                    index = 2
+                    if FH.Diag then FH.Diag("walk", "entry-trusted") end
+                end
+            end
             if FH.Diag then FH.Diag("walk", index and "entry-relaxed" or "entry-rejected") end
         end
         if physicalRoute and hum and root and index == nil then
@@ -11628,7 +11653,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- Not toward a goal on another floor: a blind walk at it ran
                 -- into the side of a staircase, hopped up and fell back
                 -- (live). Let the route find the stairs.
-                local quick = not opts.rescueJuke
+                -- A rescue waiting on its first route (handed over from
+                -- AutoHide/farm at full speed) also keeps moving: it stood
+                -- still ~0.3 s at every hand-over (live).
+                local quick = (not opts.rescueJuke or job ~= nil)
                     and math.abs(goal.Y - rp.Y) < Follow.MaxDY
                     and (job or now - progressAt > 0.3 or now - (breakerAt or 0) > 1.3)
                 local slow = now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
@@ -11643,6 +11671,16 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         if not hit or hit.Distance >= 4 then dir = last.dir end
                     end
                     local since = dir and last.since or now
+                    if not dir then
+                        -- Carry the momentum we arrived with when it is open
+                        -- and not away from the goal (no turn at hand-over).
+                        local v = Flat(root.AssemblyLinearVelocity)
+                        local toGoal = Flat(goal - rp)
+                        if v.Magnitude > 6 and toGoal.Magnitude > 0.5 and v.Unit:Dot(toGoal.Unit) > 0.1 then
+                            local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + 2, rp.Z), v.Unit * 6, rayParams)
+                            if not hit then dir = v.Unit end
+                        end
+                    end
                     dir = dir or Follow.BreakerDirection(rp, goal, feetY)
                     breaker = { aim = rp + dir * 10, untilAt = now + 0.9, dir = dir, since = since }
                     breakerAt = now
@@ -15462,6 +15500,27 @@ function AH.Scan(rp, dir, feetY)
     end
     return run, jumps, nil, curY
 end
+-- How many of 7 headings are open (10 studs) at the end of a lane: <= 1
+-- is a dead end. Cached per 4-stud cell and heading for 1.5 s.
+function AH.OpenAt(point, dir, feetY, now)
+    AH.OpenCache = AH.OpenCache or {}
+    local key = math.floor(point.X / 4) .. ":" .. math.floor(point.Z / 4) .. ":"
+        .. math.floor((math.atan2(dir.Z, dir.X) + math.pi) / (math.pi / 4))
+    local cached = AH.OpenCache[key]
+    if cached and now - cached.at < 1.5 then return cached.open end
+    local open = 0
+    local bside = Vector3.new(-dir.Z, 0, dir.X)
+    local origin = Vector3.new(point.X, feetY + 1.5, point.Z) - dir * 1.5
+    for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
+        local r = math.rad(a)
+        local d = dir * math.cos(r) + bside * math.sin(r)
+        local hit = Workspace:Raycast(origin, d * 10, rayParams)
+        if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
+    end
+    if next(AH.OpenCache) and math.random() < 0.02 then table.clear(AH.OpenCache) end
+    AH.OpenCache[key] = { at = now, open = open }
+    return open
+end
 function AH.Steer(rp, bp, bvel, feetY, juke)
     local pred = bp
     if bvel then
@@ -15514,6 +15573,9 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                     -- Hopping onto/over props breaks the Beast's line: a
                     -- bonus, not a penalty (it used to run dead straight).
                     + jumps * (juke and 4 or 2)
+                    -- Up/down stairs or a ramp to another floor breaks the
+                    -- Beast's line like a player would (user request).
+                    + (endY and math.abs(endY - feetY) >= 3 and 6 or 0)
                     + (run >= full and 8 or 0)
                     + math.max(dir:Dot(forward), 0) * 6
                     + math.max(dir:Dot(weave), 0) * 5
@@ -15539,28 +15601,7 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
         if known then
             c.score = c.score - 30
         elseif c.run < full then
-            -- Cached per 4-stud cell and heading for 1.5 s: this ran 35 rays
-            -- on every steering tick (frame time).
-            AH.OpenCache = AH.OpenCache or {}
-            local key = math.floor(c.point.X / 4) .. ":" .. math.floor(c.point.Z / 4) .. ":"
-                .. math.floor((math.atan2(c.dir.Z, c.dir.X) + math.pi) / (math.pi / 4))
-            local cached = AH.OpenCache[key]
-            local open = 0
-            if cached and now - cached.at < 1.5 then
-                open = cached.open
-            else
-                local base = c.dir
-                local bside = Vector3.new(-base.Z, 0, base.X)
-                local origin = Vector3.new(c.point.X, feetY + 1.5, c.point.Z) - base * 1.5
-                for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
-                    local r = math.rad(a)
-                    local d = base * math.cos(r) + bside * math.sin(r)
-                    local hit = Workspace:Raycast(origin, d * 10, rayParams)
-                    if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
-                end
-                if next(AH.OpenCache) and math.random() < 0.02 then table.clear(AH.OpenCache) end
-                AH.OpenCache[key] = { at = now, open = open }
-            end
+            local open = AH.OpenAt(c.point, c.dir, feetY, now)
             if open <= 1 then
                 c.score = c.score - 25
                 AH.DeadEnds[#AH.DeadEnds + 1] = { pos = c.point, at = now }
@@ -15569,6 +15610,43 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                 c.score = c.score + 7 -- open junction/space: more ways to lose the Beast
             elseif open == 2 then
                 c.score = c.score - 6 -- narrow pocket
+            end
+        else
+            -- A long straight run can still end in a closed corridor just
+            -- past the 20-stud scan (live, Airport: ran 20 studs down a
+            -- corridor, hit the end and spun round 180 degrees). Look one
+            -- more scan ahead from its end and judge that end too.
+            local ekey = math.floor(c.point.X / 4) .. ":" .. math.floor(c.point.Z / 4) .. ":"
+                .. math.floor((math.atan2(c.dir.Z, c.dir.X) + math.pi) / (math.pi / 4)) .. ":x"
+            AH.OpenCache = AH.OpenCache or {}
+            local cached = AH.OpenCache[ekey]
+            local extOpen, extEnd
+            if cached and now - cached.at < 1.5 then
+                extOpen, extEnd = cached.open, cached.pos
+            else
+                local endY = c.point.Y - (rp.Y - feetY)
+                local run2, _, _, y2 = AH.Scan(c.point, c.dir, endY)
+                extOpen = 9
+                if run2 < full then
+                    extEnd = Vector3.new(c.point.X + c.dir.X * run2, (y2 or endY) + rp.Y - feetY, c.point.Z + c.dir.Z * run2)
+                    extOpen = AH.OpenAt(extEnd, c.dir, y2 or endY, now)
+                end
+                AH.OpenCache[ekey] = { at = now, open = extOpen, pos = extEnd }
+            end
+            local knownFar = false
+            if extEnd then
+                for _, d in ipairs(AH.DeadEnds) do
+                    if Flat(d.pos - extEnd).Magnitude < 8 then knownFar = true; break end
+                end
+            end
+            if knownFar or extOpen <= 1 then
+                c.score = c.score - 20
+                if extEnd and not knownFar then
+                    AH.DeadEnds[#AH.DeadEnds + 1] = { pos = extEnd, at = now }
+                    if #AH.DeadEnds > 30 then table.remove(AH.DeadEnds, 1) end
+                end
+            elseif extOpen >= 4 then
+                c.score = c.score + 4
             end
         end
     end
@@ -16640,10 +16718,10 @@ function AH.Go(tok)
                     FH.ConfirmNormalTakeoff(hum, root, tok)
                 end
             end
-            if not drop and hum.FloorMaterial ~= Enum.Material.Air and now - lastChk >= 0.25 then
+            if not drop and hum.FloorMaterial ~= Enum.Material.Air and now - lastChk >= 0.18 then
                 local moved = lastPos and Flat(rp - lastPos).Magnitude or 99
                 lastPos, lastChk = rp, now
-                if moved < 0.7 then
+                if moved < 0.55 then
                     stuckN = stuckN + 1
                     if dv.Magnitude > 0.5 then FH.AddBad(rp + dv.Unit * 3, 6) end
                     AH.Dir = nil
@@ -17458,7 +17536,7 @@ function AR.Step(tok)
     if not AR.Pending() then
         if AR.BusyFlag then AR.Release(tok) end
         AR.SetBusy(false)
-        task.wait(0.15)
+        task.wait(0.06)
         return
     end
     local pod = AR.Nearest()
