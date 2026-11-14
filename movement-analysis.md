@@ -1024,3 +1024,16 @@ from the Round 30b version, nothing else:
   FH.LandCommit then keeps that heading 0.45 s after landing (only while 3
   studs ahead are open) so the avatar does not turn back on the far side of
   a window, prop or rail. Compile-checked only.
+
+## Round 36
+
+- Pre-jump hesitation: route and local steering alternated on props/ledges
+  (055808: path -> none -> path every 0.3-0.5 s with "entry-rejected").
+  A native route whose first leg is within 10 studs and at most 5 up is now
+  trusted ("entry-trusted").
+- AutoHelp stair hops: on a path leg climbing/descending >= 2 studs, running
+  > 10 studs/s straight along two in-line legs (dot > 0.9: never at an
+  angle into the side edge), stair/slope underfoot 2 studs ahead, headroom
+  clear, > 8 studs from the goal: one normal jump, at most every 0.75 s.
+- Corners: the Round 33 wedge escape covers getting stuck in a corner; no
+  extra wall-slide steering was added. Compile-checked only.

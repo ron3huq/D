@@ -10530,6 +10530,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 local first = w[2].Position
                 if FH.Line(root.Position, first, feet, first.Y, 1.5) then index = 2 end
             end
+            if not index then
+                -- The native planner computed this route from where we stand
+                -- for our body size; our ray test rejecting its first leg
+                -- (rails, props, uneven floor) made route and local steering
+                -- alternate - hesitating before every hop (live). Trust a near
+                -- first leg.
+                local first = w[2].Position
+                if Flat(first - root.Position).Magnitude <= 10 and first.Y - feet <= 5 then
+                    index = 2
+                    if FH.Diag then FH.Diag("walk", "entry-trusted") end
+                end
+            end
             if FH.Diag then FH.Diag("walk", index and "entry-relaxed" or "entry-rejected") end
         end
         if physicalRoute and hum and root and index == nil then
@@ -11044,6 +11056,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         return nil
     end
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
+    local stairHopAt = 0
     while alive() do
         if abort and abort() then return finish("abort", false) end
         if maxTime and os.clock() - startT > maxTime then return finish("timeout", true) end
@@ -12328,6 +12341,29 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = Follow.CenterAim(rp, aim, feetY)
         end
         FH.Move(token, hum, aim, false, nil, preciseCorner)
+        -- AutoHelp on stairs: hop up/down them like a player (faster), but
+        -- only running straight along the flight (never at an angle into the
+        -- side edge), with the next legs in line, away from the goal.
+        if opts.rescueJuke and mode == "path" and wps and wps[wpi] and not flying
+            and hum.FloorMaterial ~= Enum.Material.Air and now >= (stairHopAt or 0)
+            and flatDist > 8 then
+            local a = wps[math.min(wpi + 1, #wps)].Position
+            local b = wps[math.min(wpi + 2, #wps)].Position
+            local dy = b.Y - feetY
+            local v = Flat(root.AssemblyLinearVelocity)
+            local seg1, seg2 = Flat(a - rp), Flat(b - a)
+            if math.abs(dy) >= 2 and v.Magnitude > 10 and seg1.Magnitude > 1 and seg2.Magnitude > 1
+                and v.Unit:Dot(seg1.Unit) > 0.9 and seg1.Unit:Dot(seg2.Unit) > 0.9 then
+                local under = Workspace:Raycast(Vector3.new(rp.X, feetY + 1, rp.Z) + v.Unit * 2,
+                    Vector3.new(0, -5, 0), rayParams)
+                local onStairs = under and (FH.StairLike(under.Instance) or under.Normal.Y < 0.97)
+                local headroom = not Workspace:Raycast(rp, Vector3.new(0, 6, 0) + v.Unit * 3, rayParams)
+                if onStairs and headroom and FH.NormalJump(hum) then
+                    stairHopAt = now + 0.75
+                    if FH.Diag then FH.Diag("walk", dy > 0 and "stair-hop-up" or "stair-hop-down") end
+                end
+            end
+        end
         task.wait(0.03)
     end
     return finish("abort", false)
