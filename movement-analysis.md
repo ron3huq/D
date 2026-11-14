@@ -1084,3 +1084,5 @@ from the Round 30b version, nothing else:
   watch-back turn happens once the game is clearly opening (progress >= 15 %);
   with a live progress stat, a press that shows no progress for 1.1 s is
   released and pressed again. Compile-checked only.
+
+- Key 0 restored to the original behaviour (AutoHide + AutoHelp + Follow picker).

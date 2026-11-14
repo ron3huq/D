@@ -17096,9 +17096,9 @@ function Follow.AutoAllToggle()
         if AR.Active then AR.Toggle() end
         return
     end
-    -- Same start as on script load (AutoFarm from any phase), not the
-    -- player picker: the two used to behave differently.
-    Follow.AutoAll(true)
+    if not AH.Active then AH.Toggle() end
+    if not AR.Active then AR.Toggle() end
+    Follow.Toggle()
 end
 -- Key 8: Panic. An imaginary Beast always chases right behind us, so the
 -- AutoHide flight logic runs continuously. Mode 0 (AutoFarm) overrides it.
