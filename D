@@ -4924,39 +4924,9 @@ function FH.FlipGuard(motion, root, direction)
         FH.LandCommit = nil
     end
     if not g or g.token ~= motion.token then
-        g = { token = motion.token, dir = d, flipAt = -10, holdUntil = 0, held = false, turns = {} }
+        g = { token = motion.token, dir = d, flipAt = -10, holdUntil = 0, held = false }
         FH.FlipState = g
         return d
-    end
-    -- Spin filter: input that keeps rotating (a full turn or more within
-    -- 1.5 s) while the body barely moves (< 5 studs) is circling, not
-    -- walking. Lock one open heading for 0.6 s to break out of it.
-    if g.spinUntil and now < g.spinUntil then
-        local hit = Workspace:Raycast(root.Position, g.spinDir * 2.5, rayParams)
-        if not hit then return g.spinDir end
-        g.spinUntil = nil
-    end
-    local turn = math.acos(math.clamp(d:Dot(g.dir), -1, 1))
-    local list = g.turns
-    -- Near the aim the bearing swings naturally (arrival): not a spin.
-    if direction.Magnitude < 4 then
-        table.clear(list)
-    else
-        list[#list + 1] = { t = now, a = turn, p = root.Position }
-    end
-    while #list > 0 and now - list[1].t > 1.5 do table.remove(list, 1) end
-    if #list > 2 then
-        local total = 0
-        for _, e in ipairs(list) do total += e.a end
-        if total > math.pi * 2 and Flat(root.Position - list[1].p).Magnitude < 5 then
-            local best = d
-            if Workspace:Raycast(root.Position, d * 2.5, rayParams) then best = g.dir end
-            g.spinDir, g.spinUntil = best, now + 0.6
-            table.clear(list)
-            if FH.Diag then FH.Diag("move", "spin-locked") end
-            g.dir = best
-            return best
-        end
     end
     if direction.Magnitude > 3 and d:Dot(g.dir) < -0.2 then
         local hum = motion.hum
@@ -10257,13 +10227,9 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
     -- Wide scan (user request): look 25 route points / 32 studs ahead for a
     -- straight cut through a window or over props/rails that saves time.
     local last = math.min(#wps, index + 25, blockedAt and blockedAt - 1 or #wps)
-    -- The route's end (beside the pod) too, however many points away: walking
-    -- past the pod room with a window into it, cut straight in (user report).
-    local final = blockedAt and math.min(#wps, blockedAt - 1) or #wps
-    for i = index + 1, final do
+    for i = index + 1, last do
         local point = wps[i].Position
         routeLength = routeLength + (point - wps[i - 1].Position).Magnitude
-        if i > last and i < final - 1 then continue end
         local distance = Flat(point - rp).Magnitude
         local saved = routeLength - distance
         if
@@ -15960,7 +15926,7 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
                     local point = Vector3.new(raw.X, floor.Position.Y + rp.Y - feetY, raw.Z)
                     local after = Flat(point - pred).Magnitude
                     if
-                        after > Flat(rp - pred).Magnitude - 1
+                        after > Flat(rp - pred).Magnitude + 0.5
                         and safe(point, false)
                         and not Workspace:Raycast(
                             floor.Position + Vector3.new(0, 0.15, 0),
@@ -15990,12 +15956,10 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
                         -- Clear lateral low obstacles are useful even if this
                         -- map calls its window frame something else entirely.
                         local lateral = math.abs(dir:Dot(forward)) < 0.9
-                        -- Any window/rail/prop on the way, nearest first (a
-                        -- sudden turn into it, like a player - user request).
-                        if window or lateral or distance <= AH.ThreatRange(AH.JukeRange) then
-                            local score = (window and 4 or 0)
-                                + after * 0.3
-                                - low.Distance * 2
+                        if window or (lateral and distance <= AH.ThreatRange(AH.JukeRange)) then
+                            local score = (window and 1000 or 0)
+                                + after
+                                - length * 0.35
                                 + (lateral and 2 or 0)
                                 + (angle * preferred > 0 and 0.5 or 0)
                             candidates[#candidates + 1] = {
@@ -16214,8 +16178,7 @@ function AH.OpenDoorAim(rp, bp, feetY, state, forward, danger)
                             door = g,
                             entry = entry,
                             point = across,
-                            -- Nearest open door first (sudden turn into it).
-                            score = after * 0.3 - distance * 2 + (1 - math.abs(toward.Unit:Dot(forward))) * 4,
+                            score = after - distance * 0.7 + (1 - math.abs(toward.Unit:Dot(forward))) * 4,
                         }
                     end
                 end
