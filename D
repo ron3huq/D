@@ -11776,10 +11776,15 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- Not toward a goal on another floor: a blind walk at it ran
                 -- into the side of a staircase, hopped up and fell back
                 -- (live). Let the route find the stairs.
-                local quick = not opts.rescueJuke
+                -- A rescue waiting on its first route (handed over from
+                -- AutoHide/farm) also keeps moving: it stood ~0.3 s at every
+                -- hand-over (live).
+                local quick = (not opts.rescueJuke or job ~= nil)
                     and math.abs(goal.Y - rp.Y) < Follow.MaxDY
                     and (job or now - progressAt > 0.3 or now - (breakerAt or 0) > 1.3)
-                local slow = now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
+                -- Waiting on a route search: walk out after 0.15 s (0.4 s was
+                -- the beat at every hand-over / new walk, live).
+                local slow = now - progressAt > (job and 0.15 or 1.5) and now - (breakerAt or 0) > 1.3
                 -- Still running from the previous leg (new walk, route not
                 -- computed yet): keep that momentum for a moment instead of
                 -- standing ~0.5 s waiting for the planner (live beats).
@@ -14136,6 +14141,9 @@ function FH.ExitRoute(token, state, abort)
         -- for the Beast (body facing only; the hold itself is unchanged).
         local watchBack = math.random() < 0.65
         local autoRotate
+        local facedLever = false
+        local lastGainOrPress = os.clock()
+        local statSeen = false
         state.opening = true
         -- If the action-progress stat never tracks this lever (no low value
         -- seen while holding), hold on time like the older builds (15 s).
@@ -14146,18 +14154,42 @@ function FH.ExitRoute(token, state, abort)
             local distance = FH.ExitTriggerDistance(state.stand, root.Position)
             Follow.Beat = os.clock()
             if FH.CanHold(hold, distance, 1.7, 3.6) then
-                -- Turn once, before the first hold tick; never touch the body
-                -- frame while the lever is held (writing it every tick could
-                -- cancel the game's action - the gate stopped opening).
-                if watchBack and autoRotate == nil then
+                -- Face the lever squarely before the first press (a side-on
+                -- press sometimes did not register: the gate did not open).
+                if not facedLever then
+                    facedLever = true
+                    local toward = Flat(state.stand.Position - root.Position)
+                    if toward.Magnitude < 0.5 then toward = Flat(center - root.Position) end
+                    local look = Flat(root.CFrame.LookVector)
+                    if toward.Magnitude > 0.3 and not (look.Magnitude > 0.1 and look.Unit:Dot(toward.Unit) > 0.9) then
+                        autoRotate = autoRotate == nil and hum.AutoRotate or autoRotate
+                        pcall(function() hum.AutoRotate = false end)
+                        local pos = root.Position
+                        pcall(function() root.CFrame = CFrame.lookAt(pos, pos + toward.Unit) end)
+                    end
+                end
+                -- Watch the room only once the game is clearly opening the
+                -- gate (one turn, never per tick).
+                if watchBack and sawLow and best >= 0.15 then
                     local away = Flat(root.Position - center)
                     if away.Magnitude > 0.5 then
-                        autoRotate = hum.AutoRotate
+                        autoRotate = autoRotate == nil and hum.AutoRotate or autoRotate
                         pcall(function() hum.AutoRotate = false end)
                         local pos = root.Position
                         pcall(function() root.CFrame = CFrame.lookAt(pos, pos + away.Unit) end)
                     end
                     watchBack = false
+                end
+                -- Pressed but nothing is happening (the press came before the
+                -- game selected this lever): release and press again.
+                local nowH = os.clock()
+                -- Only with a live progress stat (a time-based hold must not be
+                -- restarted).
+                if hold.on and statSeen and not reachedAt and nowH - lastGainOrPress > 1.1 then
+                    Follow.Release(token)
+                    task.wait(0.05)
+                    lastGainOrPress = os.clock()
+                    if FH.Diag then FH.Diag("exit", "lever-repress") end
                 end
                 FH.Move(token, hum, root.Position)
                 Follow.Hold(state.stand:FindFirstChild("Event"), false, true, false, token)
@@ -14178,7 +14210,10 @@ function FH.ExitRoute(token, state, abort)
             if hold.on and raw and raw < 0.9 then sawLow = true end
             if hold.on and sawLow and raw and raw > best + 0.001 then
                 best, gainAt = raw, os.clock()
+                lastGainOrPress = gainAt
             end
+            if not hold.on then lastGainOrPress = os.clock() end
+            if raw ~= nil then statSeen = true end
             if hold.on and best >= 0 then
                 FH.ExitHolding = { at = os.clock(), progress = best, token = token }
             elseif not hold.on then
@@ -17061,9 +17096,9 @@ function Follow.AutoAllToggle()
         if AR.Active then AR.Toggle() end
         return
     end
-    if not AH.Active then AH.Toggle() end
-    if not AR.Active then AR.Toggle() end
-    Follow.Toggle()
+    -- Same start as on script load (AutoFarm from any phase), not the
+    -- player picker: the two used to behave differently.
+    Follow.AutoAll(true)
 end
 -- Key 8: Panic. An imaginary Beast always chases right behind us, so the
 -- AutoHide flight logic runs continuously. Mode 0 (AutoFarm) overrides it.
@@ -17670,7 +17705,7 @@ function AR.Step(tok)
     if not AR.Pending() then
         if AR.BusyFlag then AR.Release(tok) end
         AR.SetBusy(false)
-        task.wait(0.15)
+        task.wait(0.06)
         return
     end
     local pod = AR.Nearest()

@@ -1071,3 +1071,16 @@ from the Round 30b version, nothing else:
   background (FH.Nav atlas: 4-stud floor columns, links, door portals) and
   uses it for routes; no second scanner was added (frame cost). Ladders
   (TrussPart climbing) are not routed yet. Compile-checked only.
+
+## Round 40 (on the user's 26590-line D)
+
+- Key 0 (on) now runs Follow.AutoAll(true), the same start as on load
+  (AutoFarm from any phase + AutoHide + AutoHelp). It used to open the
+  Follow player picker instead.
+- Hand-over beats: rescue waiting on its first route walks on (quick also
+  for rescue while a job runs); route-search wait before walking out 0.15 s
+  (was 0.4); AutoHelp idle poll 0.06 s (was 0.15).
+- Exit lever: face the lever once before the first press; the 65 %
+  watch-back turn happens once the game is clearly opening (progress >= 15 %);
+  with a live progress stat, a press that shows no progress for 1.1 s is
+  released and pressed again. Compile-checked only.
