@@ -1037,3 +1037,15 @@ from the Round 30b version, nothing else:
   clear, > 8 studs from the goal: one normal jump, at most every 0.75 s.
 - Corners: the Round 33 wedge escape covers getting stuck in a corner; no
   extra wall-slide steering was added. Compile-checked only.
+
+## Round 37
+
+- AutoHelp wide shortcut scan: Follow.RescueShortcut looks 25 route points /
+  32 studs ahead (was 10 / 18) for a window/prop/rail cut; far cuts must save
+  > 4 studs; best 4 candidates verified (was 2).
+- AutoHide: jump lanes (windows, rails, props, drops) +4 each (+5 juking),
+  floor change +6; far dead-end look-ahead (AH.OpenAt, one more 20-stud scan
+  past a full run); after running through an open door with the Beast behind
+  on the other side, one remote press shuts it (AH.CloseDoorBehind), no stop.
+- FlipGuard (farm/help only): second reversal within 0.9 s holds 0.35 s.
+- Co-hacker facing 65 % (was 35 %). Compile-checked only.

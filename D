@@ -3567,10 +3567,10 @@ function FH.ComputerContactClear(token, comp, trig)
     FH.SetContactApproach(token, hum, root, trig, comp, goal, "computer")
     return FH.ContactApproachValid(token, hum, root, goal)
 end
--- 35 % of hacks: while a teammate hacks the same computer, turn to face them
+-- 65 % of hacks: while a teammate hacks the same computer, turn to face them
 -- (body facing only; a quick flick, then held while both hack).
 function FH.FaceCoHacker(state, comp, hum, root)
-    if state.decided == nil then state.decided = math.random() < 0.35 end
+    if state.decided == nil then state.decided = math.random() < 0.65 end
     if not state.decided then return end
     local all = FH.CompTriggers(comp)
     local mate
@@ -4936,8 +4936,8 @@ function FH.FlipGuard(motion, root, direction)
             return hit == nil
         end
         if g.held and now < g.holdUntil and grounded and open() then return g.dir end
-        if not g.held and grounded and now - g.flipAt < 0.6 and open() then
-            g.held, g.holdUntil = true, now + 0.25
+        if not g.held and grounded and now - g.flipAt < 0.9 and open() then
+            g.held, g.holdUntil = true, now + 0.35
             return g.dir
         end
         -- A hold ended (or could not apply): this reversal goes through.
@@ -10224,7 +10224,9 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
     if not (wps and wps[index] and goal) then return nil end
     local routeLength = (wps[index].Position - Vector3.new(rp.X, feetY, rp.Z)).Magnitude
     local candidates = {}
-    local last = math.min(#wps, index + 10, blockedAt and blockedAt - 1 or #wps)
+    -- Wide scan (user request): look 25 route points / 32 studs ahead for a
+    -- straight cut through a window or over props/rails that saves time.
+    local last = math.min(#wps, index + 25, blockedAt and blockedAt - 1 or #wps)
     for i = index + 1, last do
         local point = wps[i].Position
         routeLength = routeLength + (point - wps[i - 1].Position).Magnitude
@@ -10232,8 +10234,8 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
         local saved = routeLength - distance
         if
             distance >= 3
-            and distance <= 18
-            and saved > 0.05
+            and distance <= 32
+            and saved > (distance <= 18 and 0.05 or 4)
             and math.abs(point.Y - feetY) <= 2.5
             and wps[i].Action ~= Enum.PathWaypointAction.Jump
         then
@@ -10242,7 +10244,7 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
     end
     table.sort(candidates, function(a, b) return a.saved > b.saved end)
     -- Bound ray work even if a native path contains many small detour points.
-    for i = 1, math.min(2, #candidates) do
+    for i = 1, math.min(4, #candidates) do
         local candidate = candidates[i]
         local jumps = Follow.RescueJumpLane(rp, candidate.point, feetY)
         if jumps then return candidate.index end
@@ -15601,6 +15603,27 @@ function AH.Scan(rp, dir, feetY)
     end
     return run, jumps, nil, curY
 end
+-- How many of 7 headings are open (10 studs) at the end of a lane: <= 1
+-- is a dead end. Cached per 4-stud cell and heading for 1.5 s.
+function AH.OpenAt(point, dir, feetY, now)
+    AH.OpenCache = AH.OpenCache or {}
+    local key = math.floor(point.X / 4) .. ":" .. math.floor(point.Z / 4) .. ":"
+        .. math.floor((math.atan2(dir.Z, dir.X) + math.pi) / (math.pi / 4))
+    local cached = AH.OpenCache[key]
+    if cached and now - cached.at < 1.5 then return cached.open end
+    local open = 0
+    local bside = Vector3.new(-dir.Z, 0, dir.X)
+    local origin = Vector3.new(point.X, feetY + 1.5, point.Z) - dir * 1.5
+    for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
+        local r = math.rad(a)
+        local d = dir * math.cos(r) + bside * math.sin(r)
+        local hit = Workspace:Raycast(origin, d * 10, rayParams)
+        if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
+    end
+    if next(AH.OpenCache) and math.random() < 0.02 then table.clear(AH.OpenCache) end
+    AH.OpenCache[key] = { at = now, open = open }
+    return open
+end
 function AH.Steer(rp, bp, bvel, feetY, juke)
     local pred = bp
     if bvel then
@@ -15652,7 +15675,10 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                     + dir:Dot(away) * 10
                     -- Hopping onto/over props breaks the Beast's line: a
                     -- bonus, not a penalty (it used to run dead straight).
-                    + jumps * (juke and 4 or 2)
+                    -- Windows/rails/props/drops break the Beast's line: worth
+                    -- more than plain floor (user: prefer them).
+                    + jumps * (juke and 5 or 4)
+                    + (endY and math.abs(endY - feetY) >= 3 and 6 or 0)
                     + (run >= full and 8 or 0)
                     + math.max(dir:Dot(forward), 0) * 6
                     + math.max(dir:Dot(weave), 0) * 5
@@ -15678,28 +15704,7 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
         if known then
             c.score = c.score - 30
         elseif c.run < full then
-            -- Cached per 4-stud cell and heading for 1.5 s: this ran 35 rays
-            -- on every steering tick (frame time).
-            AH.OpenCache = AH.OpenCache or {}
-            local key = math.floor(c.point.X / 4) .. ":" .. math.floor(c.point.Z / 4) .. ":"
-                .. math.floor((math.atan2(c.dir.Z, c.dir.X) + math.pi) / (math.pi / 4))
-            local cached = AH.OpenCache[key]
-            local open = 0
-            if cached and now - cached.at < 1.5 then
-                open = cached.open
-            else
-                local base = c.dir
-                local bside = Vector3.new(-base.Z, 0, base.X)
-                local origin = Vector3.new(c.point.X, feetY + 1.5, c.point.Z) - base * 1.5
-                for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
-                    local r = math.rad(a)
-                    local d = base * math.cos(r) + bside * math.sin(r)
-                    local hit = Workspace:Raycast(origin, d * 10, rayParams)
-                    if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
-                end
-                if next(AH.OpenCache) and math.random() < 0.02 then table.clear(AH.OpenCache) end
-                AH.OpenCache[key] = { at = now, open = open }
-            end
+            local open = AH.OpenAt(c.point, c.dir, feetY, now)
             if open <= 1 then
                 c.score = c.score - 25
                 AH.DeadEnds[#AH.DeadEnds + 1] = { pos = c.point, at = now }
@@ -15708,6 +15713,43 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                 c.score = c.score + 7 -- open junction/space: more ways to lose the Beast
             elseif open == 2 then
                 c.score = c.score - 6 -- narrow pocket
+            end
+        else
+            -- A long straight run can still end in a closed corridor just
+            -- past the 20-stud scan (live, Airport: ran 20 studs down a
+            -- corridor, hit the end and spun round 180 degrees). Look one
+            -- more scan ahead from its end and judge that end too.
+            local ekey = math.floor(c.point.X / 4) .. ":" .. math.floor(c.point.Z / 4) .. ":"
+                .. math.floor((math.atan2(c.dir.Z, c.dir.X) + math.pi) / (math.pi / 4)) .. ":x"
+            AH.OpenCache = AH.OpenCache or {}
+            local cached = AH.OpenCache[ekey]
+            local extOpen, extEnd
+            if cached and now - cached.at < 1.5 then
+                extOpen, extEnd = cached.open, cached.pos
+            else
+                local endY = c.point.Y - (rp.Y - feetY)
+                local run2, _, _, y2 = AH.Scan(c.point, c.dir, endY)
+                extOpen = 9
+                if run2 < full then
+                    extEnd = Vector3.new(c.point.X + c.dir.X * run2, (y2 or endY) + rp.Y - feetY, c.point.Z + c.dir.Z * run2)
+                    extOpen = AH.OpenAt(extEnd, c.dir, y2 or endY, now)
+                end
+                AH.OpenCache[ekey] = { at = now, open = extOpen, pos = extEnd }
+            end
+            local knownFar = false
+            if extEnd then
+                for _, d in ipairs(AH.DeadEnds) do
+                    if Flat(d.pos - extEnd).Magnitude < 8 then knownFar = true; break end
+                end
+            end
+            if knownFar or extOpen <= 1 then
+                c.score = c.score - 20
+                if extEnd and not knownFar then
+                    AH.DeadEnds[#AH.DeadEnds + 1] = { pos = extEnd, at = now }
+                    if #AH.DeadEnds > 30 then table.remove(AH.DeadEnds, 1) end
+                end
+            elseif extOpen >= 4 then
+                c.score = c.score + 4
             end
         end
     end
@@ -16038,6 +16080,29 @@ function AH.JukeAim(rp, bp, bvel, feetY, state, forward, danger)
 end
 -- Commit to a nearby open door that changes the red-alert heading. Door
 -- geometry comes from the existing cache; only the chosen body lane is checked.
+-- One remote press on the nearest trigger of a door we just ran through
+-- (no stop, no turn), released 0.25 s later.
+function AH.CloseDoorBehind(g, rp)
+    if not RemoteEvent then return end
+    local best, bestD
+    for _, t in ipairs(FH.Triggers(g.Door)) do
+        local ev = t.Parent and t:FindFirstChild("Event")
+        local d = ev and (t.Position - rp).Magnitude
+        if d and d <= 9 and (not bestD or d < bestD) then best, bestD = ev, d end
+    end
+    if not best then return end
+    pcall(function()
+        RemoteEvent:FireServer("Input", "Trigger", true, best)
+        RemoteEvent:FireServer("Input", "Action", true)
+    end)
+    task.delay(0.25, function()
+        pcall(function()
+            RemoteEvent:FireServer("Input", "Trigger", false, best)
+            RemoteEvent:FireServer("Input", "Action", false)
+        end)
+    end)
+    if FH.Diag then FH.Diag("evade", "door-closed-behind") end
+end
 function AH.OpenDoorAim(rp, bp, feetY, state, forward, danger)
     local now = os.clock()
     if not danger or not bp then
@@ -16068,6 +16133,13 @@ function AH.OpenDoorAim(rp, bp, feetY, state, forward, danger)
         then
             lane.crossing = true
             state.checkAt = 0
+        end
+        -- Through the open door with the Beast behind on the other side:
+        -- shut it behind us once, on the move, to block it (user request).
+        if lane.crossing and not lane.closed and bp and g.Dir:Dot(Flat(rp - g.Center)) > 2
+            and g.Dir:Dot(Flat(bp - g.Center)) < -1 and Flat(bp - g.Center).Magnitude >= 6 then
+            lane.closed = true
+            pcall(AH.CloseDoorBehind, g, rp)
         end
         return lane.crossing and lane.point or lane.entry
     end
