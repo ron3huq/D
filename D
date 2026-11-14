@@ -2561,10 +2561,10 @@ local DoorFail = setmetatable({}, { __mode = "k" })
 local DoorOpenedAt = setmetatable({}, { __mode = "k" })
 local DoorTries = setmetatable({}, { __mode = "k" })
 local DoorB = setmetatable({}, { __mode = "k" })
--- Agent heights cover a standing avatar (~5 studs): crawl-only vents are
--- walls for routing (a 4-stud agent routed through them; the standing
--- avatar pressed into the vent and shook - live report).
-local PATH_SPECS = { { 2.4, 5.2 }, { 1.2, 5 } }
+-- Narrow profile 4 studs tall: low crawl vents (~3 studs) stay excluded,
+-- windows and gaps over obstacles stay routable (5-stud agents dropped them
+-- and rescues detoured around - live report).
+local PATH_SPECS = { { 2.4, 5 }, { 1.2, 4 } }
 -- Movement is owned by one feature at a time; chat only submits feature tokens.
 -- Manual input / flight always wins. Expiring leases cannot strand a stopped task.
 FH.Motion = { token = nil, priority = 0, untilAt = 0, aim = nil, sentAt = 0, hum = nil }
@@ -10737,7 +10737,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 onSmallProp = math.max(size.X, size.Z) < 14 and not FH.StairLike(part)
             end
         end
-        if not w and hum and onSmallProp and goal.Y <= feetY + 3 then
+        -- Only when stuck for real (2+ failed plans in a row): on the first
+        -- failure on top of a desk the route over the desks is still fine;
+        -- stepping down at once made it climb up and step down in a loop.
+        if not w and hum and onSmallProp and goal.Y <= feetY + 3 and fails >= 2 then
             local liveRoot = RootNow()
             if liveRoot then
                 local best
@@ -10797,9 +10800,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- computations): only for a real detour, at most every 4 s
                 -- for rescue (it ran every 1.5 s for any bend: frame drops,
                 -- and detours through unrelated doors).
-                and len > (rescue and straight * 1.25 + 6 or straight * 1.8 + 12)
+                and len > (rescue and straight * 1.12 + 3 or straight * 1.8 + 12)
                 and straight < (rescue and 130 or 70)
-                and os.clock() - detourAt > (rescue and 4 or 8)
+                and os.clock() - detourAt > (rescue and 2.5 or 8)
                 and os.clock() - doorFailAt > 5
             then
                 detourAt = os.clock()
@@ -11308,7 +11311,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             task.wait(0.03)
             continue
         end
-        if opts.rescueJuke and job and not job.done and job.preview and not flying then
+        if opts.rescueJuke and job and not job.done and job.preview and not flying
+            and hum.FloorMaterial ~= Enum.Material.Air then
             local preview = job.preview
             job.preview = nil
             local remaining = mode == "path" and wps and wps[wpi]
@@ -11321,7 +11325,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 setPath(preview.wps, true, nil)
             end
         end
-        if job and job.done and not flying then
+        -- A plan finished while we are in the air (vaulting a window/prop) is
+        -- applied on landing: switching mid-jump turned us around halfway.
+        if job and job.done and not flying and hum.FloorMaterial ~= Enum.Material.Air then
             local j = job
             job = nil
             local fresh = true
@@ -11354,7 +11360,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     -- pulled straight at the pod behind the wall, the next
                     -- plan led back around, again and again). Keep walking
                     -- the recent route from where we are instead.
-                    if opts.rescueJuke and mode ~= "path" and lastRoute and os.clock() - lastRoute.at < 5 then
+                    -- (Disabled: reusing the old route alternated with local
+                    -- steering - back and forth for seconds, live data.)
+                    if false and mode ~= "path" and lastRoute and os.clock() - lastRoute.at < 5 then
                         restoringRoute = true
                         local ok = setPath(lastRoute.w, lastRoute.full, nil)
                         restoringRoute = false

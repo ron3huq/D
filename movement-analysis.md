@@ -919,3 +919,17 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   chasing, the route still went to the lever stand (beside the gate) before crossing. When chased,
   an open gate whose centre is within 25 studs on a clear straight line is now run into directly.
 - Silent help only with a clear line to the pod (no wall in between).
+
+## Round 29 (D_stall_20261114_054026)
+
+- Rescue back-and-forth (School): "keep the recent route" (round 14) re-adopted an older route
+  pointing back while local steering pointed ahead - alternating every ~0.6 s for seconds. The
+  feature is disabled.
+- Desk-hopping loop in cluttered rooms: the round-21 "plan from the floor beside a prop" stepped
+  off a desk the native route had just climbed; now only after 2+ failed plans in a row.
+- Fewer window/obstacle routes since round 18: the 5.2/5-stud agent heights excluded windows and
+  gaps over obstacles. Back to 5/4 (low crawl vents stay excluded at 4).
+- Mid-vault turnarounds: a finished plan (and the rescue route preview) is applied only on the
+  ground, not while airborne.
+- Rescue door shortcuts searched for a smaller detour (>= 12 % + 3 studs) every 2.5 s (was
+  25 % + 6 every 4 s), with the 5 s door-failure pause kept.
