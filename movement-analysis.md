@@ -979,3 +979,17 @@ from the Round 30b version, nothing else:
 - exit lever: watch-back turn once before the first hold, no body writes
   while holding;
 - UI frame position Y 0.38.
+
+## Round 32 (on the Round 26 base)
+
+- Silent help only with the pod in sight (FH.PodInSight: head and chest eye
+  lines, walls/doors/glass block).
+- Lobby: 20 % of visits tap Shift once a second for 13 s while strolling
+  (Follow.LobbyShiftTaps); the 10 % crawl stays.
+- AutoHide FleeSpeed 16.5; ContactRange 10; NearRange unchanged (32).
+- Rescue head-on hand-over reach 12 -> 13.5 (charging base 14 -> 15.5).
+- AutoHelp routing: window-capable path agents { {2.4,5}, {1.2,4} }, door
+  detour for rescue when the route is > 1.12x+3 the straight line (every
+  2.5 s), no plan switch mid-air, open the nearest door when shut in.
+- Momentum carry while the first route is computed is written but disabled
+  (`if false and ...`): the navigation test run hung and was not finished.

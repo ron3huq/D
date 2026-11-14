@@ -118,10 +118,10 @@ local AH = {
     LeaveRange = 70,
     SafeTime = 1.2,
     AvoidRange = 22,
-    ContactRange = 8, -- Beast trong 8 studs, hướng mặt về mình, không cách tường (cửa vẫn tính) => trốn ngay
+    ContactRange = 10, -- Beast trong 10 studs, hướng mặt về mình, không cách tường (cửa vẫn tính) => trốn ngay
     IdleSafeTime = 20, -- Beast đứng yên nhìn mình 20s mà không đánh => coi là an toàn
     AfkTime = 50, -- Beast không di chuyển 50s => an toàn
-    FleeSpeed = 17, -- chạy khi bị Beast đuổi (17s)
+    FleeSpeed = 16.5, -- chạy khi bị Beast đuổi (16.5)
     FreeRoundTime = 210, -- 3m30s chưa ai bị bắt => free round
     FreeMeetTime = 20, -- Beast gặp mình 20s không đánh => free round
     MeetRange = 12,
@@ -2564,7 +2564,7 @@ local DoorB = setmetatable({}, { __mode = "k" })
 -- Agent heights cover a standing avatar (~5 studs): crawl-only vents are
 -- walls for routing (a 4-stud agent routed through them; the standing
 -- avatar pressed into the vent and shook - live report).
-local PATH_SPECS = { { 2.4, 5.2 }, { 1.2, 5 } }
+local PATH_SPECS = { { 2.4, 5 }, { 1.2, 4 } }
 -- Movement is owned by one feature at a time; chat only submits feature tokens.
 -- Manual input / flight always wins. Expiring leases cannot strand a stopped task.
 FH.Motion = { token = nil, priority = 0, untilAt = 0, aim = nil, sentAt = 0, hum = nil }
@@ -10824,9 +10824,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- computations): only for a real detour, at most every 4 s
                 -- for rescue (it ran every 1.5 s for any bend: frame drops,
                 -- and detours through unrelated doors).
-                and len > (rescue and straight * 1.25 + 6 or straight * 1.8 + 12)
+                and len > (rescue and straight * 1.12 + 3 or straight * 1.8 + 12)
                 and straight < (rescue and 130 or 70)
-                and os.clock() - detourAt > (rescue and 4 or 8)
+                and os.clock() - detourAt > (rescue and 2.5 or 8)
                 and os.clock() - doorFailAt > 5
             then
                 detourAt = os.clock()
@@ -11335,7 +11335,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             task.wait(0.03)
             continue
         end
-        if opts.rescueJuke and job and not job.done and job.preview and not flying then
+        if opts.rescueJuke and job and not job.done and job.preview and not flying
+            and hum.FloorMaterial ~= Enum.Material.Air then
             local preview = job.preview
             job.preview = nil
             local remaining = mode == "path" and wps and wps[wpi]
@@ -11348,7 +11349,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 setPath(preview.wps, true, nil)
             end
         end
-        if job and job.done and not flying then
+        -- A plan finished while we are in the air (vaulting a window/prop) is
+        -- applied on landing: switching mid-jump turned us around halfway.
+        if job and job.done and not flying and hum.FloorMaterial ~= Enum.Material.Air then
             local j = job
             job = nil
             local fresh = true
@@ -11392,6 +11395,38 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         end
                     end
                     fails = fails + 1
+                    -- Shut in (plans keep failing, live: a rescue bounced off the
+                    -- walls of a small room for seconds): open the nearest
+                    -- closed door on our floor and go through, like a player.
+                    if fails >= 2 and not noDoor and not flying then
+                        local liveRoot, liveHum = RootNow(), GetHumanoid()
+                        local bestG, bestD
+                        if liveRoot and liveHum then
+                            local lp = liveRoot.Position
+                            local lf = FH.Feet(liveHum, liveRoot)
+                            FH.NearDoorTried = FH.NearDoorTried or setmetatable({}, { __mode = "k" })
+                            for _, d in ipairs(Doors) do
+                                if IsInWorld(d) and not (FH.NearDoorTried[d] and os.clock() < FH.NearDoorTried[d]) then
+                                    local g = FH.DoorGeom(d, lp)
+                                    if g and FH.DoorOnFloor(g, lp, lf) and FH.DoorBlocked(g) then
+                                        local dd = Flat(g.Center - lp).Magnitude
+                                        if dd <= 12 and (not bestD or dd < bestD) then bestG, bestD = g, dd end
+                                    end
+                                end
+                            end
+                        end
+                        if bestG then
+                            FH.NearDoorTried[bestG.Door] = os.clock() + 5
+                            if FH.Diag then FH.Diag("walk", "open-near-door") end
+                            local passed = Follow.PassDoor(token, bestG, abort, nil, opts.rescueJuke, pendingSteer)
+                            if not alive() then return finish("abort", false) end
+                            if passed then
+                                reset()
+                                fails, nextPlan = 0, 0
+                                continue
+                            end
+                        end
+                    end
                     -- Remember where plans keep failing (across WalkTo calls).
                     local spot = FH.PlanFailSpot
                     if spot and Flat(spot.pos - rp).Magnitude < 10 and now - spot.at < 20 then
@@ -11625,7 +11660,24 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     and math.abs(goal.Y - rp.Y) < Follow.MaxDY
                     and (job or now - progressAt > 0.3 or now - (breakerAt or 0) > 1.3)
                 local slow = now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
-                if hum.FloorMaterial ~= Enum.Material.Air and (quick or slow) then
+                -- Still running from the previous leg (new walk, route not
+                -- computed yet): keep that momentum for a moment instead of
+                -- standing ~0.5 s waiting for the planner (live beats).
+                local carry
+                if false and not (quick or slow) and hum.FloorMaterial ~= Enum.Material.Air then
+                    local v = Flat(root.AssemblyLinearVelocity)
+                    local toGoal = Flat(goal - rp)
+                    if v.Magnitude > 6 and (toGoal.Magnitude < 0.5 or v.Unit:Dot(toGoal.Unit) > -0.3) then
+                        local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + 2, rp.Z), v.Unit * 6, rayParams)
+                        local floorAhead = Workspace:Raycast(Vector3.new(rp.X, feetY + 1, rp.Z) + v.Unit * 3,
+                            Vector3.new(0, -4, 0), rayParams)
+                        if not hit and floorAhead then carry = v.Unit end
+                    end
+                end
+                if carry then
+                    breaker = { aim = rp + carry * 6, untilAt = now + 0.5, dir = carry, since = now }
+                    FH.Move(token, hum, breaker.aim)
+                elseif hum.FloorMaterial ~= Enum.Material.Air and (quick or slow) then
                     -- Keep the heading of the last breaker for a while if it
                     -- is still open: flipping back toward the goal each time
                     -- made it walk to and fro (shaking) at the same obstacle.
@@ -12175,6 +12227,30 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     end
     return finish("abort", false)
 end
+-- Silent help only when a player could actually see the pod: clear eye
+-- lines from head and chest to the pod (walls, doors, glass all block;
+-- fully invisible parts do not). Live: it fired from behind a wall.
+function FH.PodInSight(root, trig)
+    local base = FH.PodRay(trig)
+    local p = RaycastParams.new()
+    p.FilterType = Enum.RaycastFilterType.Exclude
+    local list = base.FilterDescendantsInstances
+    p.FilterDescendantsInstances = list
+    local function clear(from, to)
+        local origin = from
+        for _ = 1, 4 do
+            local delta = to - origin
+            if delta.Magnitude < 0.2 then return true end
+            local hit = Workspace:Raycast(origin, delta, p)
+            if not hit then return true end
+            if hit.Instance.Transparency < 0.95 then return false end
+            origin = hit.Position + delta.Unit * 0.05
+        end
+        return false
+    end
+    local head = root.Position + Vector3.new(0, 1.5, 0)
+    return clear(head, trig.Position) and clear(root.Position, trig.Position)
+end
 function FH.PodRay(trig)
     local now = os.clock()
     local c = FH.PodRayCache[trig]
@@ -12563,7 +12639,7 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
             local r = RootNow()
             if r and RemoteEvent and ev and ev.Parent then
                 local d = Flat(trig.Position - r.Position).Magnitude
-                if d <= 10 and math.abs(trig.Position.Y - r.Position.Y) <= 6 then
+                if d <= 10 and math.abs(trig.Position.Y - r.Position.Y) <= 6 and FH.PodInSight(r, trig) then
                     silentSent = true
                     pcall(function()
                         RemoteEvent:FireServer("Input", "Trigger", true, ev)
@@ -17289,12 +17365,13 @@ function AR.ThreatPreemptsRaw()
         headOn = beastLook.Magnitude > 0.1 and mine.Magnitude > 0.1
             and beastLook.Unit:Dot(toMe) >= 0.85 and mine.Unit:Dot(-toMe) >= 0.85
     end
-    local reach = headOn and 12 or 6
+    -- Face to face while rescuing: a little earlier than before (12 -> 13.5).
+    local reach = headOn and 13.5 or 6
     -- A head-on Beast that is charging at us: react earlier, by how fast
     -- the gap closes (16 studs/s -> ~22 studs). Static facing keeps 12.
     if headOn and threat.vel then
         local closing = Flat(threat.vel):Dot(-flatDelta.Unit)
-        if closing > 4 then reach = math.min(14 + closing * 0.8, 30) end
+        if closing > 4 then reach = math.min(15.5 + closing * 0.8, 30) end
     end
     -- Any Beast closing in on us fast (not only a perfectly head-on one):
     -- yield within 20 studs while it approaches (live: the rescue kept
@@ -22796,12 +22873,53 @@ function Follow.LobbyCrawl()
         Follow.Crawling = false
     end)
 end
+-- 20 % of lobby visits: while strolling, tap Shift once a second for 13 s
+-- (a short press each time). Lobby only; stops at once when a round starts,
+-- on unload, or while typing in chat; never during a crawl session.
+function Follow.LobbyShiftTaps()
+    if Follow.ShiftTapping or Follow.Crawling then return end
+    Follow.ShiftTapping = true
+    task.spawn(function()
+        local function key(down)
+            local ok = false
+            if type(down and keypress or keyrelease) == "function" then
+                ok = pcall(down and keypress or keyrelease, 0xA0)
+            end
+            if not ok and VIM then
+                ok = pcall(function() VIM:SendKeyEvent(down, Enum.KeyCode.LeftShift, false, game) end)
+            end
+            return ok
+        end
+        -- No key backend: nothing to tap (and no 13 s idle loop).
+        if UserInputService:GetFocusedTextBox() or not key(true) then
+            Follow.ShiftTapping = false
+            return
+        end
+        task.wait(0.08)
+        key(false)
+        task.wait(0.92)
+        local untilAt = os.clock() + 12
+        while os.clock() < untilAt and not unloaded and not Follow.Crawling
+            and not (FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)) do
+            if not UserInputService:GetFocusedTextBox() and key(true) then
+                task.wait(0.08)
+                key(false)
+            end
+            task.wait(0.92)
+        end
+        Follow.ShiftTapping = false
+    end)
+end
 function Follow.LobbyStroll(token, state, point)
+    if state.tapRolled == nil then
+        state.tapRolled = math.random() < 0.2
+        if state.tapRolled and not Follow.Crawling then Follow.LobbyShiftTaps() end
+    end
     -- One roll per lobby visit (it was rolled per stroll leg, so nearly
     -- every intermission ended up crawling).
     if state.crawlRolled == nil then
         state.crawlRolled = math.random() < 0.1
-        if state.crawlRolled then Follow.LobbyCrawl() end
+        if state.crawlRolled and not Follow.ShiftTapping then Follow.LobbyCrawl() end
     end
     local ok = pcall(Follow.WalkTo, token, function() return point end, 2.5, function()
         if FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) then return true end
@@ -22824,7 +22942,7 @@ function Follow.LobbyStep(token)
     -- waited in the lobby through the round (the board reloads later).
     local matchNow = FH.MatchOn()
     local roundEnded = state.wasMatch and not matchNow
-    if matchNow then state.crawlRolled = nil end
+    if matchNow then state.crawlRolled, state.tapRolled = nil, nil end
     state.wasMatch = matchNow
     if roundEnded or state.seenAt and now - state.seenAt > 15 then
         state.voted, state.waitPoint, state.votedKey, state.tries = nil, nil, nil, {}
