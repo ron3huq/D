@@ -839,3 +839,14 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   instead of standing 0.4 s and giving the drop up.
 - Lobby face-to-face picks players around the map-vote area (within 30 studs of the board, and
   40 of us), nearest to the board first.
+
+## Round 23 (Workspace_9, 2 new files)
+
+- Doorway left/right dance (Arctic Station kitchen: ~6 s turning before entering an open
+  doorway; 71 sharp heading flips in the two files): brushing the frame read as a "wall", which
+  rejected the lane and dropped the route at the doorway; the next plan led back through it,
+  rejected again, with side slides in between. The frame/leaf of an open door (or a part named
+  *frame*/*door*) on the route is no longer a wall while following a path, and the 0.9 s
+  no-progress rule replans without marking a doorway lane as blocked.
+- Micro-stops in these files: 2. The AutoHide flight in the recording kept full speed while
+  hopping onto a table (no stall to fix there).
