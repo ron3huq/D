@@ -2117,7 +2117,7 @@ Follow.BeastRow = New("TextButton", Follow.Frame, {
     Size = UDim2.new(1, 0, 0, 22),
     BackgroundColor3 = Theme.ElementBg,
     BackgroundTransparency = 0.65,
-    Text = "Auto Beast [6]: OFF",
+    Text = "Auto Farm [6]: OFF",
     TextColor3 = Theme.Text,
     Font = Enum.Font.GothamBold,
     TextSize = 10,
@@ -2167,8 +2167,8 @@ function Follow.Refresh()
         Follow.RandomRow.TextColor3 = Follow.RandomActive and GREEN or Theme.Text
     end
     if Follow.BeastRow then
-        Follow.BeastRow.Text = Follow.AutoBeastActive and "Auto Beast [6]: ON" or "Auto Beast [6]: OFF"
-        Follow.BeastRow.TextColor3 = Follow.AutoBeastActive and GREEN or Theme.Text
+        Follow.BeastRow.Text = Follow.AutoFarm and "Auto Farm [6]: ON" or "Auto Farm [6]: OFF"
+        Follow.BeastRow.TextColor3 = Follow.AutoFarm and GREEN or Theme.Text
     end
 end
 function Follow.ResetButton()
@@ -26671,11 +26671,17 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
             return
         end
         if keyCode == Enum.KeyCode.Six or keyCode == Enum.KeyCode.KeypadSix then
-            if Follow.AutoBeastActive then
-                Follow.Stop()
+            -- 6 = AutoFarm, exactly as started on script load (from any
+            -- phase, with AutoHide + AutoHelp).
+            if Follow.AutoFarm then
+                Follow.StopAutoFarm()
             else
-                Follow.StartAutoBeast(true)
+                if Follow.Target or Follow.RandomActive or Follow.AutoBeastActive then Follow.Stop() end
+                Follow.Close()
+                Follow.AutoAll(true)
             end
+            Follow.ResetButton()
+            Follow.Refresh()
             return
         end
         local pick = NUM_KEYS[keyCode]

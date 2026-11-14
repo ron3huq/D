@@ -1113,3 +1113,4 @@ from the Round 30b version, nothing else:
 - autohop.luau: after we escape, no hop while teammates are still in the
   round; hop only when every survivor left has stood still (< 3 studs) for
   over 60 s. Compile-checked only.
+- Follow picker key 6 is now Auto Farm (Follow.AutoAll(true), same as on load); the row reads "Auto Farm [6]". Auto Beast is no longer on the picker.
