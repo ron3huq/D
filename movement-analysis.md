@@ -1086,3 +1086,5 @@ from the Round 30b version, nothing else:
   released and pressed again. Compile-checked only.
 
 - Key 0 restored to the original behaviour (AutoHide + AutoHelp + Follow picker).
+
+- Follow picker key 6 is now Auto Farm (Follow.AutoAll(true), same as on load); the row reads "Auto Farm [6]". Auto Beast is no longer on the picker.
