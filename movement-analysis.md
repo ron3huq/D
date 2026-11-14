@@ -1061,3 +1061,13 @@ from the Round 30b version, nothing else:
   points (beside the pod), however far along the route, so passing the pod
   room with a window cuts straight in (within 32 studs, same floor).
   Compile-checked only.
+
+## Round 39
+
+- Spin filter in FH.FlipGuard (farm/help only, never AutoHide): input that
+  turns a full circle or more within 1.5 s while the body moves < 5 studs
+  locks one open heading for 0.6 s. Not recorded within 4 studs of the aim.
+- Wide map knowledge: the script already samples the loaded map in the
+  background (FH.Nav atlas: 4-stud floor columns, links, door portals) and
+  uses it for routes; no second scanner was added (frame cost). Ladders
+  (TrussPart climbing) are not routed yet. Compile-checked only.
