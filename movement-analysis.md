@@ -993,3 +993,15 @@ from the Round 30b version, nothing else:
   2.5 s), no plan switch mid-air, open the nearest door when shut in.
 - Momentum carry while the first route is computed is written but disabled
   (`if false and ...`): the navigation test run hung and was not finished.
+
+## Round 33
+
+- Removed the lobby 1 s Shift taps (Follow.LobbyShiftTaps); 10 % crawl stays.
+- Anti sharp turns: Follow.Pick penalises reversals (-6 x reverse dot) and
+  uses the live velocity as heading when no previous direction is known.
+- Wedge escape in WalkTo: barely moved (2.5 studs) for 2.5 s while not
+  arrived -> walk 0.8 s toward the most open of 12 headings (biased to the
+  goal), normal jump if something low blocks it, then replan.
+- Test note: the hang comes from FH.PodInSight in the fixture (the same file
+  with that check removed passes 166/368); not run again at the user's
+  request.

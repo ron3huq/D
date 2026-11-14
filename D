@@ -9519,7 +9519,12 @@ function Follow.PlanStep(token, hum, root, goal, feetY, state, rescueGoal, appro
             end
         end
         if not aim then
-            local picked, dir = Follow.Pick(rp, goal, feetY, dv.Magnitude, state.trail, state.dir)
+            local heading = state.dir
+            if not heading then
+                local v = Flat(root.AssemblyLinearVelocity)
+                if v.Magnitude > 8 then heading = v.Unit end
+            end
+            local picked, dir = Follow.Pick(rp, goal, feetY, dv.Magnitude, state.trail, heading)
             if picked then
                 local step = Flat(picked - rp)
                 local candidate = step.Magnitude > 12 and rp + step.Unit * 12 or picked
@@ -10976,6 +10981,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         end
         return nil
     end
+    local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     while alive() do
         if abort and abort() then return finish("abort", false) end
         if maxTime and os.clock() - startT > maxTime then return finish("timeout", true) end
@@ -11329,6 +11335,43 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             reset()
             nextPlan = 0
             progressPosition, progressAt = rp, now
+        end
+        -- Wedged (barely moved 2.5 s in a tight spot while not arrived): walk
+        -- out toward the most open side, hopping if something low blocks it.
+        if not flying and hum.FloorMaterial ~= Enum.Material.Air
+            and Flat(goal - rp).Magnitude > (stopDist or 1) + 3 then
+            if now < wedge.untilAt and wedge.aim then
+                FH.Move(token, hum, wedge.aim)
+                task.wait(0.03)
+                continue
+            end
+            if not wedge.pos or Flat(rp - wedge.pos).Magnitude > 2.5 then
+                wedge.pos, wedge.at = rp, now
+            elseif now - wedge.at > 2.5 then
+                local toGoal = Flat(goal - rp)
+                toGoal = toGoal.Magnitude > 0.1 and toGoal.Unit or Vector3.new(1, 0, 0)
+                local best, bestScore
+                for k = 0, 11 do
+                    local a = k * math.pi / 6
+                    local d = Vector3.new(math.cos(a), 0, math.sin(a))
+                    local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + 2, rp.Z), d * 12, rayParams)
+                    local room = hit and hit.Distance or 12
+                    local score = room + d:Dot(toGoal) * 3
+                    if room > 3 and (not bestScore or score > bestScore) then best, bestScore = d, score end
+                end
+                wedge.pos, wedge.at = rp, now
+                if best then
+                    wedge.aim, wedge.untilAt = rp + best * 8, now + 0.8
+                    if FH.Diag then FH.Diag("walk", "wedge-escape") end
+                    local low = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.8, rp.Z), best * 3, rayParams)
+                    if low then pcall(function() hum.Jump = true end) end
+                    reset()
+                    nextPlan = now + 0.8
+                    FH.Move(token, hum, wedge.aim)
+                    task.wait(0.03)
+                    continue
+                end
+            end
         end
         if Follow.ActiveEscape(token, hum, root) then
             FH.Move(token, hum, goal)
@@ -12917,7 +12960,9 @@ function Follow.Pick(rp, goal, feetY, flatDist, trail, prev)
             local after = Flat(goal - P).Magnitude
             local sc = -after + run * 0.35 + d:Dot(gdir) * 4 - jumps * 1.0
             if run >= full then sc = sc + 2 end
-            if prev then sc = sc + math.max(d:Dot(prev), 0) * 5 end
+            -- Keep the way we are already going; a reversal must be clearly
+            -- better (it read as the avatar spinning round mid-run).
+            if prev then sc = sc + math.max(d:Dot(prev), 0) * 5 - math.max(-d:Dot(prev), 0) * 6 end
             local pen = 0
             for i = 1, #trail do
                 local dx, dz = trail[i].x - P.X, trail[i].z - P.Z
@@ -22873,53 +22918,12 @@ function Follow.LobbyCrawl()
         Follow.Crawling = false
     end)
 end
--- 20 % of lobby visits: while strolling, tap Shift once a second for 13 s
--- (a short press each time). Lobby only; stops at once when a round starts,
--- on unload, or while typing in chat; never during a crawl session.
-function Follow.LobbyShiftTaps()
-    if Follow.ShiftTapping or Follow.Crawling then return end
-    Follow.ShiftTapping = true
-    task.spawn(function()
-        local function key(down)
-            local ok = false
-            if type(down and keypress or keyrelease) == "function" then
-                ok = pcall(down and keypress or keyrelease, 0xA0)
-            end
-            if not ok and VIM then
-                ok = pcall(function() VIM:SendKeyEvent(down, Enum.KeyCode.LeftShift, false, game) end)
-            end
-            return ok
-        end
-        -- No key backend: nothing to tap (and no 13 s idle loop).
-        if UserInputService:GetFocusedTextBox() or not key(true) then
-            Follow.ShiftTapping = false
-            return
-        end
-        task.wait(0.08)
-        key(false)
-        task.wait(0.92)
-        local untilAt = os.clock() + 12
-        while os.clock() < untilAt and not unloaded and not Follow.Crawling
-            and not (FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)) do
-            if not UserInputService:GetFocusedTextBox() and key(true) then
-                task.wait(0.08)
-                key(false)
-            end
-            task.wait(0.92)
-        end
-        Follow.ShiftTapping = false
-    end)
-end
 function Follow.LobbyStroll(token, state, point)
-    if state.tapRolled == nil then
-        state.tapRolled = math.random() < 0.2
-        if state.tapRolled and not Follow.Crawling then Follow.LobbyShiftTaps() end
-    end
     -- One roll per lobby visit (it was rolled per stroll leg, so nearly
     -- every intermission ended up crawling).
     if state.crawlRolled == nil then
         state.crawlRolled = math.random() < 0.1
-        if state.crawlRolled and not Follow.ShiftTapping then Follow.LobbyCrawl() end
+        if state.crawlRolled then Follow.LobbyCrawl() end
     end
     local ok = pcall(Follow.WalkTo, token, function() return point end, 2.5, function()
         if FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) then return true end
@@ -22942,7 +22946,7 @@ function Follow.LobbyStep(token)
     -- waited in the lobby through the round (the board reloads later).
     local matchNow = FH.MatchOn()
     local roundEnded = state.wasMatch and not matchNow
-    if matchNow then state.crawlRolled, state.tapRolled = nil, nil end
+    if matchNow then state.crawlRolled = nil end
     state.wasMatch = matchNow
     if roundEnded or state.seenAt and now - state.seenAt > 15 then
         state.voted, state.waitPoint, state.votedKey, state.tries = nil, nil, nil, {}
