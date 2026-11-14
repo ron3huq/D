@@ -897,3 +897,18 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   hole edge is just walked into.
 - Lobby crawl: a 12 s Shift-held session (10 % chance per leg), released early when a round
   starts or on unload.
+
+## Round 27 (D_stall_20261114_045757)
+
+- Exit gate not opening again (after round 26; round 25 was reported fine): the body was turned
+  by writing the root frame on every hold tick (round 26 made it stronger), which can cancel the
+  game's action. The watch-back turn is now done once, before the first hold tick, never during
+  the hold; the co-hacker facing likewise happens once before a hack starts.
+- Hacking: slot-taken radius back to 2.6 studs (3.2 skipped free slots); computers a teammate is
+  hacking (with a slot free) score ~20 studs better per teammate (max 2) and the farm switches to
+  one on its way; no 0.15 s wait after a hack attempt.
+- Silent help while rescuing now covers any captive pod we pass within 10 studs, not only the
+  target pod.
+- Local steering after a dropped route knows the current running direction (velocity) and
+  penalises reversing (it picked a way back mid-run).
+- UI panel a little higher (0.38 of screen height).
