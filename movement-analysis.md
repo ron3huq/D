@@ -827,3 +827,15 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   (1-5.5 studs lower, clear step) and prepends the step down.
 - Round 20's "keep moving into a rejected lane" is reverted (it pushed into walls); the round-19
   kept-side slide is back.
+
+## Round 22 (Workspace_8, 6 new files)
+
+- Micro-stops in-match: 14 (153 two rounds ago).
+- Rescue next to a pod but stuck behind a rail/ledge (Nuclear: 6-8 studs, hopping to and fro):
+  silent help on the way in - within 10 studs flat / 6 studs height of the target pod the rescue
+  trigger is sent remotely every 0.2 s while the avatar keeps moving, and released when the
+  captive is out or the rescue ends.
+- AutoHide walk-into-drop blocked by a rail before the drop: it hops over after 0.15 s (once)
+  instead of standing 0.4 s and giving the drop up.
+- Lobby face-to-face picks players around the map-vote area (within 30 studs of the board, and
+  40 of us), nearest to the board first.

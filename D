@@ -12437,6 +12437,40 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
         return "stop"
     end
 
+    -- Silent help on the way in: within 10 studs of the pod the rescue
+    -- trigger is sent remotely every 0.2 s while we keep moving, so the
+    -- captive is freed without stopping at the capsule (live: shaking at a
+    -- rail/ledge 6 studs from the pod, never reaching the contact spot).
+    local silentSent = false
+    task.spawn(function()
+        while not stop() do
+            local r = RootNow()
+            if r and RemoteEvent and ev and ev.Parent then
+                local d = Flat(trig.Position - r.Position).Magnitude
+                if d <= 10 and math.abs(trig.Position.Y - r.Position.Y) <= 6 then
+                    silentSent = true
+                    pcall(function()
+                        RemoteEvent:FireServer("Input", "Trigger", true, ev)
+                        RemoteEvent:FireServer("Input", "Action", true)
+                    end)
+                elseif silentSent then
+                    silentSent = false
+                    pcall(function()
+                        RemoteEvent:FireServer("Input", "Trigger", false, ev)
+                        RemoteEvent:FireServer("Input", "Action", false)
+                    end)
+                end
+            end
+            task.wait(0.2)
+        end
+        if silentSent and RemoteEvent and ev then
+            pcall(function()
+                RemoteEvent:FireServer("Input", "Trigger", false, ev)
+                RemoteEvent:FireServer("Input", "Action", false)
+            end)
+        end
+    end)
+
     local t0 = os.clock()
     local attempts, routeFailures, podBest = 0, 0, nil
     while not stop() and os.clock() - t0 < 75 do
@@ -16085,6 +16119,12 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
             local gap = Flat(lane.point - rp).Magnitude
             if not lane.bestGap or gap < lane.bestGap - 0.3 or hum.FloorMaterial == Enum.Material.Air then
                 lane.bestGap, lane.progressAt = math.min(gap, lane.bestGap or gap), now
+            elseif now - (lane.progressAt or now) > 0.15 and not lane.hopped then
+                -- A rail/lip stops the walk-in: hop over it once right away
+                -- (it stood at the rail 0.4 s and gave up, live).
+                lane.hopped = true
+                lane.progressAt = now
+                pcall(function() FH.Jump(hum, false, token) end)
             elseif now - (lane.progressAt or now) > 0.4 then
                 AH.DropTraversal, AH.DropNextAt = nil, now + 1.5
                 return nil
@@ -22667,16 +22707,25 @@ function Follow.LobbyStep(token)
             end
             return
         end
+        -- Only players around the map-vote area (not someone far across
+        -- the lobby), nearest to the board first.
+        local boardPos
+        pcall(function() boardPos = board and board:GetPivot().Position end)
+        if not boardPos and state.waitPoint then boardPos = state.waitPoint end
         local others = {}
         for _, other in ipairs(Players:GetPlayers()) do
             local r = other ~= LocalPlayer and other.Character and other.Character:FindFirstChild("HumanoidRootPart")
-            if r and math.abs(r.Position.Y - root.Position.Y) < 10 and (r.Position - root.Position).Magnitude < 60 then
-                others[#others + 1] = { player = other, root = r, d = (r.Position - root.Position).Magnitude }
+            if r and math.abs(r.Position.Y - root.Position.Y) < 10 and (r.Position - root.Position).Magnitude < 40 then
+                local fromBoard = boardPos and Flat(r.Position - boardPos).Magnitude or 0
+                if fromBoard <= 30 then
+                    others[#others + 1] = { player = other, root = r,
+                        d = fromBoard + (r.Position - root.Position).Magnitude * 0.5 }
+                end
             end
         end
         table.sort(others, function(a, b) return a.d < b.d end)
         local buddy = state.buddy
-        local valid = buddy and buddy.root.Parent and (buddy.root.Position - root.Position).Magnitude < 60
+        local valid = buddy and buddy.root.Parent and (buddy.root.Position - root.Position).Magnitude < 40
         if not valid and #others > 0 then
             buddy = others[(#others > 1 and math.random() < 0.3) and 2 or 1]
             state.buddy, state.buddyOffset = buddy, nil
