@@ -677,7 +677,9 @@ local ScreenGui = New("ScreenGui", nil, { Name = "HACK_UI", ResetOnSpawn = false
 SafeParent(ScreenGui)
 local MainFrame = New("Frame", ScreenGui, {
     Size = UDim2.new(0, 165, 0, 155),
-    Position = UDim2.new(0.5, -82, 0.5, -77),
+    -- Left edge, a bit below the middle (under the game's left-side icons),
+    -- as in the user's screenshot - not the centre of the screen.
+    Position = UDim2.new(0, 14, 0.45, 0),
     BackgroundColor3 = Theme.Background,
     BackgroundTransparency = 0.98,
     ClipsDescendants = true,
@@ -3537,7 +3539,13 @@ function FH.ComputerSlotTaken(comp, trig)
                     local d = Flat(slot.Position - root.Position).Magnitude
                     if not distance or d < distance then nearest, distance = slot, d end
                 end
-                if nearest == trig and distance <= 2.2 then return true end
+                -- Standing at (or stepping into) this slot: taken. 2.2 studs
+                -- missed players just beside it and we pushed into them.
+                local v = Flat(root.AssemblyLinearVelocity)
+                if nearest == trig and (distance <= 3.2
+                    or distance <= 6 and v.Magnitude > 2 and v.Unit:Dot(Flat(trig.Position - root.Position).Unit) > 0.8) then
+                    return true
+                end
             end
         end
     end
@@ -3559,8 +3567,43 @@ function FH.ComputerContactClear(token, comp, trig)
     FH.SetContactApproach(token, hum, root, trig, comp, goal, "computer")
     return FH.ContactApproachValid(token, hum, root, goal)
 end
+-- 35 % of hacks: while a teammate hacks the same computer, turn to face them
+-- (body facing only; a quick flick, then held while both hack).
+function FH.FaceCoHacker(state, comp, hum, root)
+    if state.decided == nil then state.decided = math.random() < 0.35 end
+    if not state.decided then return end
+    local all = FH.CompTriggers(comp)
+    local mate
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and not FH.True(player, FH.BEASTN) then
+            local r = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            local action = FH.Stat(player, FH.HACK_EVENT)
+            local target = action and action.Value
+            if r and target and (r.Position - root.Position).Magnitude < 14 then
+                for _, slot in ipairs(all) do
+                    if target == slot or target.Parent == slot then mate = r break end
+                end
+            end
+        end
+        if mate then break end
+    end
+    if not mate then return end
+    local toward = Flat(mate.Position - root.Position)
+    if toward.Magnitude < 0.5 then return end
+    if state.autoRotate == nil then
+        state.autoRotate = hum.AutoRotate
+        pcall(function() hum.AutoRotate = false end)
+    end
+    local look = Flat(root.CFrame.LookVector)
+    local dir = look.Magnitude > 0.1 and (look.Unit * 0.4 + toward.Unit * 0.6) or toward.Unit
+    if dir.Magnitude > 0.05 then
+        local pos = root.Position
+        pcall(function() root.CFrame = CFrame.lookAt(pos, pos + dir.Unit) end)
+    end
+end
 function FH.ComputerContact(token, comp, trig, stopped)
     local started, progressAt, inputAt = os.clock(), os.clock(), nil
+    local faceState = {}
     local anchor, holding, heldAt, attempts = RootNow().Position, false, 0, 0
     local advanceUntil = 0
     local meter = {}
@@ -3568,6 +3611,10 @@ function FH.ComputerContact(token, comp, trig, stopped)
     local function finish(result)
         if FH.ContactApproach and FH.ContactApproach.token == token then FH.ContactApproach = nil end
         Follow.Release(token)
+        if faceState.autoRotate ~= nil then
+            local h = GetHumanoid()
+            if h then pcall(function() h.AutoRotate = faceState.autoRotate end) end
+        end
         return result
     end
     while os.clock() - started < Follow.HackMax do
@@ -3593,8 +3640,10 @@ function FH.ComputerContact(token, comp, trig, stopped)
             progressAt = now - 0.25
             if distance > 1.1 then advanceUntil = now + 0.3 end
         end
+        -- The game already selected this slot for us: start right away (the
+        -- extra steps in to 1.4 studs were the beat before every hack).
         local ready = distance <= (attempts > 0 and 1.2 or 1.4)
-            or (attempts == 0 and distance <= 2.05 and FH.SelectedTrigger(trig))
+            or (distance <= 2.6 and FH.SelectedTrigger(trig))
         local admitted = acknowledged and (progressing or holding and now - heldAt < 1.5)
         if admitted or (ready and now >= advanceUntil) then
             FH.SetContactApproach(token, hum, root, trig, comp, root.Position, "computer")
@@ -3604,7 +3653,10 @@ function FH.ComputerContact(token, comp, trig, stopped)
                 heldAt, inputAt = now, inputAt or now
             end
             holding = true
-            if progressing then FH.MarkWork(token, "hack") end
+            if progressing then
+                FH.MarkWork(token, "hack")
+                pcall(FH.FaceCoHacker, faceState, comp, hum, root)
+            end
         else
             Follow.Release(token)
             holding = false
@@ -3766,6 +3818,18 @@ function FH.IsBad(x, z, r)
             local dx, dz = b.x - x, b.z - z
             if dx * dx + dz * dz < r2 then return true end
         end
+    end
+    return false
+end
+-- Stair treads, steps, ramps and wedges: never treated as a prop to step off.
+function FH.StairLike(part)
+    if part:IsA("WedgePart") or part:IsA("CornerWedgePart") then return true end
+    local a = part
+    for _ = 1, 3 do
+        if not a then break end
+        local nm = string.lower(a.Name)
+        if nm:find("stair", 1, true) or nm:find("step", 1, true) or nm:find("ramp", 1, true) then return true end
+        a = a.Parent
     end
     return false
 end
@@ -10660,7 +10724,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         -- (live: 20 s of shaking in a cluttered room, every plan failed and
         -- each failure ran an expensive door search). Plan from the floor
         -- right beside us and step down onto it first.
-        if not w and hum then
+        -- Never while climbing toward a higher goal or on a stair/ramp: there
+        -- the "floor beside" is the side of the staircase (it stepped off the
+        -- stairs and fell - live report "goes up, shakes, falls").
+        local onSmallProp = false
+        do
+            local under = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.5, rp.Z), Vector3.new(0, -2, 0), rayParams)
+            local part = under and under.Instance
+            if part and part:IsA("BasePart") and under.Normal.Y > 0.95 then
+                local size = part.Size
+                onSmallProp = math.max(size.X, size.Z) < 14 and not FH.StairLike(part)
+            end
+        end
+        if not w and hum and onSmallProp and goal.Y <= feetY + 3 then
             local liveRoot = RootNow()
             if liveRoot then
                 local best
@@ -13833,7 +13909,9 @@ function FH.ExitRoute(token, state, abort)
                         end
                         local look = Flat(root.CFrame.LookVector)
                         if look.Magnitude < 0.1 then look = away end
-                        local dir = look.Unit:Lerp(away.Unit, 0.3)
+                        -- Quick, not a slow glide (it looked fake): mostly there
+                        -- in a couple of ticks.
+                        local dir = look.Unit * 0.35 + away.Unit * 0.65
                         if dir.Magnitude > 0.05 then
                             local pos = root.Position
                             pcall(function() root.CFrame = CFrame.lookAt(pos, pos + dir.Unit) end)
@@ -14223,14 +14301,18 @@ function Follow.Main(token, player)
                     token,
                     function() return trig.Position end,
                     0.8,
-                    function() return stop() or FH.ComputerSlotTaken(comp, trig) or FH.ComputerContactClear(token, comp, trig) end,
+                    function()
+                        return stop() or FH.ComputerSlotTaken(comp, trig) or FH.ComputerContactClear(token, comp, trig)
+                            or FH.SelectedTrigger(trig)
+                    end,
                     { maxTime = 30, nearOk = 1.0, approachModel = comp }
                 )
                 if stop() then
                     Follow.Release(token)
                     return
                 end
-                if not FH.ComputerContactClear(token, comp, trig) then continue end
+                if FH.ComputerSlotTaken(comp, trig) then continue end
+                if not FH.ComputerContactClear(token, comp, trig) and not FH.SelectedTrigger(trig) then continue end
             end
             local result = FH.ComputerContact(token, comp, trig, stop)
             if compDone(comp) then
@@ -16155,9 +16237,15 @@ function AH.DropAim(token, hum, root, bp, bvel, feetY, forward, danger)
             local gap = Flat(lane.point - rp).Magnitude
             if not lane.bestGap or gap < lane.bestGap - 0.3 or hum.FloorMaterial == Enum.Material.Air then
                 lane.bestGap, lane.progressAt = math.min(gap, lane.bestGap or gap), now
-            elseif now - (lane.progressAt or now) > 0.15 and not lane.hopped then
-                -- A rail/lip stops the walk-in: hop over it once right away
-                -- (it stood at the rail 0.4 s and gave up, live).
+            elseif now - (lane.progressAt or now) > 0.15 and not lane.hopped
+                and (function()
+                    -- Only a real rail/lip right in front is hopped; an open
+                    -- hole edge is simply walked into (a hop there bounced
+                    -- the avatar up and back - live report).
+                    local dir = Flat(lane.point - rp)
+                    if dir.Magnitude < 0.1 then return false end
+                    return Workspace:Raycast(Vector3.new(rp.X, feetY + 0.6, rp.Z), dir.Unit * 2.5, rayParams) ~= nil
+                end)() then
                 lane.hopped = true
                 lane.progressAt = now
                 pcall(function() FH.Jump(hum, false, token) end)
@@ -22658,26 +22746,35 @@ function Follow.FaceToward(targetRoot, token)
         flick(0.06 + math.random() * 0.08)
     end
 end
--- One lobby stroll leg. 10 % of legs are walked holding Shift (crawl-walk),
--- lobby only: Shift is always released when the leg ends or a round starts.
--- The leg also ends at once when the vote board finishes loading with a
--- preferred map we have not voted for yet.
-function Follow.LobbyStroll(token, state, point)
-    local crawl = math.random() < 0.1
-    local pressed = false
-    local function shift(down)
-        if down then
+-- One lobby stroll leg. 10 % of the time a 12 s crawl-walk (Shift held)
+-- starts and runs across legs; lobby only - released after 12 s, or at once
+-- when a round starts / the script unloads. The leg also ends when the vote
+-- board finishes loading with a preferred map we have not voted for yet.
+function Follow.LobbyCrawl()
+    if Follow.Crawling then return end
+    Follow.Crawling = true
+    task.spawn(function()
+        local pressed = false
+        if not UserInputService:GetFocusedTextBox() then
             if type(keypress) == "function" then pressed = pcall(keypress, 0xA0) end
             if not pressed and VIM then
                 pressed = pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game) end)
             end
-        elseif pressed then
-            pressed = false
+        end
+        local untilAt = os.clock() + 12
+        while pressed and os.clock() < untilAt and not unloaded
+            and not (FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)) do
+            task.wait(0.1)
+        end
+        if pressed then
             if type(keyrelease) == "function" then pcall(keyrelease, 0xA0) end
             if VIM then pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game) end) end
         end
-    end
-    if crawl and not UserInputService:GetFocusedTextBox() then shift(true) end
+        Follow.Crawling = false
+    end)
+end
+function Follow.LobbyStroll(token, state, point)
+    if math.random() < 0.1 then Follow.LobbyCrawl() end
     local ok = pcall(Follow.WalkTo, token, function() return point end, 2.5, function()
         if FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) then return true end
         local best
@@ -22686,7 +22783,6 @@ function Follow.LobbyStroll(token, state, point)
         end
         return best ~= nil and state.voted ~= best.key and (state.tries[best.key] or 0) < 3
     end, { maxTime = 6, nearOk = 3 })
-    shift(false)
     return ok
 end
 function Follow.LobbyStep(token)
@@ -26165,4 +26261,9 @@ task.delay(1, function()
     if unloaded then return end
     pcall(function() if not espPlayerActive then TogglePlayerESP() end end)
     pcall(function() Follow.AutoAll(true) end)
+end)
+-- First load only: lock the UI in place (key P) 5 s after it is up.
+task.delay(5, function()
+    if unloaded or uiLocked then return end
+    pcall(ToggleLockUI)
 end)

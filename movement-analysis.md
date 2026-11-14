@@ -879,3 +879,21 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   end of the leg / when a round starts).
 - Exit lever: 65 % of holds the avatar turns its back to the gate (watching the room); body
   facing only, the hold is unchanged; AutoRotate restored afterwards.
+
+## Round 26 (Workspace + D_stall_20261114_043129, 15 new files)
+
+- Hacking: the hold starts as soon as the game has selected our slot within 2.6 studs (any
+  attempt; it used to step in to 1.4 studs first - the beat before every hack), and the walk to a
+  slot ends as soon as the slot is selected. A slot counts as taken when another player is
+  nearest to it within 3.2 studs (2.2 before) or is walking into it. 35 % of hacks: while a
+  teammate hacks the same computer, the avatar turns to face them (facing only).
+- Exit watch-back turn is quicker (no slow glide). Fixture-safe vector blend instead of Lerp.
+- UI: the main panel starts at the left edge below the middle (user screenshot), not the screen
+  centre; the UI is locked (P) automatically 5 s after load.
+- Stairs: the round-21 "plan from the floor beside a prop" stepped off staircases sideways when
+  a plan failed mid-flight (fall, then turn back). It now runs only on a small flat prop
+  (< 14 studs, not a stair/step/ramp/wedge) and never toward a higher goal.
+- Holes: the walk-in drop hop (round 22) only fires when a real rail/lip is in front; an open
+  hole edge is just walked into.
+- Lobby crawl: a 12 s Shift-held session (10 % chance per leg), released early when a round
+  starts or on unload.
