@@ -1005,3 +1005,12 @@ from the Round 30b version, nothing else:
 - Test note: the hang comes from FH.PodInSight in the fixture (the same file
   with that check removed passes 166/368); not run again at the user's
   request.
+
+## Round 34
+
+- Momentum carry while the first route is computed is on again (anti beat).
+- FH.FlipGuard in FH.GroundMoveStep (input layer, all features): ordinary
+  turns are untouched; only a second full reversal within 0.6 s of the
+  previous one (back-and-forth jitter) keeps the current heading 0.25 s more,
+  only grounded, more than 3 studs from the aim, and only while that heading
+  is open 2.5 studs ahead. Not test-run (user request).

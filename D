@@ -4884,7 +4884,41 @@ function FH.GroundMoveStep(dt)
     end
     -- Direct heading (the round-14 turn smoothing made turns sluggish and
     -- scrape walls - live report "turning lags").
-    hum:Move(direction.Unit, false)
+    hum:Move(FH.FlipGuard(motion, root, direction), false)
+end
+-- Anti ping-pong: normal turns pass straight through. Only a second full
+-- reversal within 0.6 s of the previous one (back-and-forth jitter, the
+-- "suddenly turns back" seen live) keeps the current heading 0.25 s more,
+-- and only while that heading is open (a wall ahead always lets it turn).
+-- Never near the aim (arrival) and never in the air.
+function FH.FlipGuard(motion, root, direction)
+    local d = direction.Unit
+    local g = FH.FlipState
+    local now = os.clock()
+    if not g or g.token ~= motion.token then
+        g = { token = motion.token, dir = d, flipAt = -10, holdUntil = 0, held = false }
+        FH.FlipState = g
+        return d
+    end
+    if direction.Magnitude > 3 and d:Dot(g.dir) < -0.2 then
+        local hum = motion.hum
+        local grounded = hum and hum.FloorMaterial ~= Enum.Material.Air
+        local function open()
+            local hit = Workspace:Raycast(root.Position, g.dir * 2.5, rayParams)
+            return hit == nil
+        end
+        if g.held and now < g.holdUntil and grounded and open() then return g.dir end
+        if not g.held and grounded and now - g.flipAt < 0.6 and open() then
+            g.held, g.holdUntil = true, now + 0.25
+            return g.dir
+        end
+        -- A hold ended (or could not apply): this reversal goes through.
+        g.held = false
+        g.flipAt = now
+    end
+    if g.held and now >= g.holdUntil then g.held = false end
+    g.dir = d
+    return d
 end
 -- Share a short, verified uphill sample between navigation and the render
 -- recovery loop. Flat walking needs only the coarse profile and one floor ray.
@@ -11707,7 +11741,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- computed yet): keep that momentum for a moment instead of
                 -- standing ~0.5 s waiting for the planner (live beats).
                 local carry
-                if false and not (quick or slow) and hum.FloorMaterial ~= Enum.Material.Air then
+                if not (quick or slow) and hum.FloorMaterial ~= Enum.Material.Air then
                     local v = Flat(root.AssemblyLinearVelocity)
                     local toGoal = Flat(goal - rp)
                     if v.Magnitude > 6 and (toGoal.Magnitude < 0.5 or v.Unit:Dot(toGoal.Unit) > -0.3) then
