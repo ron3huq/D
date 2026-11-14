@@ -3138,48 +3138,10 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
     else
         goal = FH.RecoveryAim(token, hum, goal, intentGoal)
     end
-    if rejected(goal) then
-        -- Standing until the rejection expires was the most common stall
-        -- (live: the last-resort route led into the rejected lane, the move
-        -- was refused for seconds). Slide past it on one side instead; the
-        -- side is kept for a moment so it cannot flip left/right.
-        local slid
-        if root and not force and not precision then
-            local delta = Flat(goal - root.Position)
-            if delta.Magnitude > 4 then
-                local feet = FH.Feet(hum, root)
-                local base = delta.Unit
-                local reach = math.min(delta.Magnitude, 4)
-                local keep = FH.SlideSide
-                local kept = keep and keep.root == root and os.clock() < keep.untilAt
-                local first = kept and keep.side or 1
-                -- Never flip sides while a slide is kept (left-right-left was
-                -- the shake at doors, live data).
-                local sides = kept and { first } or { first, -first }
-                for _, deg in ipairs({ 40, 75, 110 }) do
-                    for _, side in ipairs(sides) do
-                        local a = math.rad(deg) * side
-                        local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
-                        local candidate = root.Position + dir * reach
-                        local origin = Vector3.new(root.Position.X, feet + 1.5, root.Position.Z)
-                        if not FH.LaneRejected(root.Position, candidate, feet)
-                            and not Workspace:Raycast(origin, dir * (reach + 0.5), rayParams) then
-                            slid = candidate
-                            if not kept then FH.SlideSide = { root = root, side = side, untilAt = os.clock() + 1.5 } end
-                            break
-                        end
-                    end
-                    if slid then break end
-                end
-            end
-        end
-        if not slid then
-            if FH.Diag then FH.Diag("move-refused", "lane-rejected") end
-            return false
-        end
-        if FH.Diag then FH.Diag("move-slide", "around-rejected-lane") end
-        goal = slid
-    end
+    -- A move toward a recently rejected lane is still made (refusing it was
+    -- a standing beat; sliding sideways around it was a sharp, shaky turn).
+    -- The no-progress rules catch a real wall and replan.
+    if rejected(goal) and FH.Diag then FH.Diag("move", "into-rejected-lane") end
     if FH.Diag and root and Flat(goal - root.Position).Magnitude < 0.6 then FH.Diag("move-stand", "aim-at-self") end
     local m, now = FH.Motion, os.clock()
     if m.token ~= token or m.hum ~= hum then
@@ -11229,7 +11191,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     -- pulled straight at the pod behind the wall, the next
                     -- plan led back around, again and again). Keep walking
                     -- the recent route from where we are instead.
-                    if mode ~= "path" and lastRoute and os.clock() - lastRoute.at < 5 then
+                    if opts.rescueJuke and mode ~= "path" and lastRoute and os.clock() - lastRoute.at < 5 then
                         restoringRoute = true
                         local ok = setPath(lastRoute.w, lastRoute.full, nil)
                         restoringRoute = false
@@ -11366,7 +11328,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         local stuckAbove = not mode and (fails >= 2 and goal.Y < feetY - 6 or island)
         local overhead = goalFlat < 5 and math.abs(goal.Y - rp.Y) > Follow.MaxDY or below or stuckAbove
         if (not mode or mode == "path" and below) and not flying and overhead then
-            if not overheadDrop or now > overheadDrop.untilAt then
+            if not overheadDrop or now > overheadDrop.untilAt or Flat(overheadDrop.aim - rp).Magnitude < 1.5 then
                 overheadDrop = nil
                 if goal.Y < rp.Y or island then
                     -- An "island" is a real raised area: only a 6+ stud edge
@@ -11448,7 +11410,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         if not mode then
-            if breaker and now < breaker.untilAt then
+            -- A breaker walk ends when its point is reached (it used to stand
+            -- there until its timer ran out: a standing beat every time).
+            if breaker and now < breaker.untilAt and Flat(breaker.aim - rp).Magnitude > 1.5 then
                 FH.Move(token, hum, breaker.aim)
                 task.wait(0.03)
                 continue
@@ -11468,8 +11432,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     and (job or now - progressAt > 0.3 or now - (breakerAt or 0) > 1.3)
                 local slow = now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
                 if hum.FloorMaterial ~= Enum.Material.Air and (quick or slow) then
-                    local dir = Follow.BreakerDirection(rp, goal, feetY)
-                    breaker = { aim = rp + dir * 6, untilAt = now + 0.7 }
+                    -- Keep the heading of the last breaker for a while if it
+                    -- is still open: flipping back toward the goal each time
+                    -- made it walk to and fro (shaking) at the same obstacle.
+                    local dir
+                    local last = breaker
+                    if last and last.dir and now - (last.since or now) < 2.5 then
+                        local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + 2, rp.Z), last.dir * 6, rayParams)
+                        if not hit or hit.Distance >= 4 then dir = last.dir end
+                    end
+                    local since = dir and last.since or now
+                    dir = dir or Follow.BreakerDirection(rp, goal, feetY)
+                    breaker = { aim = rp + dir * 10, untilAt = now + 0.9, dir = dir, since = since }
                     breakerAt = now
                     if FH.Diag then FH.Diag("walk", "stall-breaker") end
                     FH.Move(token, hum, breaker.aim)

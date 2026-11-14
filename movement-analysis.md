@@ -802,3 +802,14 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   an island now needs a 6+ stud edge and fires once per 10 s per spot.
 - AutoHide: vents are never vaulted (they were treated like windows); windows/rails are found up
   to 14 studs to the side (8.5 before) with landing up to 17.5; open doors up to 22 studs (16).
+
+## Round 20 (Workspace_5, 62 files)
+
+- 153 micro-stops (0.15-0.9 s). Main pattern (Shopping Center upper floor, plans failing): the
+  stall-breaker walked 6 studs, reached its point in ~0.35 s and stood there until its 0.7 s
+  timer ran out (a standing beat), then picked the goal side again (to and fro = shaking).
+  A breaker walk now ends on arrival, aims 10 studs, and keeps its heading for up to 2.5 s while
+  it stays open. The fallback step-off walk also ends on arrival.
+- Rejected lanes: a move toward one is no longer refused (a standing beat) nor slid sideways (a
+  sharp turn that flipped left/right - present in many jitter incidents); it just continues and
+  the no-progress rules handle real walls. "Keep the recent route" now applies to rescue only.

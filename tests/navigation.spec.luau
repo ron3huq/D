@@ -996,18 +996,14 @@ scenario("AutoHelp stays off below 10% health", function()
     hum.Health = 60
     check(not AR.LowHealth(), "healthy player refused rescues")
 end)
-scenario("a rejected lane is slid past on one side instead of standing still", function()
+scenario("a move toward a rejected lane keeps going instead of a standing beat or a side jerk", function()
     FH.Move(7, hum, Vec.new(8, 3, 0))
     task.wait(0.05)
     check(FH.RejectLane(7, hum, Vec.new(8, 3, 0), 3), "fixture could not reject the forward lane")
     local moved = FH.Move(7, hum, Vec.new(8, 3, 0))
     local aim = FH.Motion.aim
-    check(moved and aim and math.abs(aim.Z) > 0.5, "move toward a rejected lane was refused (avatar stood still)")
-    local side = aim and aim.Z > 0
-    task.wait(0.1)
-    FH.Move(7, hum, Vec.new(8, 3, 0))
-    local again = FH.Motion.aim
-    check(again and (again.Z > 0) == side, "slide side flipped between frames (left-right shake)")
+    check(moved and aim and aim.X > 7 and math.abs(aim.Z) < 0.01,
+        "the move toward a rejected lane was refused or turned sideways")
 end)
 scenario("the end of a partial route short of the goal does not stand still", function()
     world.route = function(from)
