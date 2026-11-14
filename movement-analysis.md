@@ -1049,3 +1049,15 @@ from the Round 30b version, nothing else:
   on the other side, one remote press shuts it (AH.CloseDoorBehind), no stop.
 - FlipGuard (farm/help only): second reversal within 0.9 s holds 0.35 s.
 - Co-hacker facing 65 % (was 35 %). Compile-checked only.
+
+## Round 38
+
+- AutoHide: vault candidates ranked nearest first (score = window 4 + 0.3 x
+  distance gained - 2 x distance to the sill + lateral 2); any window, rail
+  or prop on the way qualifies (not only lateral ones inside juke range);
+  may cost up to 1 stud of Beast distance. Open doors also nearest first
+  (0.3 x gained - 2 x distance).
+- AutoHelp: Follow.RescueShortcut always also tests the route's last two
+  points (beside the pod), however far along the route, so passing the pod
+  room with a window cuts straight in (within 32 studs, same floor).
+  Compile-checked only.

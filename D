@@ -10227,9 +10227,13 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
     -- Wide scan (user request): look 25 route points / 32 studs ahead for a
     -- straight cut through a window or over props/rails that saves time.
     local last = math.min(#wps, index + 25, blockedAt and blockedAt - 1 or #wps)
-    for i = index + 1, last do
+    -- The route's end (beside the pod) too, however many points away: walking
+    -- past the pod room with a window into it, cut straight in (user report).
+    local final = blockedAt and math.min(#wps, blockedAt - 1) or #wps
+    for i = index + 1, final do
         local point = wps[i].Position
         routeLength = routeLength + (point - wps[i - 1].Position).Magnitude
+        if i > last and i < final - 1 then continue end
         local distance = Flat(point - rp).Magnitude
         local saved = routeLength - distance
         if
@@ -15926,7 +15930,7 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
                     local point = Vector3.new(raw.X, floor.Position.Y + rp.Y - feetY, raw.Z)
                     local after = Flat(point - pred).Magnitude
                     if
-                        after > Flat(rp - pred).Magnitude + 0.5
+                        after > Flat(rp - pred).Magnitude - 1
                         and safe(point, false)
                         and not Workspace:Raycast(
                             floor.Position + Vector3.new(0, 0.15, 0),
@@ -15956,10 +15960,12 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
                         -- Clear lateral low obstacles are useful even if this
                         -- map calls its window frame something else entirely.
                         local lateral = math.abs(dir:Dot(forward)) < 0.9
-                        if window or (lateral and distance <= AH.ThreatRange(AH.JukeRange)) then
-                            local score = (window and 1000 or 0)
-                                + after
-                                - length * 0.35
+                        -- Any window/rail/prop on the way, nearest first (a
+                        -- sudden turn into it, like a player - user request).
+                        if window or lateral or distance <= AH.ThreatRange(AH.JukeRange) then
+                            local score = (window and 4 or 0)
+                                + after * 0.3
+                                - low.Distance * 2
                                 + (lateral and 2 or 0)
                                 + (angle * preferred > 0 and 0.5 or 0)
                             candidates[#candidates + 1] = {
@@ -16178,7 +16184,8 @@ function AH.OpenDoorAim(rp, bp, feetY, state, forward, danger)
                             door = g,
                             entry = entry,
                             point = across,
-                            score = after - distance * 0.7 + (1 - math.abs(toward.Unit:Dot(forward))) * 4,
+                            -- Nearest open door first (sudden turn into it).
+                            score = after * 0.3 - distance * 2 + (1 - math.abs(toward.Unit:Dot(forward))) * 4,
                         }
                     end
                 end
