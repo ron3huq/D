@@ -4840,7 +4840,20 @@ function FH.JumpMoveStep(dt)
     end
     local direction = Flat(motion.aim - root.Position)
     if direction.Magnitude <= 0.5 then return end
-    hum:Move(direction.Unit, false)
+    local unit = direction.Unit
+    -- Vault/obstacle jump commit (not AutoHide): keep the takeoff heading
+    -- through the air; an aim that swings back mid-jump (replan, breaker)
+    -- turned us round on the window sill and lost the momentum (live).
+    local tok = motion.token
+    if not (type(tok) == "table" and tok.owner == "evade") then
+        if not flight.commitDir then
+            local v = Flat(root.AssemblyLinearVelocity)
+            flight.commitDir = v.Magnitude > 4 and v.Unit:Dot(unit) > 0 and v.Unit or unit
+        end
+        if unit:Dot(flight.commitDir) < 0.3 then unit = flight.commitDir end
+        FH.LandCommit = { token = tok, dir = flight.commitDir, untilAt = os.clock() + 0.45 }
+    end
+    hum:Move(unit, false)
     motion.sentAt = os.clock()
 end
 -- Roblox's ordinary input controller also writes Move(0) when no movement key
@@ -4901,6 +4914,15 @@ function FH.FlipGuard(motion, root, direction)
     end
     local g = FH.FlipState
     local now = os.clock()
+    -- Just landed from a vault/obstacle jump: carry on over it instead of
+    -- turning back on the far side (no hesitation), while that way is open.
+    local land = FH.LandCommit
+    if land and land.token == tok and now < land.untilAt and direction.Magnitude > 2
+        and d:Dot(land.dir) < 0 then
+        local hit = Workspace:Raycast(root.Position, land.dir * 3, rayParams)
+        if not hit then return land.dir end
+        FH.LandCommit = nil
+    end
     if not g or g.token ~= motion.token then
         g = { token = motion.token, dir = d, flipAt = -10, holdUntil = 0, held = false }
         FH.FlipState = g

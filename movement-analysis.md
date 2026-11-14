@@ -1016,3 +1016,11 @@ from the Round 30b version, nothing else:
   is open 2.5 studs ahead. Not test-run (user request).
 
 - FH.FlipGuard skips AutoHide (owner "evade") entirely.
+
+## Round 35
+
+- Vault commit (not AutoHide): FH.JumpMoveStep keeps the takeoff heading
+  through the air when the aim swings more than ~72 degrees away mid-jump;
+  FH.LandCommit then keeps that heading 0.45 s after landing (only while 3
+  studs ahead are open) so the avatar does not turn back on the far side of
+  a window, prop or rail. Compile-checked only.
