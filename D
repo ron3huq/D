@@ -10229,6 +10229,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local dropShortcutAt, dropShortcutTries = 0, 0
     local breaker, breakerAt, overheadDrop
     local lastRoute, restoringRoute
+    local nearSince
     local doorFailAt = -math.huge
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
@@ -11142,11 +11143,23 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             reset()
             continue
         end
+        -- Orbit guard: circling inside 1.6x the stop radius for over a second
+        -- (overshoot, turn 180, overshoot...) is arrival, not a reason to keep
+        -- turning around the point (live: lobby/vote-box spinning).
+        if flatDist <= sd * 1.6 + 0.5 and dyg < Follow.MaxDY then
+            nearSince = nearSince or now
+        else
+            nearSince = nil
+        end
+        local orbiting = nearSince ~= nil and now - nearSince > 1 and not opts.rescueJuke
         if
-            flatDist <= sd
+            orbiting
+            or flatDist <= sd
             and dyg < Follow.MaxDY
             and Follow.GoalOnFloor(hum, root, goal, opts.approachModel)
-            and FH.ApproachClear(rp, goal, opts.approachModel)
+            -- Checked at body height: a ground-level goal made this ray slant
+            -- into the floor/a podium base and arrival never came.
+            and FH.ApproachClear(rp, Vector3.new(goal.X, math.max(goal.Y, rp.Y), goal.Z), opts.approachModel)
         then
             -- Keep momentum: the next leg starts at once (a full stop here was
             -- the one-beat pause between legs). Contact code stops itself.
@@ -11501,7 +11514,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- No local lane while a plan is computed: keep moving on an
                 -- open heading toward the goal right away (the old wait
                 -- here was the "one step, one beat, one step" stutter).
+                -- Not toward a goal on another floor: a blind walk at it ran
+                -- into the side of a staircase, hopped up and fell back
+                -- (live). Let the route find the stairs.
                 local quick = not opts.rescueJuke
+                    and math.abs(goal.Y - rp.Y) < Follow.MaxDY
                     and (job or now - progressAt > 0.3 or now - (breakerAt or 0) > 1.3)
                 local slow = now - progressAt > (job and 0.4 or 1.5) and now - (breakerAt or 0) > 1.3
                 if hum.FloorMaterial ~= Enum.Material.Air and (quick or slow) then
@@ -13790,6 +13807,10 @@ function FH.ExitRoute(token, state, abort)
         -- start (walking in included) released gates that were almost open
         -- and the game reset their progress (live report).
         local gainAt, best, reachedAt, sawLow = os.clock(), -1, nil, false
+        -- 65 % of holds: stand with our back to the gate, watching the room
+        -- for the Beast (body facing only; the hold itself is unchanged).
+        local watchBack = math.random() < 0.65
+        local autoRotate
         state.opening = true
         -- If the action-progress stat never tracks this lever (no low value
         -- seen while holding), hold on time like the older builds (15 s).
@@ -13803,6 +13824,22 @@ function FH.ExitRoute(token, state, abort)
                 FH.Move(token, hum, root.Position)
                 Follow.Hold(state.stand:FindFirstChild("Event"), false, true, false, token)
                 FH.MarkWork(token, "exit")
+                if watchBack then
+                    local away = Flat(root.Position - center)
+                    if away.Magnitude > 0.5 then
+                        if autoRotate == nil then
+                            autoRotate = hum.AutoRotate
+                            pcall(function() hum.AutoRotate = false end)
+                        end
+                        local look = Flat(root.CFrame.LookVector)
+                        if look.Magnitude < 0.1 then look = away end
+                        local dir = look.Unit:Lerp(away.Unit, 0.3)
+                        if dir.Magnitude > 0.05 then
+                            local pos = root.Position
+                            pcall(function() root.CFrame = CFrame.lookAt(pos, pos + dir.Unit) end)
+                        end
+                    end
+                end
             else
                 Follow.Release(token)
                 FH.Move(token, hum, state.stand.Position)
@@ -13848,6 +13885,10 @@ function FH.ExitRoute(token, state, abort)
             end
         end
         Follow.Release(token)
+        if autoRotate ~= nil then
+            local h = GetHumanoid()
+            if h then pcall(function() h.AutoRotate = autoRotate end) end
+        end
         state.opening = nil
         FH.ExitHolding = nil
         if stopped() then return interrupted() end
@@ -17090,6 +17131,13 @@ function AR.ThreatPreempts()
         return true
     end
     if not latch or not AH.Active then return false end
+    -- The latch only holds while AutoHide is actually running from the
+    -- Beast. Once it stops, the rescue takes over at once - otherwise nobody
+    -- moved for a beat at the hand-back (live report).
+    if not AH.BusyFlag and AH.State ~= "flee" then
+        AR.PreemptLatch = nil
+        return false
+    end
     local info = AR.Pick or AR.PendingPick
     local hum = GetHumanoid()
     if info and info.trig and info.trig.Parent and hum and root and FH.PodContactReady(info.trig, hum, root) then
@@ -22513,14 +22561,9 @@ function Follow.LobbyStrollPoint(state, root, board)
     if #anchors == 0 then anchors[1] = state.anchor or rp end
     state.visited = state.visited or {}
     -- Walk like a person: a longer leg, mostly ahead of where we face (no
-    -- U-turns between short random hops - that looked like a twitchy bot),
-    -- and never across the vote boxes.
+    -- U-turns between short random hops - that looked like a twitchy bot).
     local look = Flat(root.CFrame.LookVector)
     look = look.Magnitude > 0.1 and look.Unit or nil
-    local boxes = {}
-    pcall(function()
-        for _, pad in ipairs((Follow.LobbyVotePads())) do boxes[#boxes + 1] = pad.part.Position end
-    end)
     for attempt = 1, 16 do
         local base = anchors[math.random(1, #anchors)]
         local angle = math.random() * math.pi * 2
@@ -22535,11 +22578,17 @@ function Follow.LobbyStrollPoint(state, root, board)
                 break
             end
         end
-        for _, b in ipairs(boxes) do
-            if Flat(candidate - b).Magnitude < 5 then fresh = false break end
+        -- Not someone's shadow: keep a few studs from every player.
+        for _, other in ipairs(Players:GetPlayers()) do
+            local r = other ~= LocalPlayer and other.Character and other.Character:FindFirstChild("HumanoidRootPart")
+            if r and Flat(candidate - r.Position).Magnitude < 5 then fresh = false break end
+        end
+        if state.lastAnchor and #anchors > 1 and attempt <= 10 and Flat(base - state.lastAnchor).Magnitude < 8 then
+            fresh = false
         end
         local ground, hit = FH.Ground(Vector3.new(candidate.X, rp.Y, candidate.Z))
         if fresh and hit and hit.Normal.Y > 0.6 and math.abs(ground.Y - (rp.Y - 3)) < 6 then
+            state.lastAnchor = base
             table.insert(state.visited, ground)
             if #state.visited > 4 then table.remove(state.visited, 1) end
             return ground
@@ -22609,6 +22658,37 @@ function Follow.FaceToward(targetRoot, token)
         flick(0.06 + math.random() * 0.08)
     end
 end
+-- One lobby stroll leg. 10 % of legs are walked holding Shift (crawl-walk),
+-- lobby only: Shift is always released when the leg ends or a round starts.
+-- The leg also ends at once when the vote board finishes loading with a
+-- preferred map we have not voted for yet.
+function Follow.LobbyStroll(token, state, point)
+    local crawl = math.random() < 0.1
+    local pressed = false
+    local function shift(down)
+        if down then
+            if type(keypress) == "function" then pressed = pcall(keypress, 0xA0) end
+            if not pressed and VIM then
+                pressed = pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game) end)
+            end
+        elseif pressed then
+            pressed = false
+            if type(keyrelease) == "function" then pcall(keyrelease, 0xA0) end
+            if VIM then pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game) end) end
+        end
+    end
+    if crawl and not UserInputService:GetFocusedTextBox() then shift(true) end
+    local ok = pcall(Follow.WalkTo, token, function() return point end, 2.5, function()
+        if FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) then return true end
+        local best
+        for _, pad in ipairs((Follow.LobbyVotePads())) do
+            if pad.part.Parent and (not best or pad.rank < best.rank) then best = pad end
+        end
+        return best ~= nil and state.voted ~= best.key and (state.tries[best.key] or 0) < 3
+    end, { maxTime = 6, nearOk = 3 })
+    shift(false)
+    return ok
+end
 function Follow.LobbyStep(token)
     local state = Follow.Lobby
     if not state or state.token ~= token then
@@ -22616,8 +22696,12 @@ function Follow.LobbyStep(token)
         Follow.Lobby = state
     end
     local now = os.clock()
-    -- A new intermission (after a round) is a new ballot.
-    if state.seenAt and now - state.seenAt > 15 then
+    -- A new intermission (after a round) is a new ballot - also when we
+    -- waited in the lobby through the round (the board reloads later).
+    local matchNow = FH.MatchOn()
+    local roundEnded = state.wasMatch and not matchNow
+    state.wasMatch = matchNow
+    if roundEnded or state.seenAt and now - state.seenAt > 15 then
         state.voted, state.waitPoint, state.votedKey, state.tries = nil, nil, nil, {}
         state.backedOff, state.buddy, state.buddyOffset = nil, nil, nil
     end
@@ -22710,9 +22794,7 @@ function Follow.LobbyStep(token)
         if math.random() < 0.7 then
             local point = Follow.LobbyStrollPoint(state, root, board)
             if point then
-                Follow.WalkTo(token, function() return point end, 2.5, function()
-                    return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)
-                end, { maxTime = 6, nearOk = 3 })
+                Follow.LobbyStroll(token, state, point)
             end
             -- Now and then a short idle, like a person looking around.
             if math.random() < 0.3 then state.chatAt = os.clock() + 0.6 + math.random() * 1.8 end
@@ -22784,9 +22866,7 @@ function Follow.LobbyStep(token)
     state.anchor = state.anchor or root.Position
     local point = Follow.LobbyStrollPoint(state, root, board)
     if point then
-        Follow.WalkTo(token, function() return point end, 2.5, function()
-            return FH.MatchOn() and FH.InMatchPlayer(LocalPlayer)
-        end, { maxTime = 6, nearOk = 3 })
+        Follow.LobbyStroll(token, state, point)
     end
     -- Keep walking; only occasionally a short natural pause.
     state.wanderAt = os.clock() + (math.random() < 0.15 and 1.2 + math.random() * 2 or 0)

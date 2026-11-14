@@ -860,3 +860,22 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - Twitching between the route and a sideways slide (lobby spawn and in-match): a rejected lane
   no longer changes the input at all (no refusal, no slide); it only steers the planner. Walls
   are handled by the no-progress rules (doorway exception and replan throttles from rounds 21-23).
+
+## Round 25 (Workspace_11, 30 new files)
+
+- Spinning around a goal (lobby/vote box; also in-match): arrival required a clear line from
+  the root down to a ground-level goal, which slanted into the floor/a podium base, so the
+  avatar overshot, turned 180 and overshot again. The line is now checked at body height, and
+  an orbit guard ends a walk that stays within 1.6x the stop radius for over a second.
+- Stairs: the blind breaker walk headed straight at a goal on another floor (into the side of a
+  staircase, hop, fall back, reverse). No quick breaker toward a goal more than 5 studs up/down;
+  the route finds the stairs.
+- AutoHide -> AutoHelp beat: the hand-over latch kept the rescue waiting while AutoHide had
+  already stopped fleeing (nobody moved). The latch now only holds while AutoHide is busy.
+- Lobby: vote-box avoidance removed (user); stroll points keep 5 studs from every player and do
+  not circle the same player twice in a row (no "shadow"); a stroll leg ends as soon as the
+  board loads the preferred map we have not voted for; a finished round starts a new ballot
+  even if we waited in the lobby; 10 % of lobby legs are walked holding Shift (released at the
+  end of the leg / when a round starts).
+- Exit lever: 65 % of holds the avatar turns its back to the gate (watching the room); body
+  facing only, the hold is unchanged; AutoRotate restored afterwards.

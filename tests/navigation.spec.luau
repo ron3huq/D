@@ -967,14 +967,15 @@ scenario("rescue/AutoHide hand-over holds instead of flipping at the line", func
     AH.Active = true
     world.threat = Vec.new(5, 3, 0)
     check(AR.ThreatPreempts(), "contact range did not hand over")
+    AH.BusyFlag, AH.State = true, "flee" -- AutoHide is running from the Beast
     world.threat = Vec.new(7, 3, 0)
     task.wait(0.2)
     check(AR.ThreatPreempts(), "hand-over flipped back as soon as the Beast crossed 6 studs")
     world.threat = Vec.new(30, 3, 0)
     task.wait(1.6)
     check(AR.ThreatPreempts(), "rescue resumed too soon after a close Beast (ran back into it)")
-    task.wait(1.1)
-    check(not AR.ThreatPreempts(), "hand-over stayed latched after the Beast left")
+    AH.BusyFlag, AH.State = false, "idle" -- AutoHide stopped: rescue must take over at once
+    check(not AR.ThreatPreempts(), "nobody moved: the latch held the rescue back after AutoHide stopped")
 end)
 scenario("lobby is recognised from a Folder of lobby objects (no pivot)", function()
     if not FH.TestInLobby then return end
