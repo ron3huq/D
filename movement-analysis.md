@@ -966,3 +966,16 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - Hand-over to AutoHelp: rescue keeps moving on its arrival momentum (or an
   open heading) while its first route is computed - it stood ~0.3 s at every
   hand-over. AutoHelp loop polls every 0.06 s while idle (was 0.15 s).
+
+## Round 31 - Round 26 is the base again
+
+D (and tests/) restored to Round 26 (cd3e7cb) at the user's request. Ported
+from the Round 30b version, nothing else:
+- the whole lobby / vote-map movement block (Follow.LobbyVotePads ..
+  Follow.LobbyStep: crawl once per lobby visit, 8-stud spacing, 6-8.5 stud
+  face-to-face distance, etc.);
+- hack starts at once: FH.FaceComputer faces the computer once before the
+  first press (Round 26 co-hacker facing kept as it was);
+- exit lever: watch-back turn once before the first hold, no body writes
+  while holding;
+- UI frame position Y 0.38.
