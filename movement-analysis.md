@@ -1086,3 +1086,20 @@ from the Round 30b version, nothing else:
   released and pressed again. Compile-checked only.
 
 - Key 0 restored to the original behaviour (AutoHide + AutoHelp + Follow picker).
+
+## Round 41
+
+- Exit choice: FH.ExitTeamSignal (teammate holding this gate's lever =
+  "opening"; teammate standing still within 14 studs = "waiting"). A shut
+  gate with "opening" ranks +300, "waiting" +600 (other shut gates +10000,
+  open gates +0). While heading to / starting on a shut gate, every 0.5 s:
+  if another gate is open (or, when we are not opening yet, a teammate is
+  opening it) and no Beast near it, redirect there ("switch-to-open-gate").
+  Our own hold reaching 90 % marks the gate opened; a hold that progressed
+  past 30 % but still reads shut is retried on the same gate instead of
+  failing it (that sent us to the other exit).
+- Turning stairs: a stair corner (height change around it, bend > ~32 deg)
+  is taken up to 2.6 studs early when the next leg is clear.
+- FlipGuard zigzag damping (farm/help only): a > 45 deg swing one way then
+  the other within 0.4 s keeps the heading 0.15 s (open way, grounded).
+  Compile-checked only.

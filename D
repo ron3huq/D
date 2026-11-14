@@ -4928,6 +4928,26 @@ function FH.FlipGuard(motion, root, direction)
         FH.FlipState = g
         return d
     end
+    -- Zigzag damping: a sharp swing (> 45 deg) one way and then the other
+    -- within 0.4 s is wobble, not a turn: keep the heading 0.15 s (open way
+    -- only, grounded, away from the aim).
+    if direction.Magnitude > 3 and g.wobbleUntil and now < g.wobbleUntil then
+        local hit = Workspace:Raycast(root.Position, g.dir * 2.5, rayParams)
+        if not hit then return g.dir end
+        g.wobbleUntil = nil
+    end
+    if direction.Magnitude > 3 and d:Dot(g.dir) < 0.7 and d:Dot(g.dir) >= -0.2 then
+        local side = g.dir.X * d.Z - g.dir.Z * d.X
+        local sign = side > 0 and 1 or -1
+        local hum = motion.hum
+        if g.swingSign and g.swingSign ~= sign and now - (g.swingAt or -10) < 0.4
+            and hum and hum.FloorMaterial ~= Enum.Material.Air
+            and not Workspace:Raycast(root.Position, g.dir * 2.5, rayParams) then
+            g.wobbleUntil, g.swingSign = now + 0.15, nil
+            return g.dir
+        end
+        g.swingSign, g.swingAt = sign, now
+    end
     if direction.Magnitude > 3 and d:Dot(g.dir) < -0.2 then
         local hum = motion.hum
         local grounded = hum and hum.FloorMaterial ~= Enum.Material.Air
@@ -11985,7 +12005,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         crossedJump = jumping and jumpIndex == wpi and passed
                     end
                 end
-                if not jumping and distance > (routeProgress and 1.2 or 3) and not passed then break end
+                -- Turning stairs (landings, switchbacks): take the corner up to
+                -- 2.6 studs early when the next leg is clear, so the climb flows
+                -- round the bend at full speed instead of touching each corner.
+                local stairCorner = false
+                if not jumping and not flying and wpi > 1 then
+                    local prevP = wps[wpi - 1].Position
+                    local onStair = math.abs(current.Position.Y - prevP.Y) > 0.6
+                        or math.abs(following.Position.Y - current.Position.Y) > 0.6
+                    local inDir, outDir = Flat(current.Position - prevP), Flat(following.Position - current.Position)
+                    stairCorner = onStair and inDir.Magnitude > 0.1 and outDir.Magnitude > 0.1
+                        and inDir.Unit:Dot(outDir.Unit) < 0.85
+                        and Flat(current.Position - rp).Magnitude <= 2.6
+                        and math.abs(current.Position.Y - feetY) < 2.2
+                end
+                if not jumping and distance > (routeProgress and 1.2 or 3) and not passed and not stairCorner then break end
                 if opts.rescueJuke and current.RescueCorner and not flying
                     and math.abs(following.Position.Y - feetY) <= 1.5
                     and not Follow.RescueBodyClear(hum, root, following.Position, feetY, 4) then
@@ -13821,6 +13855,29 @@ function FH.ExitPolicy(center, stand, gate)
     -- half assembled at THIS door covers 2/3, 1/2 and everyone-near cases.
     return active <= 2 or center ~= nil and nearby >= math.ceil(active / 2), active
 end
+-- What teammates show about an exit: "opening" when one holds its lever,
+-- "waiting" when one stands (nearly still) within 14 studs of it - players
+-- wait at an open gate. Used when the gate geometry itself looks shut.
+function FH.ExitTeamSignal(door, center, triggers)
+    local signal
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and FH.ActiveSurvivor(player) and not FH.True(player, FH.CAP) then
+            local action = FH.Stat(player, FH.HACK_EVENT)
+            local target = action and action.Value
+            if target then
+                for _, t in ipairs(triggers or {}) do
+                    if target == t or target.Parent == t then return "opening" end
+                end
+            end
+            local r = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if r and center and Flat(r.Position - center).Magnitude <= 14 and math.abs(r.Position.Y - center.Y) <= 8
+                and Flat(r.AssemblyLinearVelocity).Magnitude < 4 then
+                signal = "waiting"
+            end
+        end
+    end
+    return signal
+end
 function FH.ExitTeamPull(center, gate, mine)
     local others, toward, nearMe = 0, 0, false
     local point = gate or center
@@ -13962,6 +14019,28 @@ function FH.ExitRoute(token, state, abort)
                 state.redirect = "closed"
                 return true
             end
+            -- On the way to (or starting on) a shut gate while another gate
+            -- is already open or being opened by a teammate: go there.
+            if state.door and not nearlyOpen and os.clock() >= (state.otherCheckAt or 0)
+                and not FH.ExitDoorOpen(state.door, state.center, state.triggers) then
+                state.otherCheckAt = os.clock() + 0.5
+                local mine = FH.ExitTeamSignal(state.door, state.center, state.triggers)
+                for _, other in ipairs(ExitDoors) do
+                    if other ~= state.door and IsInWorld(other) and other:IsDescendantOf(state.map) then
+                        local c = FH.ExitArea(other)
+                        local trigs = c and other:IsA("Model") and FH.Triggers(other) or {}
+                        if c then
+                            local better = FH.ExitDoorOpen(other, c, trigs)
+                                or (mine == nil and not state.opening and FH.ExitTeamSignal(other, c, trigs) == "opening")
+                            if better and not FH.BeastNearPoint(c, 35, 14) then
+                                if FH.Diag then FH.Diag("exit", "switch-to-open-gate") end
+                                state.redirect = "other-open"
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
         end
         return false
     end
@@ -14026,7 +14105,13 @@ function FH.ExitRoute(token, state, abort)
                     -- teammate) are at or heading to pull us there too.
                     -- User rule: an exit someone already opened always wins; only
                     -- without one do we open (and then wait at) the nearest gate.
-                    local rank = distance + (open and 0 or 10000) - FH.ExitTeamPull(center, stand, root.Position)
+                    -- A gate a teammate is opening, or where teammates wait (an
+                    -- open gate whose panels we may misread), beats opening
+                    -- another one ourselves (user report: walked off to the
+                    -- other exit while the team waited at an open one).
+                    local signal = not open and FH.ExitTeamSignal(door, center, triggers) or nil
+                    local rank = distance + (open and 0 or signal == "opening" and 300 or signal == "waiting" and 600
+                        or 10000) - FH.ExitTeamPull(center, stand, root.Position)
                     local danger = stand and (FH.ExitThreat(center, stand, root.Position, door)
                         or not open and FH.BeastNearPoint(center, 35, 14))
                     threatened = threatened or danger
@@ -14249,10 +14334,18 @@ function FH.ExitRoute(token, state, abort)
         state.opening = nil
         FH.ExitHolding = nil
         if stopped() then return interrupted() end
+        if best >= 0.9 then FH.MarkExitOpened(door) end
+        state.lastBest = best
         open = FH.ExitDoorOpen(door, center, state.triggers)
     end
     if not open then
         if FH.Diag then FH.Diag("exit", "still-closed-after-opening") end
+        -- A hold that made real progress stays on this gate (hold again):
+        -- failing it sent us off to open the other exit (user report).
+        if (state.lastBest or -1) > 0.3 then
+            state.lastBest = nil
+            return "retry"
+        end
         state.fail[door], state.door = os.clock() + 3, nil
         return "retry"
     end
