@@ -16802,6 +16802,17 @@ function AH.Go(tok)
     -- blink off/on); a fresh pick every restart ran back and forth in the open.
     local kept = AH.KeepDir
     AH.Dir = kept and os.clock() - kept.at < 3 and kept.dir or nil
+    -- Reacting while already running: start from the way we are moving, so
+    -- the first pick bends off sideways/away like a player instead of a
+    -- dead stop and a 180 (unless the Beast is right on us).
+    if not AH.Dir then
+        local r = RootNow()
+        local v = r and Flat(r.AssemblyLinearVelocity)
+        local threat = AH.Eval()
+        if v and v.Magnitude > 8 and threat and threat.pos and Flat(threat.pos - r.Position).Magnitude > 12 then
+            AH.Dir = v.Unit
+        end
+    end
     if AH.DropTraversal and AH.DropTraversal.token ~= tok then AH.ClearEscape() end
     while TokOK(tok) do
         if Ctl.On() or FH.Prio() or not FH.MotionAvailable(tok) or FH.ExitPriority() then break end
@@ -16979,10 +16990,12 @@ function AH.Go(tok)
                     FH.ConfirmNormalTakeoff(hum, root, tok)
                 end
             end
-            if not drop and hum.FloorMaterial ~= Enum.Material.Air and now - lastChk >= 0.25 then
+            -- Faster stuck check (0.18 s / 0.55 studs): pressing into an
+            -- invisible barrier stood ~0.45 s at the start of a flight (live).
+            if not drop and hum.FloorMaterial ~= Enum.Material.Air and now - lastChk >= 0.18 then
                 local moved = lastPos and Flat(rp - lastPos).Magnitude or 99
                 lastPos, lastChk = rp, now
-                if moved < 0.7 then
+                if moved < 0.55 then
                     stuckN = stuckN + 1
                     if dv.Magnitude > 0.5 then FH.AddBad(rp + dv.Unit * 3, 6) end
                     AH.Dir = nil

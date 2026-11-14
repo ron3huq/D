@@ -4,6 +4,8 @@
 --   1) a round runs without us (joined mid-round, waiting in the lobby),
 --   2) we were caught and are out while teammates are still playing,
 --   3) we are the Beast.
+-- After we escape, it waits while teammates are still in the round; it hops
+-- only if every survivor left has stood still for over a minute.
 -- Escaped players are not "out". Running it again restarts it;
 -- getgenv().DAutoHop.Stop() stops it.
 
@@ -69,19 +71,44 @@ local function inRound(target, map)
     local h = size / 2 + Vector3.new(40, 60, 40)
     return math.abs(d.X) <= h.X and math.abs(d.Y) <= h.Y and math.abs(d.Z) <= h.Z
 end
+-- Survivors still in the round, and how long each has stood still.
+Hop.still = setmetatable({}, { __mode = "k" })
+local function stillFor(p, root, now)
+    local t = Hop.still[p]
+    if not t or (root.Position - t.pos).Magnitude > 3 then
+        t = { pos = root.Position, since = now }
+        Hop.still[p] = t
+    end
+    return now - t.since
+end
 local function hopReason()
     local map = currentMap()
     if not map then return nil end
     if flag(player, "IsBeast") then return "beast" end
-    if flag(player, "Escaped") then return nil end
+    if flag(player, "Escaped") then
+        Hop.escapedMap = map
+        return nil
+    end
     if inRound(player, map) then return nil end
+    local now = os.clock()
+    -- We escaped this round: wait for teammates still in it (the round is
+    -- nearly over). Only if every survivor left has stood still for over a
+    -- minute (e.g. one player idling at the exit) do we hop.
+    local escapedHere = Hop.escapedMap == map
+    local left, idle = 0, 0
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= player and stats(p) and not flag(p, "IsBeast") and not flag(p, "Escaped") then
             local hp = stats(p):FindFirstChild("Health")
             local alive = not hp or type(hp.Value) ~= "number" or hp.Value > 0
-            if alive and inRound(p, map) then return "round running without us" end
+            if alive and inRound(p, map) then
+                if not escapedHere then return "round running without us" end
+                left = left + 1
+                local root = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                if root and stillFor(p, root, now) > 60 then idle = idle + 1 end
+            end
         end
     end
+    if escapedHere and left > 0 and idle == left then return "teammates idle after our escape" end
     return nil
 end
 local function hopServers()

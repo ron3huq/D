@@ -1103,3 +1103,13 @@ from the Round 30b version, nothing else:
 - FlipGuard zigzag damping (farm/help only): a > 45 deg swing one way then
   the other within 0.4 s keeps the heading 0.15 s (open way, grounded).
   Compile-checked only.
+
+## Round 42
+
+- AutoHide reaction: when it takes over while we run (> 8 studs/s) and the
+  Beast is > 12 studs away, the first steering starts from our current
+  heading (bends away instead of stop + 180). Stuck check 0.18 s / 0.55
+  studs (was 0.25 / 0.7): the 0.45 s press into an invisible barrier.
+- autohop.luau: after we escape, no hop while teammates are still in the
+  round; hop only when every survivor left has stood still (< 3 studs) for
+  over 60 s. Compile-checked only.
