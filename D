@@ -12538,13 +12538,19 @@ function FH.RescuePod(tok, alive, info, stopFn, hold, release, travel, contactRa
             local r = RootNow()
             local near
             if r and RemoteEvent then
+                -- Only with a clear line to the pod (no wall between us): freeing
+                -- a captive through a wall looked plainly wrong (live report).
+                local function inSight(t)
+                    return Workspace:Raycast(r.Position, t.Position - r.Position, FH.PodRay(t)) == nil
+                end
                 if ev and ev.Parent and Flat(trig.Position - r.Position).Magnitude <= 10
-                    and math.abs(trig.Position.Y - r.Position.Y) <= 6 then
+                    and math.abs(trig.Position.Y - r.Position.Y) <= 6 and inSight(trig) then
                     near = ev
                 else
                     for _, other in ipairs(AR.Pods(true)) do
                         local tp = other.trig.Position
-                        if other.ev and Flat(tp - r.Position).Magnitude <= 10 and math.abs(tp.Y - r.Position.Y) <= 6 then
+                        if other.ev and Flat(tp - r.Position).Magnitude <= 10 and math.abs(tp.Y - r.Position.Y) <= 6
+                            and inSight(other.trig) then
                             near = other.ev
                             break
                         end
@@ -13862,6 +13868,14 @@ function FH.ExitRoute(token, state, abort)
         and math.abs(state.stand.Position.Y - root.Position.Y) <= Follow.MaxDY
         and Flat(center - root.Position).Magnitude <= math.min(Flat(center - state.stand.Position).Magnitude + 1, 16)
         and FH.ApproachClear(root.Position, Vector3.new(center.X, root.Position.Y, center.Z), state.area)
+    -- An open gate ahead with a clear straight line: run straight in. Going to
+    -- the lever stand (beside the gate) first turned us around right in front
+    -- of the exit while chased (live report: caught at the gate).
+    if not inDoorway and directEscape and chased and math.abs(center.Y - root.Position.Y) <= Follow.MaxDY + 2
+        and Flat(center - root.Position).Magnitude <= 25
+        and FH.ApproachClear(root.Position, Vector3.new(center.X, root.Position.Y, center.Z), state.area) then
+        inDoorway = true
+    end
     if
         not inDoorway
         and (Flat(goal - root.Position).Magnitude > 3.5 or math.abs(goal.Y - root.Position.Y) > Follow.MaxDY)

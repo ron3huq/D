@@ -912,3 +912,10 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - Local steering after a dropped route knows the current running direction (velocity) and
   penalises reversing (it picked a way back mid-run).
 - UI panel a little higher (0.38 of screen height).
+
+## Round 28 (D_stall_20261114_051839)
+
+- Chased toward an open exit, turned around in front of it: with the gate open and a Beast
+  chasing, the route still went to the lever stand (beside the gate) before crossing. When chased,
+  an open gate whose centre is within 25 studs on a clear straight line is now run into directly.
+- Silent help only with a clear line to the pod (no wall in between).
