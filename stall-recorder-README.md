@@ -47,3 +47,28 @@ Mỗi `incident` gồm:
 - `beast`: khoảng cách, chênh tầng, có quay mặt về mình không.
 
 File có tọa độ map, nên chỉ gửi trực tiếp để phân tích, không đưa lên repo.
+
+## Version 2 (round 43)
+
+- **Only matches you really played are saved.** Everything is kept in memory
+  for the current round. When the round ends it is written to the file only
+  if you were in the map from the start of that round (not joined mid-round)
+  and spent at least 30 s inside it. AFK server hops, half-finished rounds and
+  lobby-only time are dropped; if nothing qualifies, no file is created.
+  Pressing Stop mid-round saves that round only if it already qualifies.
+- New lines in the file:
+  - `s` — the full movement trail every 0.1 s (position, speed, vertical
+    speed, state, floor material, input direction, facing, walk speed,
+    captured/escaped/hacking/crawling; D's state every 0.5 s when D runs).
+  - `cell` — the shape of the map around you: each new 6x6 stud cell you
+    enter (per floor) gets 16 directions x 4 heights (0.5, 1.8, 3.5, 5.5
+    studs) of 16-stud rays (distance, part, normal, class, size, kind), the
+    floor height 3 studs out in each direction (steps, stairs, drops),
+    floor and ceiling.
+  - `mapParts` / `mapBox` — once per round: every door, exit, computer, pod,
+    window, stair, step, ramp, ladder/truss, wedge, vent, rail, fence,
+    barrier, table/desk/shelf/crate with position, size, facing, collision
+    and transparency.
+  - `roundEnd` — map, time inside, escaped/caught.
+- Play normally through every kind of place (stairs, turning stairs,
+  windows, rails, drops, vents, narrow rooms, doors) and send the files.

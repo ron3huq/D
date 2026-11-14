@@ -1114,3 +1114,14 @@ from the Round 30b version, nothing else:
   round; hop only when every survivor left has stood still (< 3 studs) for
   over 60 s. Compile-checked only.
 - Follow picker key 6 is now Auto Farm (Follow.AutoAll(true), same as on load); the row reads "Auto Farm [6]". Auto Beast is no longer on the picker.
+
+## Round 43
+
+- Follow picker key 6 = Auto Farm again (as on load), at the user's request.
+- AutoHide: AH.ComputerAhead ends a steering lane 2 studs short of a
+  computer desk (barrier) and gives it no jump bonus.
+- WalkTo momentum carry now goes before the blind breaker (only while no
+  plan has failed yet): no breaker turn + route turn at rescue start.
+- stall-recorder v2: saves only rounds really played (from start, 30 s+
+  inside); continuous trail, per-cell map shape scans, map part inventory.
+  Compile-checked only.

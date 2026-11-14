@@ -92,13 +92,17 @@ local function clean(value, depth)
     return nil
 end
 
-local function writeLine(object)
+local function encode(object)
     local ok, line = pcall(function() return Http:JSONEncode(clean(object)) end)
     if not ok then
         R.lastError = "encode: " .. tostring(line)
-        return
+        return nil
     end
-    line = line .. "\n"
+    return line .. "\n"
+end
+-- Straight to the file (only ever used for rounds we actually played).
+local function writeRaw(line)
+    if not line then return end
     if R.totalBytes + #line > CFG.MAX_TOTAL_MB * 1024 * 1024 then
         R.full = true
         return
@@ -123,7 +127,32 @@ local function writeLine(object)
         R.dirty = true
     end
 end
-local function flush()
+-- Everything is first kept for the current round only. It reaches the file
+-- when that round ends and we really played it (in the map from its start,
+-- 30 s+ inside); otherwise (AFK hops, joined mid-round, lobby only) it is
+-- dropped and no file is written at all.
+R.pending = {}
+local function writeLine(object)
+    local line = encode(object)
+    if not line then return end
+    local pend = R.pending
+    pend[#pend + 1] = line
+    if #pend > 120000 then table.remove(pend, 1) end
+end
+local flush
+local function commitPending(meta)
+    if not R.headerWritten and R.headerObj then
+        writeRaw(encode(R.headerObj))
+        R.headerWritten = true
+    end
+    for _, line in ipairs(R.pending) do writeRaw(line) end
+    if meta then writeRaw(encode(meta)) end
+    R.pending = {}
+    R.savedRounds = (R.savedRounds or 0) + 1
+    flush()
+end
+local function dropPending() R.pending = {} end
+flush = function()
     if useAppend or not R.dirty then return end
     if type(writefile) ~= "function" then
         R.lastSaveOk, R.lastError = false, "executor has no writefile"
@@ -314,6 +343,96 @@ local function recordIncident(kind, now, root, hum, extra)
     return incident
 end
 
+-- ---------- map shape ----------
+local KEYWORDS = { "door", "exit", "computer", "freezepod", "pod", "window", "stair", "step", "ramp",
+    "ladder", "truss", "vent", "rail", "fence", "barrier", "clip", "table", "desk", "shelf", "crate", "box" }
+local function kindOf(o)
+    if o:IsA("TrussPart") then return "truss" end
+    if o:IsA("WedgePart") or o:IsA("CornerWedgePart") then return "wedge" end
+    local a = o
+    for _ = 1, 3 do
+        if not a then break end
+        local name = string.lower(a.Name)
+        for _, w in ipairs(KEYWORDS) do
+            if string.find(name, w, 1, true) then return w end
+        end
+        a = a.Parent
+    end
+    return nil
+end
+-- Once per round: every notable part of the map (doors, exits, computers,
+-- pods, windows, stairs, ramps, ladders, vents, rails, props), with its
+-- position, size and facing, so the layout can be rebuilt offline.
+function R.MapScan(map, round)
+    task.spawn(function()
+        local list, n = {}, 0
+        local all = map:GetDescendants()
+        for i, o in ipairs(all) do
+            if not R.running or R.round ~= round then return end
+            if o:IsA("BasePart") then
+                local kind = kindOf(o)
+                if kind then
+                    n = n + 1
+                    local parent = o.Parent and o.Parent.Name or ""
+                    list[#list + 1] = { kind, parent .. "." .. o.Name, o.ClassName, vec(o.Position), vec(o.Size),
+                        vec(o.CFrame.LookVector), o.CanCollide and 1 or 0, num(o.Transparency, 2) }
+                    if #list >= 400 then
+                        writeLine({ k = "mapParts", round = round, parts = list })
+                        list = {}
+                    end
+                    if n >= 6000 then break end
+                end
+            end
+            if i % 600 == 0 then task.wait() end
+        end
+        if #list > 0 then writeLine({ k = "mapParts", round = round, parts = list }) end
+        local ok, cf, size = pcall(function() return map:GetBoundingBox() end)
+        writeLine({ k = "mapBox", round = round, center = ok and vec(cf.Position) or nil,
+            size = ok and vec(size) or nil, count = n })
+    end)
+end
+local CELL_DIRS = 16
+local CELL_HEIGHTS = { 0.5, 1.8, 3.5, 5.5 }
+function R.CellScan(root, hum)
+    local pos = root.Position
+    local hip = hum.HipHeight > 0 and hum.HipHeight or 2
+    local feetY = pos.Y - hip - root.Size.Y / 2
+    local key = math.floor(pos.X / 6) .. ":" .. math.floor(pos.Z / 6) .. ":" .. math.floor(feetY / 5)
+    R.cells = R.cells or {}
+    if R.cells[key] then return end
+    R.cells[key] = true
+    refreshFilter()
+    local function short(hit)
+        if not hit then return nil end
+        local part = hit.Instance
+        local name = part.Name
+        if part.Parent and part.Parent ~= World then name = part.Parent.Name .. "." .. name end
+        return { num(hit.Distance, 1), name, num(hit.Normal.Y, 2), part.ClassName,
+            part:IsA("BasePart") and vec(part.Size) or nil, kindOf(part) }
+    end
+    local rays = {}
+    for i = 0, CELL_DIRS - 1 do
+        local a = i * 2 * math.pi / CELL_DIRS
+        local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+        local ring = {}
+        for j, h in ipairs(CELL_HEIGHTS) do
+            ring[j] = short(World:Raycast(Vector3.new(pos.X, feetY + h, pos.Z), dir * 16, rayParams)) or 0
+        end
+        -- Floor 3 studs out in this direction (drop / step / stair below?).
+        local out = Vector3.new(pos.X, feetY + 2, pos.Z) + dir * 3
+        local floor = World:Raycast(out, Vector3.new(0, -14, 0), rayParams)
+        ring[#ring + 1] = floor and num(floor.Position.Y - feetY, 1) or -99
+        rays[i + 1] = ring
+    end
+    writeLine({
+        k = "cell",
+        at = vec(Vector3.new(pos.X, feetY, pos.Z)),
+        floor = short(World:Raycast(pos, Vector3.new(0, -8, 0), rayParams)),
+        ceil = short(World:Raycast(pos, Vector3.new(0, 20, 0), rayParams)),
+        rays = rays,
+    })
+end
+
 local stillSince, stillIncident
 local lastPace, lastJitter = -math.huge, -math.huge
 local lastSample, lastSummary, lastFlush = 0, os.clock(), os.clock()
@@ -333,10 +452,57 @@ local function step()
     local map = currentMap()
     local mapName = map and map.Name or "lobby"
     if mapName ~= currentRound then
+        -- Close the previous round: keep it only if we really played it.
+        local play = R.play
+        if play and play.map ~= "lobby" then
+            if play.fromStart and play.inMap >= 30 then
+                commitPending({ k = "roundEnd", n = R.round, map = play.map, inMap = num(play.inMap),
+                    escaped = play.escaped or nil, caught = play.caught or nil, t = num(now, 2) })
+            else
+                dropPending()
+            end
+        end
+        local fromStart = map ~= nil and currentRound == "lobby"
         currentRound = mapName
         R.round = (R.round or 0) + 1
-        writeLine({ k = "round", n = R.round, map = mapName, t = num(now, 2), utc = os.date("!%H:%M:%S") })
+        R.play = { map = mapName, startAt = now, fromStart = fromStart, inMap = 0, box = nil }
+        R.cells = {}
+        writeLine({ k = "round", n = R.round, map = mapName, t = num(now, 2), utc = os.date("!%H:%M:%S"),
+            fromStart = fromStart })
+        if map then R.MapScan(map, R.round) end
     end
+    -- Time actually spent inside the map this round (not in the lobby).
+    local play = R.play
+    if play and map then
+        if not play.box then
+            local ok, cf, size = pcall(function() return map:GetBoundingBox() end)
+            play.box = ok and { cf = cf, half = size / 2 + Vector3.new(30, 50, 30) } or false
+        end
+        local inside = true
+        if play.box then
+            local d = play.box.cf:PointToObjectSpace(root.Position)
+            local h = play.box.half
+            inside = math.abs(d.X) <= h.X and math.abs(d.Y) <= h.Y and math.abs(d.Z) <= h.Z
+        end
+        -- Must be inside within the first 40 s (not joined/teleported late).
+        if inside then
+            play.firstInside = play.firstInside or now
+            if play.firstInside - play.startAt <= 40 then play.inMap = play.inMap + CFG.SAMPLE end
+        end
+        if s.esc then play.escaped = true end
+        if s.cap then play.caught = true end
+    end
+    -- Continuous trail (every sample) so the whole movement can be replayed:
+    -- position, speed, input direction, state, floor; D's state every 0.5 s.
+    R.trailD = R.trailD or 0
+    local withD = now - R.trailD >= 0.5
+    if withD then R.trailD = now end
+    writeLine({ k = "s", t = s.t, p = s.p, v = s.v, vy = s.vy, st = s.st, fl = s.fl, mdir = s.mdir,
+        ws = s.ws, look = vec(flat(root.CFrame.LookVector)), cap = s.cap, esc = s.esc, hack = s.hack,
+        crawl = s.crawl, d = withD and s.d or nil })
+    -- Map shape around where we go: every new 6x6 stud cell (per floor) gets
+    -- a ring of rays at 4 heights, floor and ceiling.
+    if map then R.CellScan(root, hum) end
 
     -- Beast state changes (to identify perk signals such as Seer).
     if now - (R.beastScanAt or 0) >= 1 then
@@ -495,7 +661,12 @@ end)
 function R.Stop()
     if not R.running then return end
     R.running = false
-    writeLine({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts })
+    local play = R.play
+    if play and play.map ~= "lobby" and play.fromStart and play.inMap >= 30 then
+        commitPending({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
+    else
+        dropPending()
+    end
     flush()
     for _, c in ipairs(R.connections) do pcall(function() c:Disconnect() end) end
     pcall(function() gui:Destroy() end)
@@ -505,11 +676,11 @@ button.MouseButton1Click:Connect(function()
     gui:Destroy()
 end)
 
--- Header + immediate save so the file exists right away.
-writeLine({
+-- Header: written in front of the first round we really play.
+R.headerObj = ({
     k = "header",
     schema = "d-stall-recorder",
-    version = 1,
+    version = 2,
     utc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
     place = game.PlaceId,
     append = useAppend,
@@ -517,11 +688,10 @@ writeLine({
     dHook = type(env.D_Snapshot) == "function",
     cfg = CFG,
 })
-flush()
 if type(writefile) ~= "function" then
     R.lastSaveOk, R.lastError = false, "executor has no writefile"
 end
-print(("[DStallRecorder] ghi vao %s (appendfile=%s, D hook=%s)"):format(
+print(("[DStallRecorder] chi luu tran thuc su choi -> %s (appendfile=%s, D hook=%s)"):format(
     fileName(), tostring(useAppend), tostring(type(env.D_Snapshot) == "function")))
 
 R.connections[#R.connections + 1] = Run.Heartbeat:Connect(function()

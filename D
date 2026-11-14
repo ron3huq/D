@@ -11808,8 +11808,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- Still running from the previous leg (new walk, route not
                 -- computed yet): keep that momentum for a moment instead of
                 -- standing ~0.5 s waiting for the planner (live beats).
+                -- Momentum first, also over a blind breaker: the breaker heading
+                -- then the route heading were two turns in a row at every
+                -- rescue start (shaking when AutoHelp takes over).
                 local carry
-                if not (quick or slow) and hum.FloorMaterial ~= Enum.Material.Air then
+                if hum.FloorMaterial ~= Enum.Material.Air and fails == 0 then
                     local v = Flat(root.AssemblyLinearVelocity)
                     local toGoal = Flat(goal - rp)
                     if v.Magnitude > 6 and (toGoal.Magnitude < 0.5 or v.Unit:Dot(toGoal.Unit) > -0.3) then
@@ -11820,7 +11823,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     end
                 end
                 if carry then
-                    breaker = { aim = rp + carry * 6, untilAt = now + 0.5, dir = carry, since = now }
+                    breaker = { aim = rp + carry * 6, untilAt = now + 0.5, dir = carry, since = now, carry = true }
                     FH.Move(token, hum, breaker.aim)
                 elseif hum.FloorMaterial ~= Enum.Material.Air and (quick or slow) then
                     -- Keep the heading of the last breaker for a while if it
@@ -15752,6 +15755,24 @@ function AH.OpenAt(point, dir, feetY, now)
     AH.OpenCache[key] = { at = now, open = open }
     return open
 end
+function AH.ComputerAhead(rp, dir, run, feetY)
+    for _, h in ipairs({ 1, 2.6 }) do
+        local hit = Workspace:Raycast(Vector3.new(rp.X, feetY + h, rp.Z), dir * run, rayParams)
+        if hit then
+            local inst = hit.Instance
+            for _, comp in ipairs(Computers) do
+                if inst:IsDescendantOf(comp) then return hit.Distance end
+            end
+            local a = inst
+            for _ = 1, 3 do
+                if not a then break end
+                if string.find(string.lower(a.Name), "computer", 1, true) then return hit.Distance end
+                a = a.Parent
+            end
+        end
+    end
+    return nil
+end
 function AH.Steer(rp, bp, bvel, feetY, juke)
     local pred = bp
     if bvel then
@@ -15785,6 +15806,15 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
     end
     for _, dir in ipairs(headings) do
         local run, jumps, _, endY = AH.Scan(rp, dir, feetY)
+        -- Computer desks are not hurdles: their invisible barriers stopped
+        -- the run dead (live: AutoHide kept running into computers). End the
+        -- lane 2 studs short of one, with no jump bonus for it.
+        local deskAt = run >= AH.SegLen and AH.ComputerAhead(rp, dir, run, feetY)
+        if deskAt then
+            run = math.floor(math.max(0, deskAt - 2) / AH.SegLen) * AH.SegLen
+            jumps = 0
+            endY = nil
+        end
         if run >= AH.SegLen then
             local raw = rp + dir * run
             local point = Vector3.new(raw.X, (endY or feetY) + rp.Y - feetY, raw.Z)
