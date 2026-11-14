@@ -813,3 +813,17 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
 - Rejected lanes: a move toward one is no longer refused (a standing beat) nor slid sideways (a
   sharp turn that flipped left/right - present in many jitter incidents); it just continues and
   the no-progress rules handle real walls. "Keep the recent route" now applies to rescue only.
+
+## Round 21 (Workspace_7; Workspace_6 was a copy of Workspace_5)
+
+- Frame drops: during a rescue the door-detour search (up to 12 doors x native path
+  computations) ran every 1.5 s for any route longer than the straight line by 0.01 stud, and
+  after a failed door route the planner kept returning "door" mode. Now: rescue detours only for
+  a real detour (>= 25 % + 6 studs) at most every 4 s; no door mode for 5 s after a door route
+  failed. AutoHide dead-end probes are cached per 4-stud cell/heading for 1.5 s;
+  `Follow.CenterAim` reuses its result for 0.1 s.
+- Rescue shaking 20+ s in a cluttered School room: the avatar stood on a low prop and every
+  native plan failed. When a plan fails, the planner now plans from the floor right beside us
+  (1-5.5 studs lower, clear step) and prepends the step down.
+- Round 20's "keep moving into a rejected lane" is reverted (it pushed into walls); the round-19
+  kept-side slide is back.

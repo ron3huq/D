@@ -3138,10 +3138,48 @@ function FH.Move(token, hum, goal, force, intentGoal, precision)
     else
         goal = FH.RecoveryAim(token, hum, goal, intentGoal)
     end
-    -- A move toward a recently rejected lane is still made (refusing it was
-    -- a standing beat; sliding sideways around it was a sharp, shaky turn).
-    -- The no-progress rules catch a real wall and replan.
-    if rejected(goal) and FH.Diag then FH.Diag("move", "into-rejected-lane") end
+    if rejected(goal) then
+        -- Standing until the rejection expires was the most common stall
+        -- (live: the last-resort route led into the rejected lane, the move
+        -- was refused for seconds). Slide past it on one side instead; the
+        -- side is kept for a moment so it cannot flip left/right.
+        local slid
+        if root and not force and not precision then
+            local delta = Flat(goal - root.Position)
+            if delta.Magnitude > 4 then
+                local feet = FH.Feet(hum, root)
+                local base = delta.Unit
+                local reach = math.min(delta.Magnitude, 4)
+                local keep = FH.SlideSide
+                local kept = keep and keep.root == root and os.clock() < keep.untilAt
+                local first = kept and keep.side or 1
+                -- Never flip sides while a slide is kept (left-right-left was
+                -- the shake at doors, live data).
+                local sides = kept and { first } or { first, -first }
+                for _, deg in ipairs({ 40, 75, 110 }) do
+                    for _, side in ipairs(sides) do
+                        local a = math.rad(deg) * side
+                        local dir = base * math.cos(a) + Vector3.new(-base.Z, 0, base.X) * math.sin(a)
+                        local candidate = root.Position + dir * reach
+                        local origin = Vector3.new(root.Position.X, feet + 1.5, root.Position.Z)
+                        if not FH.LaneRejected(root.Position, candidate, feet)
+                            and not Workspace:Raycast(origin, dir * (reach + 0.5), rayParams) then
+                            slid = candidate
+                            if not kept then FH.SlideSide = { root = root, side = side, untilAt = os.clock() + 1.5 } end
+                            break
+                        end
+                    end
+                    if slid then break end
+                end
+            end
+        end
+        if not slid then
+            if FH.Diag then FH.Diag("move-refused", "lane-rejected") end
+            return false
+        end
+        if FH.Diag then FH.Diag("move-slide", "around-rejected-lane") end
+        goal = slid
+    end
     if FH.Diag and root and Flat(goal - root.Position).Magnitude < 0.6 then FH.Diag("move-stand", "aim-at-self") end
     local m, now = FH.Motion, os.clock()
     if m.token ~= token or m.hum ~= hum then
@@ -10168,6 +10206,18 @@ end
 function Follow.CenterAim(rp, aim, feetY)
     local delta = Flat(aim - rp)
     if delta.Magnitude < 1.5 then return aim end
+    -- Reuse the last result for 0.1 s at the same spot/aim (10 rays per
+    -- movement tick added up to frame time).
+    local now = os.clock()
+    local c = Follow.CenterCache
+    if c and now - c.at < 0.1 and Flat(c.rp - rp).Magnitude < 0.8 and Flat(c.aim - aim).Magnitude < 0.3 then
+        return aim + c.shift
+    end
+    local out = Follow.CenterAimNow(rp, aim, feetY, delta)
+    Follow.CenterCache = { at = now, rp = rp, aim = aim, shift = out - aim }
+    return out
+end
+function Follow.CenterAimNow(rp, aim, feetY, delta)
     local dir = delta.Unit
     local side = Vector3.new(-dir.Z, 0, dir.X)
     -- Frames are thin (0.75-2.7 studs): sample densely, use the narrowest.
@@ -10216,6 +10266,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local dropShortcutAt, dropShortcutTries = 0, 0
     local breaker, breakerAt, overheadDrop
     local lastRoute, restoringRoute
+    local doorFailAt = -math.huge
     local doorAt, detourAt = 0, 0
     local banDirect, gridBan = FH.BanDirect, FH.GridBan
     local fails, doorTries, radIdx, escTries = 0, 0, 1, 0
@@ -10641,6 +10692,46 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if path then path:Destroy() end
             return nil
         end
+        -- Standing on a prop/desk the native planner often finds nothing
+        -- (live: 20 s of shaking in a cluttered room, every plan failed and
+        -- each failure ran an expensive door search). Plan from the floor
+        -- right beside us and step down onto it first.
+        if not w and hum then
+            local liveRoot = RootNow()
+            if liveRoot then
+                local best
+                for k = 0, 7 do
+                    local a = k * math.pi / 4
+                    local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+                    for _, reach in ipairs({ 2.5, 4 }) do
+                        local c = rp + dir * reach
+                        local hit = Workspace:Raycast(Vector3.new(c.X, feetY + 1, c.Z), Vector3.new(0, -7, 0), rayParams)
+                        if hit and hit.Normal.Y > 0.6 and hit.Position.Y < feetY - 1 and hit.Position.Y > feetY - 5.5
+                            and not Workspace:Raycast(Vector3.new(rp.X, feetY + 1.5, rp.Z), dir * reach, rayParams) then
+                            local score = Flat(c - goal).Magnitude
+                            if not best or score < best.score then
+                                best = { point = Vector3.new(c.X, hit.Position.Y, c.Z), score = score }
+                            end
+                            break
+                        end
+                    end
+                end
+                if best then
+                    local w2, len2, _, path2 = FH.PathAny(best.point + Vector3.new(0, rp.Y - feetY, 0), goal, radIdx,
+                        true, function() return not dead() end, false, false, rescue)
+                    if dead() then if path2 then path2:Destroy() end; return nil end
+                    if w2 then
+                        local first = { Position = Vector3.new(rp.X, feetY, rp.Z), Action = Enum.PathWaypointAction.Walk }
+                        local step = { Position = best.point, Action = Enum.PathWaypointAction.Walk }
+                        local joined = { first, step }
+                        for i = 2, #w2 do joined[#joined + 1] = w2[i] end
+                        if path2 then path2:Destroy() end
+                        if FH.Diag then FH.Diag("plan", "from-floor-beside-prop") end
+                        w, len = joined, (len2 or 0) + Flat(best.point - rp).Magnitude
+                    end
+                end
+            end
+        end
         local badW
         if w and FH.PathBad(w) then
             badW, w = w, nil
@@ -10661,9 +10752,14 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if
                 not noDoor
                 and math.abs(goal.Y - rp.Y) <= Follow.MaxDY
-                and len > (rescue and straight + 0.01 or straight * 1.8 + 12)
+                -- A door detour search is expensive (many native path
+                -- computations): only for a real detour, at most every 4 s
+                -- for rescue (it ran every 1.5 s for any bend: frame drops,
+                -- and detours through unrelated doors).
+                and len > (rescue and straight * 1.25 + 6 or straight * 1.8 + 12)
                 and straight < (rescue and 130 or 70)
-                and os.clock() - detourAt > (rescue and 1.5 or 8)
+                and os.clock() - detourAt > (rescue and 4 or 8)
+                and os.clock() - doorFailAt > 5
             then
                 detourAt = os.clock()
                 if rescue then
@@ -10696,7 +10792,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         if badW then fb = fb or { mode = "path", wps = badW, full = true, clearBad = true } end
-        if opts.rescueJuke and not noDoor and not rescueDoorTried then
+        if opts.rescueJuke and not noDoor and not rescueDoorTried and os.clock() - doorFailAt > 5 then
             if os.clock() > gridBan and straight < 120 then
                 local gw = FH.Grid(rp, goal, feetY, 96, function() return not dead() end, true)
                 if dead() then return nil end
@@ -10715,7 +10811,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
             gridBan = os.clock() + 3
         end
-        if not noDoor then return { mode = "door", fallback = fb } end
+        if not noDoor and os.clock() - doorFailAt > 5 then return { mode = "door", fallback = fb } end
         return fb
     end
     local function applyRes(res, rp, goal)
@@ -10807,6 +10903,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 dispose(res)
                 return "door"
             end
+            doorFailAt = os.clock()
             return applyRes(res.fallback, rp, goal)
         end
         return nil
@@ -15187,15 +15284,27 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
         if known then
             c.score = c.score - 30
         elseif c.run < full then
+            -- Cached per 4-stud cell and heading for 1.5 s: this ran 35 rays
+            -- on every steering tick (frame time).
+            AH.OpenCache = AH.OpenCache or {}
+            local key = math.floor(c.point.X / 4) .. ":" .. math.floor(c.point.Z / 4) .. ":"
+                .. math.floor((math.atan2(c.dir.Z, c.dir.X) + math.pi) / (math.pi / 4))
+            local cached = AH.OpenCache[key]
             local open = 0
-            local base = c.dir
-            local bside = Vector3.new(-base.Z, 0, base.X)
-            local origin = Vector3.new(c.point.X, feetY + 1.5, c.point.Z) - base * 1.5
-            for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
-                local r = math.rad(a)
-                local d = base * math.cos(r) + bside * math.sin(r)
-                local hit = Workspace:Raycast(origin, d * 10, rayParams)
-                if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
+            if cached and now - cached.at < 1.5 then
+                open = cached.open
+            else
+                local base = c.dir
+                local bside = Vector3.new(-base.Z, 0, base.X)
+                local origin = Vector3.new(c.point.X, feetY + 1.5, c.point.Z) - base * 1.5
+                for _, a in ipairs({ 0, 45, -45, 90, -90, 135, -135 }) do
+                    local r = math.rad(a)
+                    local d = base * math.cos(r) + bside * math.sin(r)
+                    local hit = Workspace:Raycast(origin, d * 10, rayParams)
+                    if not hit or hit.Normal.Y > 0.6 then open = open + 1 end
+                end
+                if next(AH.OpenCache) and math.random() < 0.02 then table.clear(AH.OpenCache) end
+                AH.OpenCache[key] = { at = now, open = open }
             end
             if open <= 1 then
                 c.score = c.score - 25
