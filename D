@@ -4893,6 +4893,12 @@ end
 -- Never near the aim (arrival) and never in the air.
 function FH.FlipGuard(motion, root, direction)
     local d = direction.Unit
+    -- Never for AutoHide: its turns must stay instant.
+    local tok = motion.token
+    if type(tok) == "table" and tok.owner == "evade" then
+        FH.FlipState = nil
+        return d
+    end
     local g = FH.FlipState
     local now = os.clock()
     if not g or g.token ~= motion.token then

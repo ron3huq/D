@@ -1014,3 +1014,5 @@ from the Round 30b version, nothing else:
   previous one (back-and-forth jitter) keeps the current heading 0.25 s more,
   only grounded, more than 3 studs from the aim, and only while that heading
   is open 2.5 studs ahead. Not test-run (user request).
+
+- FH.FlipGuard skips AutoHide (owner "evade") entirely.
