@@ -3567,29 +3567,24 @@ function FH.ComputerContactClear(token, comp, trig)
     FH.SetContactApproach(token, hum, root, trig, comp, goal, "computer")
     return FH.ContactApproachValid(token, hum, root, goal)
 end
--- 35 % of hacks: while a teammate hacks the same computer, turn to face them
--- (body facing only; a quick flick, then held while both hack).
-function FH.FaceCoHacker(state, comp, hum, root)
-    if state.decided == nil then state.decided = math.random() < 0.35 end
-    if not state.decided then return end
-    local all = FH.CompTriggers(comp)
-    local mate
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and not FH.True(player, FH.BEASTN) then
-            local r = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-            local action = FH.Stat(player, FH.HACK_EVENT)
-            local target = action and action.Value
-            if r and target and (r.Position - root.Position).Magnitude < 14 then
-                for _, slot in ipairs(all) do
-                    if target == slot or target.Parent == slot then mate = r break end
-                end
-            end
-        end
-        if mate then break end
-    end
-    if not mate then return end
-    local toward = Flat(mate.Position - root.Position)
-    if toward.Magnitude < 0.5 then return end
+-- Face the computer squarely once before pressing (live: the avatar
+-- arrived beside the desk turned diagonally and the hack did not register).
+-- One body write, then AutoRotate stays off while we hold so it does not
+-- swing away; restored when the contact ends.
+function FH.FaceComputer(state, comp, trig, hum, root)
+    if state.facedAt and os.clock() - state.facedAt < 1.2 then return end
+    local centre
+    local ok, pivot = pcall(function() return comp:GetPivot().Position end)
+    if ok and pivot then centre = pivot end
+    local screen = comp:FindFirstChild("Screen", true)
+    if screen and screen:IsA("BasePart") then centre = screen.Position end
+    centre = centre or trig.Position
+    local toward = Flat(centre - root.Position)
+    if toward.Magnitude < 0.3 then toward = Flat(trig.Position - root.Position) end
+    if toward.Magnitude < 0.3 then return end
+    state.facedAt = os.clock()
+    local look = Flat(root.CFrame.LookVector)
+    if look.Magnitude > 0.1 and look.Unit:Dot(toward.Unit) > 0.985 then return end
     if state.autoRotate == nil then
         state.autoRotate = hum.AutoRotate
         pcall(function() hum.AutoRotate = false end)
@@ -3642,9 +3637,8 @@ function FH.ComputerContact(token, comp, trig, stopped)
             or (distance <= 2.6 and FH.SelectedTrigger(trig))
         local admitted = acknowledged and (progressing or holding and now - heldAt < 1.5)
         if admitted or (ready and now >= advanceUntil) then
-            -- Face a teammate already hacking this computer: once, before the
-            -- first hold (no body writes during the hack itself).
-            if not holding and faceState.decided == nil then pcall(FH.FaceCoHacker, faceState, comp, hum, root) end
+            -- Face the computer once before the hold (never during it).
+            if not holding then pcall(FH.FaceComputer, faceState, comp, trig, hum, root) end
             FH.SetContactApproach(token, hum, root, trig, comp, root.Position, "computer")
             FH.Move(token, hum, root.Position, not holding)
             Follow.Hold(trig:FindFirstChild("Event"), Follow.HackSendResult, true, false, token, true)
@@ -11373,6 +11367,38 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         end
                     end
                     fails = fails + 1
+                    -- Shut in (plans keep failing, live: a rescue bounced off the
+                    -- walls of a small room for seconds): open the nearest
+                    -- closed door on our floor and go through, like a player.
+                    if fails >= 2 and not noDoor and not flying then
+                        local liveRoot, liveHum = RootNow(), GetHumanoid()
+                        local bestG, bestD
+                        if liveRoot and liveHum then
+                            local lp = liveRoot.Position
+                            local lf = FH.Feet(liveHum, liveRoot)
+                            FH.NearDoorTried = FH.NearDoorTried or setmetatable({}, { __mode = "k" })
+                            for _, d in ipairs(Doors) do
+                                if IsInWorld(d) and not (FH.NearDoorTried[d] and os.clock() < FH.NearDoorTried[d]) then
+                                    local g = FH.DoorGeom(d, lp)
+                                    if g and FH.DoorOnFloor(g, lp, lf) and FH.DoorBlocked(g) then
+                                        local dd = Flat(g.Center - lp).Magnitude
+                                        if dd <= 12 and (not bestD or dd < bestD) then bestG, bestD = g, dd end
+                                    end
+                                end
+                            end
+                        end
+                        if bestG then
+                            FH.NearDoorTried[bestG.Door] = os.clock() + 5
+                            if FH.Diag then FH.Diag("walk", "open-near-door") end
+                            local passed = Follow.PassDoor(token, bestG, abort, nil, opts.rescueJuke, pendingSteer)
+                            if not alive() then return finish("abort", false) end
+                            if passed then
+                                reset()
+                                fails, nextPlan = 0, 0
+                                continue
+                            end
+                        end
+                    end
                     -- Remember where plans keep failing (across WalkTo calls).
                     local spot = FH.PlanFailSpot
                     if spot and Flat(spot.pos - rp).Magnitude < 10 and now - spot.at < 20 then
@@ -22746,7 +22772,7 @@ function Follow.LobbyStrollPoint(state, root, board)
         -- Not someone's shadow: keep a few studs from every player.
         for _, other in ipairs(Players:GetPlayers()) do
             local r = other ~= LocalPlayer and other.Character and other.Character:FindFirstChild("HumanoidRootPart")
-            if r and Flat(candidate - r.Position).Magnitude < 5 then fresh = false break end
+            if r and Flat(candidate - r.Position).Magnitude < 8 then fresh = false break end
         end
         if state.lastAnchor and #anchors > 1 and attempt <= 10 and Flat(base - state.lastAnchor).Magnitude < 8 then
             fresh = false
@@ -22851,7 +22877,12 @@ function Follow.LobbyCrawl()
     end)
 end
 function Follow.LobbyStroll(token, state, point)
-    if math.random() < 0.1 then Follow.LobbyCrawl() end
+    -- One roll per lobby visit (it was rolled per stroll leg, so nearly
+    -- every intermission ended up crawling).
+    if state.crawlRolled == nil then
+        state.crawlRolled = math.random() < 0.1
+        if state.crawlRolled then Follow.LobbyCrawl() end
+    end
     local ok = pcall(Follow.WalkTo, token, function() return point end, 2.5, function()
         if FH.MatchOn() and FH.InMatchPlayer(LocalPlayer) then return true end
         local best
@@ -22873,6 +22904,7 @@ function Follow.LobbyStep(token)
     -- waited in the lobby through the round (the board reloads later).
     local matchNow = FH.MatchOn()
     local roundEnded = state.wasMatch and not matchNow
+    if matchNow then state.crawlRolled = nil end
     state.wasMatch = matchNow
     if roundEnded or state.seenAt and now - state.seenAt > 15 then
         state.voted, state.waitPoint, state.votedKey, state.tries = nil, nil, nil, {}
@@ -23002,8 +23034,8 @@ function Follow.LobbyStep(token)
         end
         local their = buddy.root.Position
         -- Face to face: stand in front of them along the way THEY face
-        -- (3-5 studs, a slight random side offset), then face them.
-        state.buddyOffset = state.buddyOffset or { dist = 3 + math.random() * 2, side = (math.random() - 0.5) * 1.2 }
+        -- (6-8.5 studs - closer read as glued to them), then face them.
+        state.buddyOffset = state.buddyOffset or { dist = 6 + math.random() * 2.5, side = (math.random() - 0.5) * 1.5 }
         local function frontSpot()
             local r = buddy.root
             local look = Flat(r.CFrame.LookVector)

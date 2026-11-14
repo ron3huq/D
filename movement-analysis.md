@@ -933,3 +933,16 @@ These tests are controlled simulations, not Roblox/Delta execution or proof of o
   ground, not while airborne.
 - Rescue door shortcuts searched for a smaller detour (>= 12 % + 3 studs) every 2.5 s (was
   25 % + 6 every 4 s), with the 5 s door-failure pause kept.
+
+## Round 30
+
+- Hack: the 35 % "face a co-hacker" turn is gone. Instead the avatar faces the
+  computer (screen / pivot) once before the first hold, AutoRotate stays off
+  while holding and is restored afterwards (live: arrived diagonal to the desk
+  and the hack did not register).
+- Lobby crawl: rolled once per lobby visit (10 %), not per stroll leg.
+- Lobby spacing: face-to-face spot 6-8.5 studs (was 3-5); stroll spots keep
+  8 studs from every player (was 5).
+- WalkTo: when plans fail twice in a row (shut in a small room, live Homestead
+  rescue bouncing for seconds), open the nearest closed door on our floor
+  within 12 studs and pass it, then replan; each door tried at most once per 5 s.
