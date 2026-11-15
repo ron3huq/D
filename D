@@ -15786,6 +15786,100 @@ function AH.ComputerAhead(rp, dir, run, feetY)
     end
     return nil
 end
+-- Orbit juke (from the user's own play, video): when the Beast comes at us
+-- and gets close (about 5-11 studs), step to one side and run round it
+-- (about half a circle) at a steady radius, then switch and swing back the
+-- other way, then break off behind it - toward where it came from or out
+-- to open space. First-person Beasts lose track of a target circling them.
+-- Never toward the front of the Beast; lanes are checked like any other.
+function AH.OrbitAim(rp, e, feetY, state)
+    local now = os.clock()
+    local bp = e and e.pos
+    if not (e and e.danger and bp) or math.abs(bp.Y - rp.Y) > 4 then
+        state.phase = nil
+        return nil
+    end
+    local rel = Flat(rp - bp)
+    local dist = rel.Magnitude
+    if dist < 0.5 then return nil end
+    local look = e.look and Flat(e.look) or Flat(e.vel or Vector3.zero)
+    if look.Magnitude < 0.1 then look = -rel end
+    look = look.Unit
+    local function lane(point)
+        return AH.LaneClear(rp, point, feetY)
+    end
+    local function circlePoint(side, radius)
+        local a = math.atan2(rel.Z, rel.X) + side * math.rad(55)
+        local raw = bp + Vector3.new(math.cos(a), 0, math.sin(a)) * radius
+        return Vector3.new(raw.X, rp.Y, raw.Z)
+    end
+    if not state.phase then
+        if now < (state.cooldown or 0) then return nil end
+        -- Start only for a Beast closing in on us, facing us, 5-11 studs off.
+        local closing = e.vel and Flat(e.vel):Dot(-rel.Unit) or 0
+        if dist > 11 or dist < 4 or look:Dot(-rel.Unit) < 0.6 or closing < 4 then return nil end
+        local radius = math.clamp(dist, 6, 9)
+        local first = math.random() < 0.5 and 1 or -1
+        local side
+        for _, sd in ipairs({ first, -first }) do
+            if lane(circlePoint(sd, radius)) then side = sd break end
+        end
+        if not side then return nil end
+        state.phase, state.side, state.radius = 1, side, radius
+        state.turned, state.lastAngle, state.phaseAt = 0, math.atan2(rel.Z, rel.X), now
+        state.swingTarget = math.rad(140 + math.random() * 50)
+        if FH.Diag then FH.Diag("evade", "orbit-juke") end
+    end
+    -- Track how far round the Beast we have gone in this phase.
+    local angle = math.atan2(rel.Z, rel.X)
+    local delta = (angle - state.lastAngle + math.pi) % (2 * math.pi) - math.pi
+    state.lastAngle = angle
+    state.turned = state.turned + math.abs(delta)
+    local function finish()
+        state.phase = nil
+        state.cooldown = now + 4 + math.random() * 2
+        -- Break off behind the Beast (where it came from), then normal flight.
+        AH.Dir = -look
+        AH.KeepDir = { dir = -look, at = now }
+        return nil
+    end
+    if dist < 3 or dist > 16 then return finish() end
+    if state.phase == 1 and (state.turned >= state.swingTarget or now - state.phaseAt > 1.4) then
+        -- Swing back the other way (shorter), unless that side is shut.
+        state.phase, state.side, state.turned, state.phaseAt = 2, -state.side, 0, now
+        state.swingTarget = math.rad(70 + math.random() * 50)
+    elseif state.phase == 2 and (state.turned >= state.swingTarget or now - state.phaseAt > 0.9) then
+        return finish()
+    end
+    local point = circlePoint(state.side, state.radius)
+    if not lane(point) then
+        if state.phase == 1 then
+            state.phase, state.side, state.turned, state.phaseAt = 2, -state.side, 0, now
+            point = circlePoint(state.side, state.radius)
+            if not lane(point) then return finish() end
+        else
+            return finish()
+        end
+    end
+    local heading = Flat(point - rp)
+    if heading.Magnitude > 0.1 then AH.Dir = heading.Unit end
+    return point
+end
+-- Ending up in front of the Beast (inside its view cone, near it) is the
+-- worst place to run to: it only has to keep walking forward. Live: after
+-- opening a door / being freed / at a lever or computer, AutoHide set off
+-- across the Beast's front as it came on.
+function AH.FrontPenalty(point, bp)
+    local e = AH.Last
+    local look = e and e.look and Flat(e.look)
+    if not (look and look.Magnitude > 0.1 and bp) then return 0 end
+    local to = Flat(point - bp)
+    local d = to.Magnitude
+    if d < 0.5 or d > 30 then return 0 end
+    local front = look.Unit:Dot(to.Unit)
+    if front <= 0.3 then return 0 end
+    return (front - 0.3) * 18 * (1 - d / 30)
+end
 function AH.Steer(rp, bp, bvel, feetY, juke)
     local pred = bp
     if bvel then
@@ -15852,6 +15946,7 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                     + (endY and math.abs(endY - feetY) >= 3 and 6 or 0)
                     + (run >= full and 8 or 0)
                     + math.max(dir:Dot(forward), 0) * 6
+                    - AH.FrontPenalty(point, bp)
                     - ((AH.VaultCommit and os.clock() < AH.VaultCommit.untilAt
                         and dir:Dot(AH.VaultCommit.dir) < 0) and 20 or 0)
                     + math.max(dir:Dot(weave), 0) * 5
@@ -16845,6 +16940,7 @@ function AH.Go(tok)
     local lastPos, lastChk, stuckN = nil, os.clock(), 0
     local trapForward, deadEndState = nil, {}
     local jukeState, vaultState, doorState, wasJuking = {}, {}, {}, false
+    local orbitState = {}
     local oscFlips, oscDir = {}, nil
     -- Keep the previous flight heading across a quick restart (danger can
     -- blink off/on); a fresh pick every restart ran back and forth in the open.
@@ -16886,7 +16982,10 @@ function AH.Go(tok)
         -- from a doorway/window halfway through its crossing.
         local drop = AH.ActiveDrop(tok, hum, root) and AH.DropAim(tok, hum, root, e.pos, e.vel, feetY, AH.Dir, e.danger)
             or nil
-        local vault = not drop
+        -- Orbit juke round a Beast that closes in on us (user's own move).
+        local orbit = not drop and not (vaultState.lane or doorState.lane)
+            and AH.OrbitAim(rp, e, feetY, orbitState) or nil
+        local vault = not drop and not orbit
                 and vaultState.lane
                 and AH.VaultAim(rp, e.pos, e.vel, feetY, vaultState, AH.Dir, e.danger)
             or nil
@@ -16898,17 +16997,17 @@ function AH.Go(tok)
                 and jukeState.aim
                 and AH.JukeAim(rp, e.pos, e.vel, feetY, jukeState, AH.Dir, e.danger)
             or nil
-        if not (drop or vault or door or burst) then
+        if not (orbit or drop or vault or door or burst) then
             drop = AH.DropAim(tok, hum, root, e.pos, e.vel, feetY, AH.Dir, e.danger)
             vault = not drop and AH.VaultAim(rp, e.pos, e.vel, feetY, vaultState, AH.Dir, e.danger) or nil
             door = not (drop or vault) and AH.OpenDoorAim(rp, e.pos, feetY, doorState, AH.Dir, e.danger) or nil
             burst = not (drop or vault or door) and AH.JukeAim(rp, e.pos, e.vel, feetY, jukeState, AH.Dir, e.danger)
                 or nil
         end
-        local endedBurst = wasJuking and not (drop or vault or door or burst)
-        wasJuking = drop ~= nil or vault ~= nil or door ~= nil or burst ~= nil
-        if drop or vault or door or burst then
-            aim, lastSteer, trapN = drop or vault or door or burst, now, 0
+        local endedBurst = wasJuking and not (orbit or drop or vault or door or burst)
+        wasJuking = orbit ~= nil or drop ~= nil or vault ~= nil or door ~= nil or burst ~= nil
+        if orbit or drop or vault or door or burst then
+            aim, lastSteer, trapN = orbit or drop or vault or door or burst, now, 0
         elseif e.pos and (endedBurst or not aim or now - lastSteer > every or Flat(aim - rp).Magnitude < 3) then
             local previousDir = AH.Dir
             lastSteer = now
@@ -16964,7 +17063,10 @@ function AH.Go(tok)
                 local crossing = drop
                     or vault and flight and flight.token == tok and hum.FloorMaterial == Enum.Material.Air
                 if not crossing then
-                    local kind, sill = FH.Profile(rp.X, rp.Z, dir, feetY, 3.4)
+                    -- Look further ahead at speed so low props are hopped
+                    -- in stride instead of run into (lost speed, caught).
+                    local reach = math.clamp(Flat(root.AssemblyLinearVelocity).Magnitude * 0.3, 3.4, 5.5)
+                    local kind, sill = FH.Profile(rp.X, rp.Z, dir, feetY, reach)
                     if kind == "jump" or kind == "jump2" then
                         jumpKind, jumpSill = kind, sill
                     elseif kind == "wall" or kind == "door" then
@@ -16988,7 +17090,7 @@ function AH.Go(tok)
             -- a far steer into the wall and a short opposite retreat in room
             -- corners). Three reversals in 1.5 s -> leave by a real route
             -- (through the doorway to open space) instead of shaking in place.
-            if aim and not (drop or vault or door) then
+            if aim and not (orbit or drop or vault or door) then
                 local heading = Flat(aim - rp)
                 if heading.Magnitude > 0.5 then
                     heading = heading.Unit
@@ -17043,7 +17145,22 @@ function AH.Go(tok)
             if not drop and hum.FloorMaterial ~= Enum.Material.Air and now - lastChk >= 0.18 then
                 local moved = lastPos and Flat(rp - lastPos).Magnitude or 99
                 lastPos, lastChk = rp, now
-                if moved < 0.55 then
+                -- Slowed by something low in front (box, bench, rail): hop it
+                -- and keep the heading rather than turning away.
+                local hopped = false
+                if moved < 1.6 and dv.Magnitude > 0.5 then
+                    local fwd = dv.Unit
+                    local low = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.9, rp.Z), fwd * 3, rayParams)
+                    local high = Workspace:Raycast(Vector3.new(rp.X, feetY + 4.2, rp.Z), fwd * 4, rayParams)
+                    if low and not high and low.Normal.Y < 0.6 and not AH.ComputerAhead(rp, fwd, 3, feetY)
+                        and FH.NormalJump(hum) then
+                        hopped = true
+                        if FH.Diag then FH.Diag("evade", "hop-low-obstacle") end
+                    end
+                end
+                if hopped then
+                    stuckN = 0
+                elseif moved < 0.55 then
                     stuckN = stuckN + 1
                     if dv.Magnitude > 0.5 then FH.AddBad(rp + dv.Unit * 3, 6) end
                     AH.Dir = nil
@@ -17738,6 +17855,18 @@ function AR.ThreatPreempts()
     local threat = AH.Eval()
     local near = threat.danger and threat.pos and root and Flat(threat.pos - root.Position).Magnitude <= 18
     if now - latch.last < 2.5 or near and now - latch.since < 5 then return true end
+    -- The Beast still stands between us and the pod (live: rescue -> flee
+    -- -> rescue every ~3 s, each hand-back turning us straight back at the
+    -- Beast's front). While AutoHide is still running from it, wait (12 s cap).
+    if threat.danger and threat.pos and root and info and info.trig and info.trig.Parent
+        and now - latch.since < 12 then
+        local toBeast = Flat(threat.pos - root.Position)
+        local toPod = Flat(info.trig.Position - root.Position)
+        if toBeast.Magnitude <= 30 and toPod.Magnitude > 0.5 and toBeast.Magnitude > 0.5
+            and toBeast.Magnitude < toPod.Magnitude + 6 and toBeast.Unit:Dot(toPod.Unit) > 0.4 then
+            return true
+        end
+    end
     AR.PreemptLatch = nil
     return false
 end

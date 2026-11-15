@@ -1144,3 +1144,24 @@ from the Round 30b version, nothing else:
   server before the round ended, and the round was only committed at its
   end. Now a round qualifies after 10 s inside (from its start) and then
   streams to the file live; teleports flush it.
+
+## Round 45 (videos + Workspace_3)
+
+- Video (user's own play, Beast head-on in a corridor): at ~6-8 studs the
+  player sidesteps and runs round the Beast about half a circle, swings
+  back the other way, then breaks off behind it (where it came from).
+  AH.OrbitAim reproduces it: starts for a Beast 4-11 studs away, facing us
+  (dot > 0.6) and closing (> 4 studs/s); side with a clear lane (random
+  first); radius clamp(dist, 6, 9); phase 1 ~140-190 deg (<= 1.4 s), phase 2
+  the other way ~70-120 deg (<= 0.9 s); then AH.Dir = behind the Beast;
+  4-6 s cooldown; aborts under 3 or over 16 studs, or a blocked lane.
+  Runs before vault/door/juke picks; the oscillation guard ignores it.
+- AutoHide speed loss on low props: profile look-ahead scales with speed
+  (3.4-5.5 studs); when slowed (< ~9 studs/s) by something low with clear
+  head room (not a computer desk), hop it and keep the heading.
+- AH.FrontPenalty: steering points inside the Beast's view cone near it
+  cost up to 18 (after doors, levers, computers, pod rescue).
+- Workspace_3 (030658 3168-3200): rescue -> flee -> rescue every ~3 s, each
+  hand-back turning straight back at the Beast. AR.ThreatPreempts now keeps
+  the hand-over while AutoHide still flees and the Beast (<= 30 studs) is
+  between us and the pod (12 s cap). Compile-checked only.
