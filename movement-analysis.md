@@ -1183,3 +1183,25 @@ from the Round 30b version, nothing else:
   the Beast's distance to them; any part added to the Beast named like a
   hit box is measured (distance + half size). The largest + 0.5 is that
   Beast's reach (cap 16); the orbit juke uses it from then on.
+
+## Round 46
+
+- Exit lever: watch-back turn removed entirely (always faces the lever).
+- AutoTroll "front" mode (no door spam): stands TR.FrontLift = 1.5 studs
+  higher.
+- Hack spots: the three ComputerTrigger boxes at the desk edges are the
+  spots. A free one is picked at random (reachable first); occupied ones
+  skipped (all three taken: go elsewhere, as before); the avatar steps into
+  the box centre (not its outer edge) and faces the computer before the
+  press.
+- Rescue standing at a wall next to the pod: FH.PodRouteGoal's nearest-face
+  point must now also see the pod from head height; otherwise a side that
+  sees it is used.
+- AutoHide dead end: AH.PropHop - hop (double jump when the top is above a
+  single jump) onto a prop/ledge within 5 studs with head room, preferring
+  the side away from the Beast, before the old dead-end exit.
+- Orbit juke starts more readily: Beast facing dot >= 0.4, closing >= 2
+  studs/s, up to max(12, radius + 4) studs.
+- Workspace_3 door incidents were all E-holds (hacking/opening), not
+  doorway pacing; doorway hesitation not pinned down in this data.
+  Compile-checked only.

@@ -158,6 +158,7 @@ local TR = {
     Key = nil,
     FrontDistance = 2.4,
     FrontOnlyDistance = 2.4,
+    FrontLift = 1.5, -- no-door front mode: stand this much higher (user request)
     CollisionParts = {},
     CollisionChar = nil,
     CollisionAt = 0,
@@ -3688,7 +3689,9 @@ function FH.ComputerContact(token, comp, trig, stopped)
         else
             Follow.Release(token)
             holding = false
-            local goal = FH.ContactGoal(trig, root.Position, 0.2)
+            -- Step right into the hack spot (the trigger box against the desk
+            -- edge), not just its outer boundary.
+            local goal = Vector3.new(trig.Position.X, root.Position.Y, trig.Position.Z)
             FH.SetContactApproach(token, hum, root, trig, comp, goal, "computer")
             if not FH.Move(token, hum, goal) then return finish("lost") end
             -- Pressing into an invisible barrier by the desk (live): give up
@@ -12488,8 +12491,16 @@ function FH.PodRouteGoal(trig, position)
         end
         point = trig.CFrame:PointToWorldSpace(Vector3.new(x, 0, z))
     end
-    local ground, floor = FH.Ground(Vector3.new(point.X, trig.Position.Y, point.Z), FH.PodRay(trig))
-    if floor and floor.Normal.Y > 0.6 and math.abs(ground.Y - trig.Position.Y) <= 4.5 then return ground end
+    local params = FH.PodRay(trig)
+    local ground, floor = FH.Ground(Vector3.new(point.X, trig.Position.Y, point.Z), params)
+    -- The nearest face must also see the pod: a trigger box reaching
+    -- through a wall put that face on our side of the wall, and the rescue
+    -- stood in front of the wall right next to the pod (user report).
+    local eye = ground and Vector3.new(ground.X, ground.Y + 2, ground.Z)
+    if floor and floor.Normal.Y > 0.6 and math.abs(ground.Y - trig.Position.Y) <= 4.5
+        and not Workspace:Raycast(eye, trig.Position - eye, params) then
+        return ground
+    end
     -- A nearest face can overhang a lower floor. Choose a supported face at
     -- the target elevation instead of quietly routing underneath the capsule.
     local candidates = FH.PodApproach(trig, position)
@@ -14240,7 +14251,8 @@ function FH.ExitRoute(token, state, abort)
         local gainAt, best, reachedAt, sawLow = os.clock(), -1, nil, false
         -- 65 % of holds: stand with our back to the gate, watching the room
         -- for the Beast (body facing only; the hold itself is unchanged).
-        local watchBack = math.random() < 0.65
+        -- Watch-back turn removed (user request): always face the lever.
+        local watchBack = false
         local autoRotate
         local facedLever = false
         local lastGainOrPress = os.clock()
@@ -14655,9 +14667,13 @@ function Follow.Main(token, player)
                 reachable[t] = math.abs(t.Position.Y - mp.Y) < Follow.MaxDY and FH.ApproachClear(mp, t.Position, comp)
             end
         end
+        -- One of the free hack spots at random (user rule: the three spots
+        -- at the desk edges, pick any free one), reachable ones first.
+        local roll = {}
+        for _, t in ipairs(free) do roll[t] = math.random() end
         table.sort(free, function(a, b)
             if reachable[a] ~= reachable[b] then return reachable[a] end
-            return (a.Position - mp).Magnitude < (b.Position - mp).Magnitude
+            return roll[a] < roll[b]
         end)
         return free
     end
@@ -15940,7 +15956,7 @@ function AH.OrbitAim(rp, e, feetY, state)
         local reach = AH.BeastReach(e.beastRoot)
         if reach > 9 then return nil end
         local radius = math.max(math.clamp(dist, 6, 9), reach + 3)
-        if dist > math.max(11, radius + 3) or dist < reach + 1 or look:Dot(-rel.Unit) < 0.6 or closing < 4 then
+        if dist > math.max(12, radius + 4) or dist < reach + 1 or look:Dot(-rel.Unit) < 0.4 or closing < 2 then
             return nil
         end
         local first = math.random() < 0.5 and 1 or -1
@@ -16710,6 +16726,43 @@ function AH.DeadEndExit(tok, forward, state)
 end
 -- A short corner retreat needs a supported full-width side/back lane. Only
 -- a real jumpable obstacle requests a jump; walls never trigger one.
+-- Dead end: hop (double jump if needed) up onto a nearby prop/ledge so
+-- the Beast cannot pin us in the corner; steering carries on from up there
+-- (off the far side, or back down past the Beast).
+function AH.PropHop(rp, bp, feetY)
+    local hum = GetHumanoid()
+    if not hum then return nil end
+    local single, double = FH.NativeJumpLimits(hum)
+    local away = bp and Flat(rp - bp) or Vector3.zero
+    away = away.Magnitude > 0.1 and away.Unit or nil
+    local best, bestScore, bestKind, bestH
+    for i = 0, 11 do
+        local a = i * math.pi / 6
+        local dir = Vector3.new(math.cos(a), 0, math.sin(a))
+        local low = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.8, rp.Z), dir * 5, rayParams)
+        if low and low.Normal.Y < 0.6 and not FH.DoorOf(low.Instance)
+            and not AH.ComputerAhead(rp, dir, 5, feetY) then
+            local over = low.Position + dir * 1.2
+            local top = Workspace:Raycast(Vector3.new(over.X, feetY + double + 1.5, over.Z),
+                Vector3.new(0, -(double + 1.5), 0), rayParams)
+            local h = top and top.Normal.Y > 0.6 and top.Position.Y - feetY
+            if h and h > 1.5 and h <= double then
+                local head = Workspace:Raycast(top.Position + Vector3.new(0, 0.2, 0),
+                    Vector3.new(0, Follow.BodyH + 0.3, 0), rayParams)
+                local path = Workspace:Raycast(Vector3.new(rp.X, top.Position.Y + 1.5, rp.Z), dir * (low.Distance + 1.2), rayParams)
+                if not head and not path then
+                    local score = (away and dir:Dot(away) * 4 or 0) - low.Distance - h * 0.3
+                    if bp and Flat(top.Position - bp).Magnitude < 4 then score = score - 20 end
+                    if not bestScore or score > bestScore then
+                        best, bestScore = Vector3.new(top.Position.X, top.Position.Y + 3, top.Position.Z), score
+                        bestKind, bestH = h > single and "jump2" or "jump", h
+                    end
+                end
+            end
+        end
+    end
+    return best, bestKind, bestH
+end
 function AH.CornerAim(rp, bp, feetY, forward)
     if not bp then return nil end
     forward = forward and Flat(forward) or Flat(rp - bp)
@@ -17160,7 +17213,18 @@ function AH.Go(tok)
         if trapN >= 1 then
             trapN, aim = 0, nil
             AH.Dir = nil
-            local escaped = AH.DeadEndExit(tok, trapForward, deadEndState)
+            -- Dead end: first try hopping up onto a prop/ledge (double jump
+            -- when it is that high), like a player escaping a corner.
+            local hopPoint, hopKind, hopH = AH.PropHop(rp, e.pos, feetY)
+            local escaped
+            if hopPoint and FH.Move(tok, hum, hopPoint) and FH.Motion and FH.Motion.token == tok then
+                FH.TryJump(hum, root, hopPoint, feetY, hopKind, hopH, tok)
+                aim, lastSteer = hopPoint, os.clock()
+                if FH.Diag then FH.Diag("evade", "dead-end-prop-hop") end
+                escaped = true
+            else
+                escaped = AH.DeadEndExit(tok, trapForward, deadEndState)
+            end
             if escaped == false then
                 local liveHum, liveRoot = GetHumanoid(), RootNow()
                 if liveHum and liveRoot and TokOK(tok) then
@@ -18499,6 +18563,7 @@ function TR.TargetLoop(token)
         end
         local distance = TR.Mode == "front" and TR.FrontOnlyDistance or TR.FrontDistance
         local pos = targetRoot.Position + forward * distance
+        if TR.Mode == "front" then pos = pos + Vector3.new(0, TR.FrontLift or 1.5, 0) end
         if not TR.ReturnRoot then
             TR.ReturnRoot, TR.ReturnFrame = root, root.CFrame
         end
