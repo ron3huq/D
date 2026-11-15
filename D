@@ -11079,6 +11079,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     end
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     local stairHopAt = 0
+    local wallSeenAt
     while alive() do
         if abort and abort() then return finish("abort", false) end
         if maxTime and os.clock() - startT > maxTime then return finish("timeout", true) end
@@ -12337,7 +12338,19 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 continue
             end
         end
+        -- A route leg brushing a small prop/barrier while we still run at
+        -- speed is not a blocked route (live: path <-> local steering flipped
+        -- 12-37 times a minute in cluttered rooms). Only drop the route when
+        -- the hit persists 0.3 s or we have actually slowed down.
+        if routeProgress and not flying and (kind == "wall" or kind == "door") and mode == "path" then
+            local speed = Flat(root.AssemblyLinearVelocity).Magnitude
+            wallSeenAt = wallSeenAt or now
+            if speed > 10 and now - wallSeenAt < 0.3 then kind = nil end
+        elseif kind ~= "wall" and kind ~= "door" then
+            wallSeenAt = nil
+        end
         if routeProgress and not flying and (kind == "wall" or kind == "door") then
+            wallSeenAt = nil
             FH.RejectLane(token, hum, aim)
             -- Native paths can become blocked without a Path.Blocked signal.
             -- Reject the collision aim now and keep walking a verified local lane.
@@ -15839,6 +15852,8 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                     + (endY and math.abs(endY - feetY) >= 3 and 6 or 0)
                     + (run >= full and 8 or 0)
                     + math.max(dir:Dot(forward), 0) * 6
+                    - ((AH.VaultCommit and os.clock() < AH.VaultCommit.untilAt
+                        and dir:Dot(AH.VaultCommit.dir) < 0) and 20 or 0)
                     + math.max(dir:Dot(weave), 0) * 5
                 candidates[#candidates + 1] = { point = point, run = run, dir = dir, score = score }
             end
@@ -16151,6 +16166,9 @@ function AH.VaultAim(rp, bp, bvel, feetY, state, forward, danger)
     state.nextAt = state.untilAt + 0.35
     state.skipInstance, state.skipUntil = best.instance, now + 4
     AH.Dir = best.dir
+    -- After the vault keep going the same way a moment (live: landed and
+    -- turned straight back over the same window/rail).
+    AH.VaultCommit = { dir = best.dir, untilAt = state.untilAt + 0.8 }
     return best.point
 end
 

@@ -1125,3 +1125,15 @@ from the Round 30b version, nothing else:
 - stall-recorder v2: saves only rounds really played (from start, 30 s+
   inside); continuous trail, per-cell map shape scans, map part inventory.
   Compile-checked only.
+
+## Round 44 (Workspace_2: 7 played rounds, recorder v2, all with D)
+
+- Farm/rescue walks switched route <-> local steering 4-37 times a minute
+  (cluttered rooms: Abandoned Prison spawn props, Barriers.Barrier clip
+  walls). Cause: one profile ray seeing "wall" on a route leg dropped the
+  whole route at once. Now, in path mode, a wall sighting while still
+  running > 10 studs/s is ignored for up to 0.3 s; the route is dropped only
+  if it persists or we really slowed.
+- AutoHide vaulted a window/rail and turned straight back after landing
+  (162256 at 1972). AH.VaultCommit: for the vault and 0.8 s after, headings
+  back across it cost -20 in AH.Steer. Compile-checked only.
