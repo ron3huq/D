@@ -1177,3 +1177,9 @@ from the Round 30b version, nothing else:
   present; otherwise learned per Beast: each time we are knocked down
   (ragdoll), the Beast's distance + 0.5 raises its reach for the round.
   Default 6.5 (orbit radius 9.5); over 9: no orbit, just run.
+
+- Hammer reach measured live (AH.ReachWatchStart, 10 Hz, match only):
+  every knock-down of any survivor (ragdoll rising edge, same floor) records
+  the Beast's distance to them; any part added to the Beast named like a
+  hit box is measured (distance + half size). The largest + 0.5 is that
+  Beast's reach (cap 16); the orbit juke uses it from then on.

@@ -15825,6 +15825,72 @@ function AH.BeastReach(beastRoot)
     AH.ReachCache = { root = beastRoot, at = now, reach = reach }
     return reach
 end
+-- Measure the Beast's real hit range during the round: every time anyone
+-- (us or a teammate) is knocked down, the Beast's distance to them at that
+-- moment is a measured hit; any part that appears on the Beast named like
+-- a hit box while it swings is measured too. The largest measurement (+0.5)
+-- is this Beast's reach.
+function AH.NoteReach(char, d)
+    if not char or not d or d > 16 or d < 1 then return end
+    local old = AH.ReachLearned[char] or 0
+    if d + 0.5 > old then
+        AH.ReachLearned[char] = d + 0.5
+        AH.ReachCache = nil
+        if FH.Diag then FH.Diag("evade", ("hammer-reach %.1f"):format(d + 0.5)) end
+    end
+end
+function AH.ReachWatchStart()
+    if AH.ReachWatching then return end
+    AH.ReachWatching = true
+    local wasDown = setmetatable({}, { __mode = "k" })
+    local hooked = setmetatable({}, { __mode = "k" })
+    task.spawn(function()
+        while not unloaded do
+            task.wait(0.1)
+            pcall(function()
+                if not FH.MatchOn() then return end
+                local beastRoot
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if FH.True(pl, FH.BEASTN) then
+                        beastRoot = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+                        break
+                    end
+                end
+                if not beastRoot then return end
+                local beastChar = beastRoot.Parent
+                if not hooked[beastChar] then
+                    hooked[beastChar] = true
+                    beastChar.DescendantAdded:Connect(function(o)
+                        if o:IsA("BasePart") then
+                            local name = string.lower(o.Name)
+                            if name:find("hitbox", 1, true) or name:find("hit", 1, true) and name:find("box", 1, true)
+                                or name == "hit" then
+                                task.wait()
+                                local r = beastChar:FindFirstChild("HumanoidRootPart")
+                                if r and o.Parent then
+                                    AH.NoteReach(beastChar, Flat(o.Position - r.Position).Magnitude + o.Size.Magnitude * 0.5)
+                                end
+                            end
+                        end
+                    end)
+                end
+                for _, pl in ipairs(Players:GetPlayers()) do
+                    if not FH.True(pl, FH.BEASTN) then
+                        local down = FH.True(pl, FH.RAG)
+                        if down and not wasDown[pl] then
+                            local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+                            if r and math.abs(r.Position.Y - beastRoot.Position.Y) <= 6 then
+                                AH.NoteReach(beastChar, Flat(r.Position - beastRoot.Position).Magnitude)
+                            end
+                        end
+                        wasDown[pl] = down
+                    end
+                end
+            end)
+        end
+        AH.ReachWatching = false
+    end)
+end
 -- Called when we are knocked down: remember how far the Beast was.
 function AH.LearnReach()
     local e = AH.Last
@@ -26959,6 +27025,7 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
 end))
 -- Mapping runs independently of movement and stops with the script.
 FH.Nav.Start()
+pcall(AH.ReachWatchStart)
 -- Bật sẵn khi nạp script: AutoFarm, AutoHide, AutoHelp, ESP Player.
 task.delay(1, function()
     if unloaded then return end
