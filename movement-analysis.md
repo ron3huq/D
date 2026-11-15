@@ -1165,3 +1165,9 @@ from the Round 30b version, nothing else:
   hand-back turning straight back at the Beast. AR.ThreatPreempts now keeps
   the hand-over while AutoHide still flees and the Beast (<= 30 studs) is
   between us and the pod (12 s cap). Compile-checked only.
+
+- Orbit juke respects the hammer: AH.BeastReach measures the farthest
+  point of the Beast's held tool / hammer / hitbox parts from its root
+  (accessories ignored, cached 2 s, default 6, cap 16). Orbit radius =
+  max(clamp(dist, 6, 9), reach + 3); start only beyond reach + 1 studs;
+  stop inside reach + 0.5; a hammer reaching past 9 studs: no orbit, run.

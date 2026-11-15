@@ -15601,6 +15601,7 @@ function AH.Eval()
                         if d < res.dist then
                             res.dist, res.pos, res.vel = d, position, br.AssemblyLinearVelocity
                             res.look = br.CFrame.LookVector
+                            res.beastRoot = br
                         end
                         local sameFloor = math.abs(position.Y - mr.Position.Y) <= Follow.MaxDY + 1.5
                         local pursuing = sameFloor and AH.Pursuing(br, mr, motion.observedVelocity)
@@ -15786,6 +15787,33 @@ function AH.ComputerAhead(rp, dir, run, feetY)
     end
     return nil
 end
+-- How far the Beast's hammer reaches from its body (bigger, premium hammers
+-- have wider hit boxes): farthest point of any part of a held Tool (and of
+-- parts named like a hammer/hitbox) from the Beast's root. Cached 2 s.
+function AH.BeastReach(beastRoot)
+    if not beastRoot then return 6 end
+    local now = os.clock()
+    local c = AH.ReachCache
+    if c and c.root == beastRoot and now - c.at < 2 then return c.reach end
+    local reach = 6
+    local char = beastRoot.Parent
+    if char then
+        for _, o in ipairs(char:GetDescendants()) do
+            if o:IsA("BasePart") and o ~= beastRoot and not o:FindFirstAncestorOfClass("Accessory") then
+                local name = string.lower(o.Name)
+                local inTool = o:FindFirstAncestorOfClass("Tool") ~= nil
+                if inTool or name:find("hammer", 1, true) or name:find("hitbox", 1, true)
+                    or name:find("handle", 1, true) then
+                    local far = (Flat(o.Position - beastRoot.Position)).Magnitude + o.Size.Magnitude * 0.5
+                    if far > reach then reach = far end
+                end
+            end
+        end
+    end
+    reach = math.min(reach, 16)
+    AH.ReachCache = { root = beastRoot, at = now, reach = reach }
+    return reach
+end
 -- Orbit juke (from the user's own play, video): when the Beast comes at us
 -- and gets close (about 5-11 studs), step to one side and run round it
 -- (about half a circle) at a steady radius, then switch and swing back the
@@ -15817,8 +15845,14 @@ function AH.OrbitAim(rp, e, feetY, state)
         if now < (state.cooldown or 0) then return nil end
         -- Start only for a Beast closing in on us, facing us, 5-11 studs off.
         local closing = e.vel and Flat(e.vel):Dot(-rel.Unit) or 0
-        if dist > 11 or dist < 4 or look:Dot(-rel.Unit) < 0.6 or closing < 4 then return nil end
-        local radius = math.clamp(dist, 6, 9)
+        -- Keep outside the hammer: radius = its reach + 3 studs. A hammer
+        -- reaching past 9 studs is too wide to circle: just run.
+        local reach = AH.BeastReach(e.beastRoot)
+        if reach > 9 then return nil end
+        local radius = math.max(math.clamp(dist, 6, 9), reach + 3)
+        if dist > math.max(11, radius + 3) or dist < reach + 1 or look:Dot(-rel.Unit) < 0.6 or closing < 4 then
+            return nil
+        end
         local first = math.random() < 0.5 and 1 or -1
         local side
         for _, sd in ipairs({ first, -first }) do
@@ -15843,7 +15877,7 @@ function AH.OrbitAim(rp, e, feetY, state)
         AH.KeepDir = { dir = -look, at = now }
         return nil
     end
-    if dist < 3 or dist > 16 then return finish() end
+    if dist < math.max(3, AH.BeastReach(e.beastRoot) + 0.5) or dist > 16 + state.radius - 6 then return finish() end
     if state.phase == 1 and (state.turned >= state.swingTarget or now - state.phaseAt > 1.4) then
         -- Swing back the other way (shorter), unless that side is shut.
         state.phase, state.side, state.turned, state.phaseAt = 2, -state.side, 0, now
