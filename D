@@ -15539,7 +15539,10 @@ function AH.SeerActive(player)
 end
 function AH.Eval()
     local now = os.clock()
-    if FH.True(LocalPlayer, FH.RAG) then AH.HitAt = now end
+    if FH.True(LocalPlayer, FH.RAG) then
+        if not AH.HitAt or now - AH.HitAt > 2 then pcall(AH.LearnReach) end
+        AH.HitAt = now
+    end
     local map, round, rescue = GetCurrentMap(), FH.MatchOn(), AH.RescueContext()
     if AH.ThreatMap ~= map or AH.ThreatRound ~= round then
         AH.BeastMotion = {}
@@ -15787,32 +15790,53 @@ function AH.ComputerAhead(rp, dir, run, feetY)
     end
     return nil
 end
--- How far the Beast's hammer reaches from its body (bigger, premium hammers
--- have wider hit boxes): farthest point of any part of a held Tool (and of
--- parts named like a hammer/hitbox) from the Beast's root. Cached 2 s.
+-- How far the Beast's hammer really hits. Its look says nothing (the user:
+-- a hammer's hit box is not its size), so: a numeric range/hitbox/radius
+-- value or attribute on the held tool if the game exposes one, otherwise
+-- what we learn - each time we get knocked down, the Beast's distance at
+-- that moment (+0.5) raises this Beast's reach for the rest of the round.
+-- Default 6.5 studs.
+AH.ReachLearned = setmetatable({}, { __mode = "k" })
 function AH.BeastReach(beastRoot)
-    if not beastRoot then return 6 end
+    if not beastRoot then return 6.5 end
     local now = os.clock()
     local c = AH.ReachCache
     if c and c.root == beastRoot and now - c.at < 2 then return c.reach end
-    local reach = 6
+    local reach = 6.5
     local char = beastRoot.Parent
-    if char then
-        for _, o in ipairs(char:GetDescendants()) do
-            if o:IsA("BasePart") and o ~= beastRoot and not o:FindFirstAncestorOfClass("Accessory") then
-                local name = string.lower(o.Name)
-                local inTool = o:FindFirstAncestorOfClass("Tool") ~= nil
-                if inTool or name:find("hammer", 1, true) or name:find("hitbox", 1, true)
-                    or name:find("handle", 1, true) then
-                    local far = (Flat(o.Position - beastRoot.Position)).Magnitude + o.Size.Magnitude * 0.5
-                    if far > reach then reach = far end
-                end
-            end
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    local function consider(name, value)
+        name = string.lower(tostring(name))
+        if type(value) == "number" and value >= 3 and value <= 25
+            and (name:find("range", 1, true) or name:find("hitbox", 1, true) or name:find("radius", 1, true)
+                or name:find("reach", 1, true)) then
+            reach = math.max(reach, value)
         end
     end
+    if tool then
+        for k, v in pairs(tool:GetAttributes()) do consider(k, v) end
+        for _, o in ipairs(tool:GetDescendants()) do
+            if o:IsA("NumberValue") or o:IsA("IntValue") then consider(o.Name, o.Value) end
+        end
+    end
+    local learned = char and AH.ReachLearned[char]
+    if learned then reach = math.max(reach, learned) end
     reach = math.min(reach, 16)
     AH.ReachCache = { root = beastRoot, at = now, reach = reach }
     return reach
+end
+-- Called when we are knocked down: remember how far the Beast was.
+function AH.LearnReach()
+    local e = AH.Last
+    local br = e and e.beastRoot
+    local mr = RootNow()
+    if not (br and br.Parent and mr) then return end
+    local d = Flat(br.Position - mr.Position).Magnitude
+    if d > 16 then return end
+    local char = br.Parent
+    AH.ReachLearned[char] = math.max(AH.ReachLearned[char] or 0, d + 0.5)
+    AH.ReachCache = nil
+    if FH.Diag then FH.Diag("evade", "learned-hammer-reach") end
 end
 -- Orbit juke (from the user's own play, video): when the Beast comes at us
 -- and gets close (about 5-11 studs), step to one side and run round it

@@ -1171,3 +1171,9 @@ from the Round 30b version, nothing else:
   (accessories ignored, cached 2 s, default 6, cap 16). Orbit radius =
   max(clamp(dist, 6, 9), reach + 3); start only beyond reach + 1 studs;
   stop inside reach + 0.5; a hammer reaching past 9 studs: no orbit, run.
+
+- Hammer reach is not the hammer's size (user). AH.BeastReach now: a
+  numeric range/hitbox/radius/reach attribute or value on the held tool if
+  present; otherwise learned per Beast: each time we are knocked down
+  (ragdoll), the Beast's distance + 0.5 raises its reach for the round.
+  Default 6.5 (orbit radius 9.5); over 9: no orbit, just run.
