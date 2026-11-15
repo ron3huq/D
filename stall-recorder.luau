@@ -135,6 +135,12 @@ R.pending = {}
 local function writeLine(object)
     local line = encode(object)
     if not line then return end
+    -- A qualifying round streams straight to the file, so a server hop or
+    -- teleport right after we are caught / the Beast leaves loses nothing.
+    if R.live then
+        writeRaw(line)
+        return
+    end
     local pend = R.pending
     pend[#pend + 1] = line
     if #pend > 120000 then table.remove(pend, 1) end
@@ -455,13 +461,18 @@ local function step()
         -- Close the previous round: keep it only if we really played it.
         local play = R.play
         if play and play.map ~= "lobby" then
-            if play.fromStart and play.inMap >= 30 then
-                commitPending({ k = "roundEnd", n = R.round, map = play.map, inMap = num(play.inMap),
-                    escaped = play.escaped or nil, caught = play.caught or nil, t = num(now, 2) })
+            local endLine = { k = "roundEnd", n = R.round, map = play.map, inMap = num(play.inMap),
+                escaped = play.escaped or nil, caught = play.caught or nil, t = num(now, 2) }
+            if R.live then
+                writeLine(endLine)
+                flush()
+            elseif play.fromStart and play.inMap >= 10 then
+                commitPending(endLine)
             else
                 dropPending()
             end
         end
+        R.live = false
         local fromStart = map ~= nil and currentRound == "lobby"
         currentRound = mapName
         R.round = (R.round or 0) + 1
@@ -491,6 +502,11 @@ local function step()
         end
         if s.esc then play.escaped = true end
         if s.cap then play.caught = true end
+        -- Played from the start and 10 s inside: from now on save live.
+        if not R.live and play.fromStart and play.inMap >= 10 then
+            commitPending(nil)
+            R.live = true
+        end
     end
     -- Continuous trail (every sample) so the whole movement can be replayed:
     -- position, speed, input direction, state, floor; D's state every 0.5 s.
@@ -623,7 +639,7 @@ local function step()
         lastSummary = now
         writeLine({ k = "summary", t = num(now, 2), utc = os.date("!%H:%M:%S"), counts = R.counts, bytes = R.totalBytes, d = s.d })
     end
-    if now - lastFlush >= 10 then
+    if now - lastFlush >= (R.live and 2 or 10) then
         lastFlush = now
         flush()
     end
@@ -662,7 +678,9 @@ function R.Stop()
     if not R.running then return end
     R.running = false
     local play = R.play
-    if play and play.map ~= "lobby" and play.fromStart and play.inMap >= 30 then
+    if R.live then
+        writeLine({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
+    elseif play and play.map ~= "lobby" and play.fromStart and play.inMap >= 10 then
         commitPending({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
     else
         dropPending()
@@ -694,6 +712,17 @@ end
 print(("[DStallRecorder] chi luu tran thuc su choi -> %s (appendfile=%s, D hook=%s)"):format(
     fileName(), tostring(useAppend), tostring(type(env.D_Snapshot) == "function")))
 
+-- Server hop / teleport: save what we have of a round being played.
+pcall(function()
+    R.connections[#R.connections + 1] = player.OnTeleport:Connect(function()
+        pcall(function()
+            if R.live then
+                writeLine({ k = "teleport", utc = os.date("!%H:%M:%S") })
+                flush()
+            end
+        end)
+    end)
+end)
 R.connections[#R.connections + 1] = Run.Heartbeat:Connect(function()
     local ok, err = pcall(step)
     if not ok then R.lastError = "step: " .. tostring(err) end

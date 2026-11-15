@@ -72,3 +72,11 @@ File có tọa độ map, nên chỉ gửi trực tiếp để phân tích, khô
   - `roundEnd` — map, time inside, escaped/caught.
 - Play normally through every kind of place (stairs, turning stairs,
   windows, rails, drops, vents, narrow rooms, doors) and send the files.
+
+### v2.1
+
+- A round counts once you were in the map from its start and 10 s inside it
+  (was 30 s, judged only when the round ended). From that moment it is
+  written to the file live (flushed every 2 s), so a round that ends early
+  (Beast left, you were caught) or a server hop / teleport right after it
+  is still saved. A `teleport` line marks a hop.

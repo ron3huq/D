@@ -1137,3 +1137,10 @@ from the Round 30b version, nothing else:
 - AutoHide vaulted a window/rail and turned straight back after landing
   (162256 at 1972). AH.VaultCommit: for the vault and 0.8 s after, headings
   back across it cost -20 in AH.Steer. Compile-checked only.
+
+## Recorder v2.1
+
+- Rounds were lost when we were caught or the Beast left: AutoHop changed
+  server before the round ended, and the round was only committed at its
+  end. Now a round qualifies after 10 s inside (from its start) and then
+  streams to the file live; teleports flush it.
