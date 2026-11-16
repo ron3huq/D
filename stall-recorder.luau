@@ -422,8 +422,10 @@ function R.MapScan(map, round)
             size = ok and vec(size) or nil, count = n })
     end)
 end
-local CELL_DIRS = 16
-local CELL_HEIGHTS = { 0.5, 1.8, 3.5, 5.5 }
+-- Lighter (was 16 x 4): the scan runs as we enter new cells, which happens
+-- fast in doorways and gaps - keep it from adding frame time there.
+local CELL_DIRS = 12
+local CELL_HEIGHTS = { 0.5, 1.8, 4.5 }
 function R.CellScan(root, hum)
     local pos = root.Position
     local hip = hum.HipHeight > 0 and hum.HipHeight or 2
@@ -592,7 +594,13 @@ local function step()
         or lastD and lastD.threat
     local withD = chase or now - R.trailD >= 0.2
     if withD then R.trailD = now end
+    -- Frame rate over this sample (fps) and the worst frame (ms): finds lag
+    -- spots (doors, gaps, crowds) in the recording.
+    local fps = R.frameTime > 0 and num(R.frames / R.frameTime) or nil
+    local worst = num((R.frameMax or 0) * 1000)
+    R.frames, R.frameTime, R.frameMax = 0, 0, 0
     writeLine({ k = "s", t = s.t, p = s.p, v = s.v, vy = s.vy, st = s.st, fl = s.fl, mdir = s.mdir,
+        fps = fps, worstMs = worst,
         ws = s.ws, look = vec(flat(root.CFrame.LookVector)), cap = s.cap, esc = s.esc, hack = s.hack,
         crawl = s.crawl, d = withD and s.d or nil })
     -- Map shape around where we go: every new 6x6 stud cell (per floor) gets
@@ -805,7 +813,10 @@ pcall(function()
         end)
     end)
 end)
-R.connections[#R.connections + 1] = Run.Heartbeat:Connect(function()
+R.frames, R.frameTime, R.frameMax = 0, 0, 0
+R.connections[#R.connections + 1] = Run.Heartbeat:Connect(function(dt)
+    R.frames, R.frameTime = R.frames + 1, R.frameTime + (dt or 0)
+    if (dt or 0) > R.frameMax then R.frameMax = dt end
     local ok, err = pcall(step)
     if not ok then
         R.lastError = "step: " .. tostring(err)

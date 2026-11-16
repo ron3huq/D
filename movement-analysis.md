@@ -1314,3 +1314,14 @@ Rescue episodes: 90. Most reach the pod at ~16 studs/s with travel
   turns back to the door. Not fixed yet.
 - Recorder: JSON depth 9 (route waypoint lists were dropped at depth 5).
   Compile-checked only.
+
+## Round 54
+
+- Reversals: of 583 farm/rescue reversals, ~415 happen while following a
+  route or right after the route is dropped for a replan (path -> none ->
+  path within 0.1-0.3 s; local steering takes another heading for those
+  ticks). Now, while a replan is in flight and the last route aim is under
+  0.6 s old, still open and not behind us, we keep walking toward it.
+- Recorder: per-sample fps and worst frame (ms) to locate lag spots; cell
+  scans lighter (12 x 3 rays, was 16 x 4).
+  Compile-checked only.

@@ -11121,6 +11121,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     end
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     local stairHopAt = 0
+    local lastRouteAim, lastRouteAimAt = nil, 0
     local climbWatch
     local keptRoute = false
     local wallSeenAt
@@ -11878,6 +11879,22 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         if not mode then
+            -- Between two routes (replan in flight, < 0.6 s since the last
+            -- route aim): keep walking toward that last route aim while it is
+            -- open, instead of letting local steering pick another heading
+            -- for a few ticks - the to-and-fro at doors, windows and gaps
+            -- (recordings: ~400 reversals right after a route -> none switch).
+            if job and not job.done and lastRouteAim and now - lastRouteAimAt < 0.6 and not flying
+                and Flat(lastRouteAim - rp).Magnitude > 1.5 then
+                local dirKeep = Flat(lastRouteAim - rp).Unit
+                local vNow = Flat(root.AssemblyLinearVelocity)
+                if (vNow.Magnitude < 4 or vNow.Unit:Dot(dirKeep) > 0.2)
+                    and not Workspace:Raycast(Vector3.new(rp.X, feetY + 1.6, rp.Z), dirKeep * 2.5, rayParams) then
+                    FH.Move(token, hum, lastRouteAim)
+                    task.wait(0.03)
+                    continue
+                end
+            end
             -- A breaker walk ends when its point is reached (it used to stand
             -- there until its timer ran out: a standing beat every time).
             if breaker and now < breaker.untilAt and Flat(breaker.aim - rp).Magnitude > 1.5 then
@@ -12509,6 +12526,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = Follow.CenterAim(rp, aim, feetY)
         end
         FH.Move(token, hum, aim, false, nil, preciseCorner)
+        if mode == "path" or mode == "direct" then lastRouteAim, lastRouteAimAt = aim, now end
         -- AutoHelp on stairs: hop up/down them like a player (faster), but
         -- only running straight along the flight (never at an angle into the
         -- side edge), with the next legs in line, away from the goal.
