@@ -14085,7 +14085,9 @@ function FH.ExitRoute(token, state, abort)
             end
             -- On the way to (or starting on) a shut gate while another gate
             -- is already open or being opened by a teammate: go there.
-            if state.door and not nearlyOpen and os.clock() >= (state.otherCheckAt or 0)
+            -- Never while we are holding our own lever (a misread "open" on
+            -- the other gate let go of ours mid-hold).
+            if state.door and not state.opening and not nearlyOpen and os.clock() >= (state.otherCheckAt or 0)
                 and not FH.ExitDoorOpen(state.door, state.center, state.triggers) then
                 state.otherCheckAt = os.clock() + 0.5
                 local mine = FH.ExitTeamSignal(state.door, state.center, state.triggers)
@@ -14335,7 +14337,10 @@ function FH.ExitRoute(token, state, abort)
                 local nowH = os.clock()
                 -- Only with a live progress stat (a time-based hold must not be
                 -- restarted).
-                if hold.on and statSeen and not reachedAt and nowH - lastGainOrPress > 1.1 then
+                -- Disabled: the progress stat does not always track the lever
+                -- (a stale value from the last computer), so this let go of
+                -- the lever every ~1 s and the gate never opened (user report).
+                if false and hold.on and statSeen and not reachedAt and nowH - lastGainOrPress > 1.1 then
                     Follow.Release(token)
                     task.wait(0.05)
                     lastGainOrPress = os.clock()

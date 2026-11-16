@@ -1239,3 +1239,8 @@ from the Round 30b version, nothing else:
 
 - Rolled back Round 49 (eased turns and rescue hop-lines: worse turning at
   doors, more wall hits) and the Round 47 corner-graze rule (wall hits).
+
+- Exit lever let go every ~1 s: the Round 40 re-press used the progress
+  stat, which often still holds a stale value from the last computer, so
+  it released the lever over and over. Re-press disabled. The Round 41
+  "switch to the open gate" check no longer runs while we hold our lever.
