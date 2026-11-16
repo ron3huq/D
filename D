@@ -10938,7 +10938,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 -- for rescue (it ran every 1.5 s for any bend: frame drops,
                 -- and detours through unrelated doors).
                 and len > (rescue and straight * 1.12 + 3 or straight * 1.8 + 12)
-                and straight < (rescue and 130 or 70)
+                -- Rescue: also far pods (live: pod 155 studs away, native route
+                -- 660 studs round the map because closed doors read as walls).
+                and straight < (rescue and 400 or 70)
                 and os.clock() - detourAt > (rescue and 2.5 or 8)
                 and os.clock() - doorFailAt > 5
             then
@@ -11091,6 +11093,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     end
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     local stairHopAt = 0
+    local climbWatch
     local keptRoute = false
     local wallSeenAt
     while alive() do
@@ -11166,6 +11169,38 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         FH.RefreshFilter()
         FH.Tick(hum, root)
         local flying = ownedFlight(hum, root, now)
+        -- Failed climbs (live: hopping at the same ledge/step up to an upper
+        -- floor for seconds, landing back below each time): remember the
+        -- take-off; landing back at the same height within 3 studs twice in
+        -- 10 s marks the spot bad for the planner and replans (stairs).
+        local airborneNow = hum.FloorMaterial == Enum.Material.Air
+        if airborneNow and not climbWatch and root.AssemblyLinearVelocity.Y > 8 then
+            local ahead = mode == "path" and wps and wps[wpi] and wps[wpi].Position or goal
+            climbWatch = { pos = rp, feet = feetY, aim = ahead, at = now }
+        elseif not airborneNow and climbWatch and now - climbWatch.at > 0.25 then
+            local w = climbWatch
+            climbWatch = nil
+            if w.aim and w.aim.Y > w.feet + 1.5 and math.abs(feetY - w.feet) < 1 and Flat(rp - w.pos).Magnitude < 3 then
+                local spot = FH.ClimbFail
+                if spot and spot.token == token and Flat(spot.pos - w.pos).Magnitude < 4 and now - spot.at < 10 then
+                    spot.n, spot.at = spot.n + 1, now
+                else
+                    spot = { token = token, pos = w.pos, n = 1, at = now }
+                    FH.ClimbFail = spot
+                end
+                if spot.n >= 2 then
+                    FH.ClimbFail = nil
+                    local dir = Flat(w.aim - w.pos)
+                    FH.AddBad(dir.Magnitude > 0.5 and w.pos + dir.Unit * 2 or w.aim, 15)
+                    FH.BanDirect = now + 3
+                    if FH.Diag then FH.Diag("walk", "climb-failed-avoid") end
+                    reset()
+                    nextPlan = 0
+                    task.wait(0.03)
+                    continue
+                end
+            end
+        end
         if FH.DiagWalk then
             FH.DiagWalk(token, mode, wps and #wps or 0, wpi, job and not job.done and now - job.at or nil,
                 fails, goal.Y - feetY, flatDist, now - progressAt, opts.rescueJuke ~= nil, goal)
@@ -14088,7 +14123,11 @@ function FH.ExitRoute(token, state, abort)
             -- is already open or being opened by a teammate: go there.
             -- Never while we are holding our own lever (a misread "open" on
             -- the other gate let go of ours mid-hold).
+            -- At most one switch per 15 s, and never to a gate just proven
+            -- shut (live: 183 switches - "open" gate turned out shut, back
+            -- to the first, again and again).
             if state.door and not state.opening and not nearlyOpen and os.clock() >= (state.otherCheckAt or 0)
+                and os.clock() - (state.switchedAt or -math.huge) > 15
                 and not FH.ExitDoorOpen(state.door, state.center, state.triggers) then
                 state.otherCheckAt = os.clock() + 0.5
                 local mine = FH.ExitTeamSignal(state.door, state.center, state.triggers)
@@ -14096,11 +14135,14 @@ function FH.ExitRoute(token, state, abort)
                     if other ~= state.door and IsInWorld(other) and other:IsDescendantOf(state.map) then
                         local c = FH.ExitArea(other)
                         local trigs = c and other:IsA("Model") and FH.Triggers(other) or {}
-                        if c then
+                        local proofShut = FH.ExitClosedProof and FH.ExitClosedProof[other]
+                            and os.clock() < FH.ExitClosedProof[other] + 20
+                        if c and not proofShut then
                             local better = FH.ExitDoorOpen(other, c, trigs)
                                 or (mine == nil and not state.opening and FH.ExitTeamSignal(other, c, trigs) == "opening")
                             if better and not FH.BeastNearPoint(c, 35, 14) then
                                 if FH.Diag then FH.Diag("exit", "switch-to-open-gate") end
+                                state.switchedAt = os.clock()
                                 state.redirect = "other-open"
                                 return true
                             end
@@ -15928,7 +15970,9 @@ end
 -- a hit box while it swings is measured too. The largest measurement (+0.5)
 -- is this Beast's reach.
 function AH.NoteReach(char, d)
-    if not char or not d or d > 16 or d < 1 then return end
+    -- Knock-back throws the victim away before we see the ragdoll: values
+    -- past 12 studs are flight distance, not reach (live: 13-15 recorded).
+    if not char or not d or d > 12 or d < 1 then return end
     local old = AH.ReachLearned[char] or 0
     if d + 0.5 > old then
         AH.ReachLearned[char] = d + 0.5
@@ -15940,6 +15984,7 @@ function AH.ReachWatchStart()
     if AH.ReachWatching then return end
     AH.ReachWatching = true
     local wasDown = setmetatable({}, { __mode = "k" })
+    local lastDist = setmetatable({}, { __mode = "k" })
     local hooked = setmetatable({}, { __mode = "k" })
     task.spawn(function()
         while not unloaded do
@@ -15974,13 +16019,17 @@ function AH.ReachWatchStart()
                 for _, pl in ipairs(Players:GetPlayers()) do
                     if not FH.True(pl, FH.BEASTN) then
                         local down = FH.True(pl, FH.RAG)
-                        if down and not wasDown[pl] then
-                            local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
-                            if r and math.abs(r.Position.Y - beastRoot.Position.Y) <= 6 then
-                                AH.NoteReach(beastChar, Flat(r.Position - beastRoot.Position).Magnitude)
-                            end
+                        local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+                        local d = r and math.abs(r.Position.Y - beastRoot.Position.Y) <= 6
+                            and Flat(r.Position - beastRoot.Position).Magnitude or nil
+                        if down and not wasDown[pl] and d then
+                            -- The distance just before the hit (0.1 s earlier),
+                            -- not after the knock-back flight.
+                            local before = lastDist[pl]
+                            AH.NoteReach(beastChar, before and math.min(before, d) or d)
                         end
                         wasDown[pl] = down
+                        lastDist[pl] = not down and d or nil
                     end
                 end
             end)
@@ -15995,7 +16044,7 @@ function AH.LearnReach()
     local mr = RootNow()
     if not (br and br.Parent and mr) then return end
     local d = Flat(br.Position - mr.Position).Magnitude
-    if d > 16 then return end
+    if d > 12 then return end
     local char = br.Parent
     AH.ReachLearned[char] = math.max(AH.ReachLearned[char] or 0, d + 0.5)
     AH.ReachCache = nil

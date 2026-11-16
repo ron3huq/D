@@ -1253,3 +1253,23 @@ from the Round 30b version, nothing else:
 - Recorder: `ev` and `players` lines, D state every 0.2 s.
 - The console error "LocalPlayerScript:190 TriggerTouch attempt to index nil
   with 'Value'" comes from the game's own script, not from D.
+
+## Round 51 (Workspace 2026-11-16: 27 files, ~110 MB, recorder v2.4)
+
+Rescue episodes: 90. Most reach the pod at ~16 studs/s with travel
+1.2-1.5x the straight distance; the bad ones:
+- 090154 2592: pod 155 studs away, native route 165 waypoints (~660 studs)
+  round the map - closed doors read as walls; the door-route search only ran
+  for pods within 130 studs. Rescue door search now up to 400 studs.
+- 092511 4499-4507 (pod 12.5 studs up): route asked to hop up a ledge,
+  landed back below, route dropped, replanned, same hop - 5 s, then gave
+  up. New climb watch in WalkTo: two take-offs toward a higher waypoint that
+  land back at the same height within 3 studs in 10 s mark the spot bad
+  (FH.AddBad 15 s) and replan (stairs/other way): "climb-failed-avoid".
+- Exit: 183 "switch-to-open-gate" vs 165 "wait-gate-shut" events - ping-pong
+  between a gate misread as open and ours. Switch at most once per 15 s and
+  never to a gate proven shut in the last ~26 s.
+- Hammer reach: measured values 2-15 studs; knock-back flight inflated
+  them. Now the victim's distance 0.1 s before the knock-down (min with the
+  current one) and values over 12 studs are ignored (also for our own hits).
+  Compile-checked only.
