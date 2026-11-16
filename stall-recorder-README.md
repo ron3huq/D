@@ -93,3 +93,16 @@ File có tọa độ map, nên chỉ gửi trực tiếp để phân tích, khô
 - Errors are no longer silent: the first one (and every 500th) is printed
   and written as an `error` line; cell/map scans are isolated so one bad
   scan cannot stop the recording.
+
+### v2.3 (needs the matching D)
+
+- `ev` lines: D's decision log, every event in order since the last line -
+  plan results, accepted routes (all waypoints and jump marks), walk mode
+  changes, shortcuts, door/exit/hack/pod steps, evade jukes, hop/stair
+  decisions - each with D's movement owner at that moment.
+- `players` lines (1 per second in a match): every player's role, position,
+  facing, speed, captured/ragdoll/escaped/crawling and what they are using
+  (computer/exit/pod trigger), plus computers left when the game exposes it.
+- D's state is attached to the trail every 0.2 s (was 0.5 s) and now also
+  carries the walk goal, the motion aim, the target pod and the Beast
+  (position, facing, speed, distance, measured hammer reach).

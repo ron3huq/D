@@ -10607,6 +10607,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
         end
         mode, wps, wpi, wpFull = "path", w, index, full
+        if FH.DiagRoute then pcall(FH.DiagRoute, token, w, index, full, nil) end
         if not restoringRoute then lastRoute = { w = w, full = full, at = os.clock() } end
         if opts.rescueJuke then pendingSteer.retreatOrigin, pendingSteer.verticalLane = nil, nil end
         activePath, laIdx = path, nil
@@ -11167,7 +11168,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         local flying = ownedFlight(hum, root, now)
         if FH.DiagWalk then
             FH.DiagWalk(token, mode, wps and #wps or 0, wpi, job and not job.done and now - job.at or nil,
-                fails, goal.Y - feetY, flatDist, now - progressAt, opts.rescueJuke ~= nil)
+                fails, goal.Y - feetY, flatDist, now - progressAt, opts.rescueJuke ~= nil, goal)
         end
         local attempt = rescueControl and rescueControl.attempt
         if attempt then
@@ -26816,14 +26817,40 @@ function DG.Owner(token)
     if token == Follow.Token then return "follow/" .. (Follow.AutoFarm and "farm" or "target") end
     return "stale-number"
 end
+-- Every decision note also goes into an event log (read and cleared by the
+-- recorder through D_Events), so the file shows each choice in order: plan
+-- results, shortcuts, door/exit/hack steps, evade jukes, route changes.
+DG.Events = {}
+function DG.Event(kind, value)
+    local list = DG.Events
+    list[#list + 1] = { t = DG.Round(os.clock(), 2), k = kind, v = value, owner = DG.Owner(FH.Motion and FH.Motion.token) }
+    if #list > 600 then table.remove(list, 1) end
+end
 function DG.Note(kind, value)
     if not DG.Active then return end
     DG.Notes[kind] = { v = value, at = os.clock() }
+    DG.Event(kind, tostring(value))
+end
+-- Accepted route: waypoints (rounded, max 60), jump marks, start index.
+FH.DiagRoute = function(token, w, index, full, goal)
+    if not DG.Active then return end
+    local pts = {}
+    for i = 1, math.min(#w, 60) do
+        local p = w[i].Position
+        pts[#pts + 1] = { DG.Round(p.X), DG.Round(p.Y), DG.Round(p.Z),
+            w[i].Action == Enum.PathWaypointAction.Jump and 1 or 0 }
+    end
+    DG.Event("route", { n = #w, from = index, full = full and true or nil, goal = goal and DG.Vec(goal) or nil, pts = pts })
 end
 FH.Diag = function(kind, value) if DG.Active then DG.Note(kind, value) end end
-function DG.Walk(token, mode, count, index, pending, fails, dy, dist, noProgress, rescue)
+function DG.Walk(token, mode, count, index, pending, fails, dy, dist, noProgress, rescue, goal)
     if not DG.Active then return end
+    if DG.LastMode ~= mode then
+        DG.Event("mode", tostring(mode or "none"))
+        DG.LastMode = mode
+    end
     DG.LastWalk = {
+        goal = goal and DG.Vec(goal) or nil,
         at = os.clock(),
         owner = DG.Owner(token),
         mode = mode or "none",
@@ -26923,6 +26950,18 @@ function DG.Snapshot(now)
             return (st.waiting and "waiting") or (st.escaping and "escaping") or (st.opening and "opening") or "approach"
         end)(),
         threat = AH.Last and AH.Last.danger or nil,
+        beast = AH.Last and AH.Last.pos and {
+            p = DG.Vec(AH.Last.pos),
+            look = AH.Last.look and DG.Vec(Flat(AH.Last.look)) or nil,
+            v = AH.Last.vel and DG.Round(Flat(AH.Last.vel).Magnitude) or nil,
+            d = DG.Round(AH.Last.dist),
+            reach = AH.ReachCache and DG.Round(AH.ReachCache.reach) or nil,
+        } or nil,
+        pod = (function()
+            local info = AR.Pick or AR.PendingPick
+            return info and info.trig and info.trig.Parent and DG.Vec(info.trig.Position) or nil
+        end)(),
+        aim = aim and DG.Vec(aim) or nil,
         walk = walk,
         notes = next(notes) and notes or nil,
     }
@@ -26954,6 +26993,11 @@ pcall(function()
         if ok and type(result) == "table" then env = result end
     end
     DG.Env = env
+    env.D_Events = function()
+        local list = DG.Events
+        DG.Events = {}
+        return list
+    end
     env.D_Snapshot = function()
         if unloaded then return nil end
         local snapshot = DG.Snapshot(os.clock())
@@ -26982,7 +27026,7 @@ local function UnloadHack()
     pcall(Follow.Stop)
     pcall(Follow.Release)
     DG.Active, FH.DiagWalk = false, nil
-    if DG.Env then DG.Env.D_Snapshot = nil end
+    if DG.Env then DG.Env.D_Snapshot, DG.Env.D_Events = nil, nil end
     pcall(AH.Stop)
     pcall(AR.Stop)
     pcall(TR.Stop)

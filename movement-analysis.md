@@ -1244,3 +1244,12 @@ from the Round 30b version, nothing else:
   stat, which often still holds a stale value from the last computer, so
   it released the lever over and over. Re-press disabled. The Round 41
   "switch to the open gate" check no longer runs while we hold our lever.
+
+## Recorder v2.3 / D diagnostics
+
+- D: DG.Event log (every FH.Diag note, walk-mode changes, accepted routes
+  via FH.DiagRoute) exposed as getgenv().D_Events (read-and-clear); the
+  snapshot adds walk goal, aim, pod and Beast (pos/look/speed/dist/reach).
+- Recorder: `ev` and `players` lines, D state every 0.2 s.
+- The console error "LocalPlayerScript:190 TriggerTouch attempt to index nil
+  with 'Value'" comes from the game's own script, not from D.

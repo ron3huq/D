@@ -543,10 +543,51 @@ local function step()
             R.live = true
         end
     end
+    -- D's decision log (plan results, routes, shortcuts, door/exit/hack
+    -- steps, jukes): every event in order, so each choice can be traced.
+    local evHook = env.D_Events
+    if type(evHook) == "function" then
+        local okEv, events = pcall(evHook)
+        if okEv and type(events) == "table" and #events > 0 then
+            writeLine({ k = "ev", t = num(now, 2), list = events })
+        end
+    end
+    -- The whole match once a second: every player's role, position, facing,
+    -- speed and state (captured / ragdoll / escaped / what they are using),
+    -- and computers left; enough to read the round afterwards.
+    if map and now - (R.playersAt or 0) >= 1 then
+        R.playersAt = now
+        local list = {}
+        for _, pl in ipairs(Players:GetPlayers()) do
+            local r = pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+            local st = stats(pl)
+            local action = st and st:FindFirstChild("ActionEvent")
+            local target = action and action.Value
+            list[#list + 1] = {
+                me = pl == player or nil,
+                id = pl.UserId % 100000,
+                beast = flag(pl, "IsBeast") or nil,
+                p = r and vec(r.Position) or nil,
+                look = r and vec(flat(r.CFrame.LookVector)) or nil,
+                v = r and num(flat(r.AssemblyLinearVelocity).Magnitude) or nil,
+                cap = flag(pl, "Captured") or nil,
+                rag = flag(pl, "Ragdoll") or nil,
+                esc = flag(pl, "Escaped") or nil,
+                crawl = flag(pl, "IsCrawling") or nil,
+                using = target and typeof(target) == "Instance" and (target.Parent and target.Parent.Name .. "." or "") .. target.Name or nil,
+            }
+        end
+        local left
+        pcall(function()
+            local gs = game:GetService("ReplicatedStorage"):FindFirstChild("ComputersLeft", true)
+            if gs and gs:IsA("ValueBase") then left = gs.Value end
+        end)
+        writeLine({ k = "players", t = num(now, 2), list = list, computersLeft = left })
+    end
     -- Continuous trail (every sample) so the whole movement can be replayed:
-    -- position, speed, input direction, state, floor; D's state every 0.5 s.
+    -- position, speed, input direction, state, floor; D's state every 0.2 s.
     R.trailD = R.trailD or 0
-    local withD = now - R.trailD >= 0.5
+    local withD = now - R.trailD >= 0.2
     if withD then R.trailD = now end
     writeLine({ k = "s", t = s.t, p = s.p, v = s.v, vy = s.vy, st = s.st, fl = s.fl, mdir = s.mdir,
         ws = s.ws, look = vec(flat(root.CFrame.LookVector)), cap = s.cap, esc = s.esc, hack = s.hack,
