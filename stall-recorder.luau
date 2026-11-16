@@ -349,6 +349,30 @@ local function recordIncident(kind, now, root, hum, extra)
     return incident
 end
 
+-- Lobby area (vote boards, spawn): from LobbyInteractiveObjects, cached 5 s.
+function R.InLobby(position)
+    local now = os.clock()
+    local b = R.lobbyBox
+    if not b or now - b.at > 5 then
+        local lo, hi
+        local objects = World:FindFirstChild("LobbyInteractiveObjects")
+        if objects then
+            for _, part in ipairs(objects:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    local q = part.Position
+                    lo = lo and Vector3.new(math.min(lo.X, q.X), math.min(lo.Y, q.Y), math.min(lo.Z, q.Z)) or q
+                    hi = hi and Vector3.new(math.max(hi.X, q.X), math.max(hi.Y, q.Y), math.max(hi.Z, q.Z)) or q
+                end
+            end
+        end
+        b = { at = now, lo = lo, hi = hi }
+        R.lobbyBox = b
+    end
+    if not b.lo then return false end
+    local m = 120
+    return position.X >= b.lo.X - m and position.X <= b.hi.X + m and position.Z >= b.lo.Z - m
+        and position.Z <= b.hi.Z + m and position.Y >= b.lo.Y - 40 and position.Y <= b.hi.Y + 40
+end
 -- ---------- map shape ----------
 local KEYWORDS = { "door", "exit", "computer", "freezepod", "pod", "window", "stair", "step", "ramp",
     "ladder", "truss", "vent", "rail", "fence", "barrier", "clip", "table", "desk", "shelf", "crate", "box" }
@@ -457,7 +481,10 @@ local function step()
     -- Round / map tracking.
     local map = currentMap()
     local mapName = map and map.Name or "lobby"
-    if mapName ~= currentRound then
+    -- A new round = another map object (the same map can come twice in a
+    -- row, and the holder is not always cleared in between).
+    if mapName ~= currentRound or (map and map ~= R.curMapInst) then
+        R.curMapInst = map
         -- Close the previous round: keep it only if we really played it.
         local play = R.play
         if play and play.map ~= "lobby" then
@@ -466,7 +493,7 @@ local function step()
             if R.live then
                 writeLine(endLine)
                 flush()
-            elseif play.fromStart and play.inMap >= 10 then
+            elseif play.inMap >= 10 then
                 commitPending(endLine)
             else
                 dropPending()
@@ -480,30 +507,38 @@ local function step()
         R.cells = {}
         writeLine({ k = "round", n = R.round, map = mapName, t = num(now, 2), utc = os.date("!%H:%M:%S"),
             fromStart = fromStart })
-        if map then R.MapScan(map, R.round) end
+        if map then pcall(R.MapScan, map, R.round) end
     end
     -- Time actually spent inside the map this round (not in the lobby).
     local play = R.play
     if play and map then
-        if not play.box then
+        -- The map streams in while it loads: re-measure its box every 10 s.
+        if not play.box or now - (play.boxAt or 0) > 10 then
+            play.boxAt = now
             local ok, cf, size = pcall(function() return map:GetBoundingBox() end)
-            play.box = ok and { cf = cf, half = size / 2 + Vector3.new(30, 50, 30) } or false
+            play.box = ok and cf and { cf = cf, half = size / 2 + Vector3.new(30, 50, 30) } or false
         end
-        local inside = true
+        local inside = false
         if play.box then
             local d = play.box.cf:PointToObjectSpace(root.Position)
             local h = play.box.half
             inside = math.abs(d.X) <= h.X and math.abs(d.Y) <= h.Y and math.abs(d.Z) <= h.Z
         end
-        -- Must be inside within the first 40 s (not joined/teleported late).
+        -- Never while standing in the lobby (spectating a round we are not in).
+        if inside and R.InLobby(root.Position) then inside = false end
+        if not inside then play.lastInside = nil end
         if inside then
             play.firstInside = play.firstInside or now
-            if play.firstInside - play.startAt <= 40 then play.inMap = play.inMap + CFG.SAMPLE end
+            -- Any time really spent inside the map counts (the old "inside
+            -- within 40 s of the map appearing" rule missed rounds with a
+            -- long loading phase - many played rounds were never saved).
+            play.inMap = play.inMap + (now - (play.lastInside or now))
+            play.lastInside = now
         end
         if s.esc then play.escaped = true end
         if s.cap then play.caught = true end
-        -- Played from the start and 10 s inside: from now on save live.
-        if not R.live and play.fromStart and play.inMap >= 10 then
+        -- 10 s really inside the map this round: from now on save live.
+        if not R.live and play.inMap >= 10 then
             commitPending(nil)
             R.live = true
         end
@@ -518,7 +553,10 @@ local function step()
         crawl = s.crawl, d = withD and s.d or nil })
     -- Map shape around where we go: every new 6x6 stud cell (per floor) gets
     -- a ring of rays at 4 heights, floor and ceiling.
-    if map then R.CellScan(root, hum) end
+    if map then
+        local okScan, scanErr = pcall(R.CellScan, root, hum)
+        if not okScan then R.lastError = "cell: " .. tostring(scanErr) end
+    end
 
     -- Beast state changes (to identify perk signals such as Seer).
     if now - (R.beastScanAt or 0) >= 1 then
@@ -680,7 +718,7 @@ function R.Stop()
     local play = R.play
     if R.live then
         writeLine({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
-    elseif play and play.map ~= "lobby" and play.fromStart and play.inMap >= 10 then
+    elseif play and play.map ~= "lobby" and play.inMap >= 10 then
         commitPending({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
     else
         dropPending()
@@ -725,5 +763,13 @@ pcall(function()
 end)
 R.connections[#R.connections + 1] = Run.Heartbeat:Connect(function()
     local ok, err = pcall(step)
-    if not ok then R.lastError = "step: " .. tostring(err) end
+    if not ok then
+        R.lastError = "step: " .. tostring(err)
+        -- Make a broken step visible once instead of silently recording nothing.
+        R.errorCount = (R.errorCount or 0) + 1
+        if R.errorCount == 1 or R.errorCount % 500 == 0 then
+            warn("[DStallRecorder] " .. R.lastError)
+            pcall(writeLine, { k = "error", n = R.errorCount, err = R.lastError })
+        end
+    end
 end)

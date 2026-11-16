@@ -80,3 +80,16 @@ File có tọa độ map, nên chỉ gửi trực tiếp để phân tích, khô
   written to the file live (flushed every 2 s), so a round that ends early
   (Beast left, you were caught) or a server hop / teleport right after it
   is still saved. A `teleport` line marks a hop.
+
+### v2.2
+
+- A round is saved as soon as you have really been inside its map for 10 s
+  (total), whenever that happens; standing in the lobby never counts. The
+  old rule also required being inside within 40 s of the map appearing and
+  having seen the lobby first, which skipped many played rounds (long
+  loading, recorder started late, same map twice).
+- The map's box is re-measured every 10 s while it streams in; a new round
+  is detected by a new map object, not only a new map name.
+- Errors are no longer silent: the first one (and every 500th) is printed
+  and written as an `error` line; cell/map scans are isolated so one bad
+  scan cannot stop the recording.
