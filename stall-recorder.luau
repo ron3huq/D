@@ -396,6 +396,10 @@ end
 -- position, size and facing, so the layout can be rebuilt offline.
 function R.MapScan(map, round)
     task.spawn(function()
+        -- Wait until the map has streamed in and the round has settled: the
+        -- scan at the very start added to the 100-500 ms frames seen then.
+        task.wait(40)
+        if not R.running or R.round ~= round or not map.Parent then return end
         local list, n = {}, 0
         local all = map:GetDescendants()
         for i, o in ipairs(all) do
@@ -414,7 +418,7 @@ function R.MapScan(map, round)
                     if n >= 6000 then break end
                 end
             end
-            if i % 600 == 0 then task.wait() end
+            if i % 200 == 0 then task.wait() end
         end
         if #list > 0 then writeLine({ k = "mapParts", round = round, parts = list }) end
         local ok, cf, size = pcall(function() return map:GetBoundingBox() end)

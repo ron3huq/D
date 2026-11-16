@@ -7982,8 +7982,12 @@ do
         local generation = Nav.Generation
         -- Enumerating loaded descendants is native; inspecting them is budgeted in Step.
         Nav.BoundsParts, Nav.BoundsAt = map:GetDescendants(), 1
-        local added = map.DescendantAdded:Connect(function(part)
-            if Nav.Generation ~= generation then return end
+        -- A map streaming in adds thousands of parts in a few frames: queue
+        -- them and handle them inside Step's per-frame budget (recordings:
+        -- 100-545 ms frames during the first seconds of every round).
+        Nav.AddQueue, Nav.AddAt = {}, 1
+        local function handleAdded(part)
+            if Nav.Generation ~= generation or not part.Parent then return end
             if Nav.FilterSplitParents[part.Parent] then Nav.FilterDirty = true end
             if Nav.IsIgnored(part) then return end
             Nav.IgnoreCache = {}
@@ -7995,6 +7999,12 @@ do
                 if not Nav.GeometryPending[part] then Nav.GeometryQueue[#Nav.GeometryQueue + 1] = part end
                 Nav.GeometryPending[part] = { before = nil, at = navClock() + 0.18, generation = generation }
             end
+        end
+        Nav.HandleAdded = handleAdded
+        local added = map.DescendantAdded:Connect(function(part)
+            if Nav.Generation ~= generation then return end
+            local q = Nav.AddQueue
+            if q then q[#q + 1] = part end
         end)
         local removed = map.DescendantRemoving:Connect(function(part)
             if Nav.Generation ~= generation then return end
@@ -8224,6 +8234,20 @@ do
             if index > #list then
                 Nav.BoundsParts, Nav.BoundsAt = nil, nil
                 navGridBounds()
+            end
+        end
+        local q = Nav.AddQueue
+        if q and Nav.HandleAdded then
+            local index = Nav.AddAt or 1
+            while index <= #q and navClock() < deadline do
+                pcall(Nav.HandleAdded, q[index])
+                index = index + 1
+            end
+            if index > #q then
+                table.clear(q)
+                Nav.AddAt = 1
+            else
+                Nav.AddAt = index
             end
         end
         if not Nav.Bounds then return end
