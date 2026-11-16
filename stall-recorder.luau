@@ -58,6 +58,7 @@ local R = {
     connections = {},
 }
 env.DStallRecorder = R
+R.startedAt = os.clock()
 
 local stamp = os.date("!%Y%m%d_%H%M%S")
 local useAppend = type(appendfile) == "function"
@@ -490,16 +491,11 @@ local function step()
         if play and play.map ~= "lobby" then
             local endLine = { k = "roundEnd", n = R.round, map = play.map, inMap = num(play.inMap),
                 escaped = play.escaped or nil, caught = play.caught or nil, t = num(now, 2) }
-            if R.live then
-                writeLine(endLine)
-                flush()
-            elseif play.inMap >= 10 then
-                commitPending(endLine)
-            else
-                dropPending()
-            end
+            -- Saving is decided by time since load (90 s), not by rounds:
+            -- just mark the round end.
+            writeLine(endLine)
+            if R.live then flush() end
         end
-        R.live = false
         local fromStart = map ~= nil and currentRound == "lobby"
         currentRound = mapName
         R.round = (R.round or 0) + 1
@@ -537,11 +533,13 @@ local function step()
         end
         if s.esc then play.escaped = true end
         if s.cap then play.caught = true end
-        -- 10 s really inside the map this round: from now on save live.
-        if not R.live and play.inMap >= 10 then
-            commitPending(nil)
-            R.live = true
-        end
+    end
+    -- Simple rule (user): once the recorder has run 90 s, everything is
+    -- saved - the first 90 s too - and from then on written live (flushed
+    -- every 2 s). Sessions shorter than 90 s are not saved.
+    if not R.live and now - R.startedAt >= 90 then
+        commitPending(nil)
+        R.live = true
     end
     -- D's decision log (plan results, routes, shortcuts, door/exit/hack
     -- steps, jukes): every event in order, so each choice can be traced.
@@ -587,7 +585,12 @@ local function step()
     -- Continuous trail (every sample) so the whole movement can be replayed:
     -- position, speed, input direction, state, floor; D's state every 0.2 s.
     R.trailD = R.trailD or 0
-    local withD = now - R.trailD >= 0.2
+    -- Every sample while the Beast is near or chasing (danger): those are
+    -- the situations that matter most.
+    local lastD = R.samples[#R.samples - 1] and R.samples[#R.samples - 1].d
+    local chase = s.d and (s.d.threat or (s.d.beast and (s.d.beast.d or 99) < 30))
+        or lastD and lastD.threat
+    local withD = chase or now - R.trailD >= 0.2
     if withD then R.trailD = now end
     writeLine({ k = "s", t = s.t, p = s.p, v = s.v, vy = s.vy, st = s.st, fl = s.fl, mdir = s.mdir,
         ws = s.ws, look = vec(flat(root.CFrame.LookVector)), cap = s.cap, esc = s.esc, hack = s.hack,
@@ -758,9 +761,9 @@ function R.Stop()
     R.running = false
     local play = R.play
     if R.live then
-        writeLine({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
-    elseif play and play.map ~= "lobby" and play.inMap >= 10 then
-        commitPending({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts, partial = true })
+        writeLine({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts })
+    elseif os.clock() - R.startedAt >= 90 then
+        commitPending({ k = "end", utc = os.date("!%H:%M:%S"), counts = R.counts })
     else
         dropPending()
     end

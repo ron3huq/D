@@ -106,3 +106,12 @@ File có tọa độ map, nên chỉ gửi trực tiếp để phân tích, khô
 - D's state is attached to the trail every 0.2 s (was 0.5 s) and now also
   carries the walk goal, the motion aim, the target pod and the Beast
   (position, facing, speed, distance, measured hammer reach).
+
+### v2.4
+
+- Saving rule is now simply time: once the recorder has been running for
+  90 s, everything is written to the file (the first 90 s included) and
+  from then on live, flushed every 2 s. Sessions shorter than 90 s are not
+  saved. Rounds are still marked with `round` / `roundEnd` lines.
+- While the Beast is near (< 30 studs) or D reports a threat, D's state is
+  attached to every 0.1 s sample (chases are recorded in full detail).
