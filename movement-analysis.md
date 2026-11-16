@@ -1234,3 +1234,8 @@ from the Round 30b version, nothing else:
   partial routes replan as before.
 - Frame cost: rescue shortcut scan 3 candidates every 0.35 s (was 4 every
   0.25 s); AutoHelp idle poll 0.1 s (was 0.06). Compile-checked only.
+
+## Round 50
+
+- Rolled back Round 49 (eased turns and rescue hop-lines: worse turning at
+  doors, more wall hits) and the Round 47 corner-graze rule (wall hits).

@@ -12315,18 +12315,6 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     end
                     if (g and not FH.DoorBlocked(g)) or framed then kind = nil end
                 end
-                -- Only a shoulder clips a wall/prop edge while the body line
-                -- itself is open (centre rays clear at waist and chest): that
-                -- is a corner graze the body slides past, not a blocked lane.
-                -- Live: AutoHelp turned away at every wall/prop edge near the
-                -- pod room instead of carrying on / vaulting in.
-                if kind == "wall" and dir.Magnitude > 0.1 then
-                    local reachC = math.min(Flat(aim - rp).Magnitude, 3)
-                    local waist = Workspace:Raycast(Vector3.new(rp.X, profileFeet + 1.6, rp.Z), dir * reachC, rayParams)
-                    local chest = Workspace:Raycast(Vector3.new(rp.X, profileFeet + 3.2, rp.Z), dir * reachC, rayParams)
-                    local knee = Workspace:Raycast(Vector3.new(rp.X, profileFeet + 0.6, rp.Z), dir * reachC, rayParams)
-                    if not waist and not chest and not knee then kind = nil end
-                end
                 -- The same spot read as a "wall" again within 4 s while on a
                 -- route (live: stair treads/banisters - the route was dropped,
                 -- re-planned, climbed and dropped again, up and down the
