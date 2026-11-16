@@ -80,7 +80,7 @@ local function clean(value, depth)
     if kind == "Vector3" then return vec(value) end
     if kind == "EnumItem" then return value.Name end
     if kind == "Instance" then return value.Name end
-    if kind == "table" and depth < 5 then
+    if kind == "table" and depth < 9 then
         local out, isArray = {}, #value > 0
         for k, v in pairs(value) do
             local c = clean(v, depth + 1)

@@ -1295,3 +1295,22 @@ Rescue episodes: 90. Most reach the pod at ~16 studs/s with travel
 - 10 % health rule: with only two survivors left (us and one other) the
   rescue still runs.
   Compile-checked only.
+
+## Round 53 (122846 + Workspace_1 again)
+
+- Rescue at (113,150,140), pod 20 studs below past a rail with invisible
+  "Barriers.BarrierBrick": the route's jump waypoint sat at our own X/Z, so
+  the aim was ourselves - straight up-and-down hops for ~10 s, then routes
+  back to the same spot. Now, within 1.5 studs of a jump waypoint the aim is
+  the following waypoint (the hop carries forward), and the failed-climb
+  rule also marks the spot as a failing island (step off its edge / local
+  steering) instead of re-planning the same route straight away.
+- Jump rates: rescue 43/min vs farm 21/min in 122846 - rescue does jump; the
+  failures are the hop-in-place above and the mid-air stalls fixed in
+  Round 52.
+- Reversals while walking (farm/rescue, 583 in 20 files): most come right
+  after a walk-mode change (none <-> path) or a door hand-off - local
+  steering takes a sideways heading while a door route is pending, then
+  turns back to the door. Not fixed yet.
+- Recorder: JSON depth 9 (route waypoint lists were dropped at depth 5).
+  Compile-checked only.

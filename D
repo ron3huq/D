@@ -11222,8 +11222,13 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     FH.AddBad(dir.Magnitude > 0.5 and w.pos + dir.Unit * 2 or w.aim, 15)
                     FH.BanDirect = now + 3
                     if FH.Diag then FH.Diag("walk", "climb-failed-avoid") end
+                    -- The planner may hand back the same route (it cannot see
+                    -- why the hop fails - invisible barriers): also count this
+                    -- spot as a failing island so the next ticks step off its
+                    -- nearest edge / use local steering instead.
+                    FH.PlanFailSpot = { pos = rp, n = 3, at = now }
                     reset()
-                    nextPlan = 0
+                    nextPlan = now + 0.8
                     task.wait(0.03)
                     continue
                 end
@@ -12213,6 +12218,15 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             end
             if wp.Action == Enum.PathWaypointAction.Jump then
                 if Flat(wp.Position - rp).Magnitude < 4.5 then waypointJump(wpi, hum, root, now) end
+                -- Right at the jump point (over a rail/ledge, the next point
+                -- below or beyond): aim on at the following waypoint so the
+                -- hop carries forward. Aiming at the jump point itself gave no
+                -- input and the avatar hopped straight up and down on the spot
+                -- (live: 10 s at a rail above the pod).
+                if Flat(wp.Position - rp).Magnitude < 1.5 and wps[wpi + 1] then
+                    local nextP = wps[wpi + 1].Position
+                    if Flat(nextP - rp).Magnitude > 1 then aim = nextP end
+                end
             elseif routeProgress then
                 local function laneClear(index, wide)
                     if index < wpi or index > #wps or (blockedAt and index >= blockedAt) then return false end
