@@ -10547,8 +10547,34 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         end
         return result
     end
+    -- Drop "spike" waypoints: a point the route goes out to and then
+    -- doubles back from (> ~120 deg turn) when the next point is straight
+    -- reachable on the same floor. Recordings: routes like north 10 studs then
+    -- back south-east round a pillar - the avatar followed and reversed.
+    local function pruneSpikes(w)
+        if not w or #w < 3 then return w end
+        local out = { w[1] }
+        local i = 2
+        while i <= #w do
+            local a, b, c = out[#out], w[i], w[i + 1]
+            local skip = false
+            if c and b.Action ~= Enum.PathWaypointAction.Jump and c.Action ~= Enum.PathWaypointAction.Jump
+                and math.abs(b.Position.Y - a.Position.Y) < 1.5 and math.abs(c.Position.Y - a.Position.Y) < 1.5 then
+                local ab, bc = Flat(b.Position - a.Position), Flat(c.Position - b.Position)
+                if ab.Magnitude > 0.5 and bc.Magnitude > 0.5 and ab.Unit:Dot(bc.Unit) < -0.5 then
+                    local clear, jumps = FH.Line(a.Position, c.Position, a.Position.Y, c.Position.Y, 1.5)
+                    skip = clear and (jumps or 0) == 0
+                end
+            end
+            if not skip then out[#out + 1] = b end
+            i = i + 1
+        end
+        return out
+    end
     local function setPath(w, full, path)
         local hum, root = GetHumanoid(), RootNow()
+        local okPrune, pruned = pcall(pruneSpikes, w)
+        if okPrune and pruned and #pruned >= 2 then w = pruned end
         local index = 2
         if hum and root then
             if opts.rescueJuke then

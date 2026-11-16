@@ -1325,3 +1325,17 @@ Rescue episodes: 90. Most reach the pod at ~16 studs/s with travel
 - Recorder: per-sample fps and worst frame (ms) to locate lag spots; cell
   scans lighter (12 x 3 rays, was 16 x 4).
   Compile-checked only.
+
+## Round 55 (Workspace_2, 2026-11-16 12:36-13:22, 6 files)
+
+- FPS: median 60, p5 53; worst-frame spikes > 60 ms cluster in the first
+  0-5 s of a round (map streaming in; the user says that is fine). D's nav
+  atlas now queues DescendantAdded parts into its per-frame budget; the
+  recorder's map inventory waits 40 s.
+- Mid-air speed loss (Round 52 fix): farm "stall, no input" jumps 59 -> 7.
+- Rescue: 22 episodes, standing time ~0, few reversals.
+- Farm/rescue reversals stay ~8-10/min. One cause seen in the routes now
+  logged: native routes with a waypoint the route doubles back from (out
+  10 studs, back round a pillar). setPath prunes such spike waypoints
+  (> ~120 deg turn) when the next waypoint is straight reachable on the
+  same floor with no hop. Compile-checked only.
