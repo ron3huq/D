@@ -3668,8 +3668,11 @@ function FH.ComputerContact(token, comp, trig, stopped)
         end
         -- The game already selected this slot for us: start right away (the
         -- extra steps in to 1.4 studs were the beat before every hack).
+        -- Standing inside the hack spot's box counts too (its centre can sit
+        -- against the desk edge: pushing on toward it rubbed the desk).
         local ready = distance <= (attempts > 0 and 1.2 or 1.4)
             or (distance <= 2.6 and FH.SelectedTrigger(trig))
+            or FH.ContactDistance(trig, root.Position) <= 0.05
         local admitted = acknowledged and (progressing or holding and now - heldAt < 1.5)
         if admitted or (ready and now >= advanceUntil) then
             -- Face the computer once before the first press so it registers
@@ -12285,6 +12288,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     end
                     if (g and not FH.DoorBlocked(g)) or framed then kind = nil end
                 end
+                -- Only a shoulder clips a wall/prop edge while the body line
+                -- itself is open (centre rays clear at waist and chest): that
+                -- is a corner graze the body slides past, not a blocked lane.
+                -- Live: AutoHelp turned away at every wall/prop edge near the
+                -- pod room instead of carrying on / vaulting in.
+                if kind == "wall" and dir.Magnitude > 0.1 then
+                    local reachC = math.min(Flat(aim - rp).Magnitude, 3)
+                    local waist = Workspace:Raycast(Vector3.new(rp.X, profileFeet + 1.6, rp.Z), dir * reachC, rayParams)
+                    local chest = Workspace:Raycast(Vector3.new(rp.X, profileFeet + 3.2, rp.Z), dir * reachC, rayParams)
+                    local knee = Workspace:Raycast(Vector3.new(rp.X, profileFeet + 0.6, rp.Z), dir * reachC, rayParams)
+                    if not waist and not chest and not knee then kind = nil end
+                end
                 -- The same spot read as a "wall" again within 4 s while on a
                 -- route (live: stair treads/banisters - the route was dropped,
                 -- re-planned, climbed and dropped again, up and down the
@@ -13975,7 +13990,14 @@ function FH.ExitWaitExpired(state)
     return false
 end
 function FH.ExitRoute(token, state, abort)
-    local function escaped() return FH.True(LocalPlayer, FH.ESC) end
+    -- Teleported back to the lobby after crossing counts as escaped even if
+    -- the Escaped flag is late or missing (live: after the exit it kept
+    -- "escaping" in the lobby - step, stop, step).
+    local function escaped()
+        if FH.True(LocalPlayer, FH.ESC) then return true end
+        local r = RootNow()
+        return r ~= nil and FH.InLobby(r.Position)
+    end
     local function stopped()
         -- Past 70 % on our own hold: only hard reasons end it (manual
         -- control, caught/ragdoll, Beast role, escaped, exits off). Feature
@@ -14387,6 +14409,23 @@ function FH.ExitRoute(token, state, abort)
         if stopped() then return interrupted() end
         if crossed then return "escaped" end
         if FH.Diag then FH.Diag("exit", "crossing-failed") end
+        -- Could not get through: is the gate really open? A solid panel of
+        -- this exit between us and its centre means we misread it (live:
+        -- 65 s of step-stop at a shut gate believed open). Drop the mark and
+        -- go pull its lever instead.
+        local live = RootNow()
+        if live and center then
+            local to = Vector3.new(center.X, live.Position.Y, center.Z) - live.Position
+            local hit = to.Magnitude > 0.5 and Workspace:Raycast(live.Position, to, rayParams)
+            local shut = hit and hit.Instance:IsDescendantOf(door) and hit.Instance.CanCollide
+                and not string.find(string.lower(hit.Instance.Name), "trigger", 1, true)
+            if shut or not FH.ExitDoorOpen(door, center, state.triggers) then
+                if FH.Diag then FH.Diag("exit", "gate-not-open-after-all") end
+                FH.RevokeExitOpened(door)
+                state.escaping, state.waiting = nil, nil
+                return "retry"
+            end
+        end
         -- Do not shuttle between trigger and volume on the same failed gate.
         state.crossFails = state.crossFails or {}
         local fails = (state.crossFails[door] or 0) + 1
@@ -14667,10 +14706,22 @@ function Follow.Main(token, player)
                 reachable[t] = math.abs(t.Position.Y - mp.Y) < Follow.MaxDY and FH.ApproachClear(mp, t.Position, comp)
             end
         end
-        -- One of the free hack spots at random (user rule: the three spots
-        -- at the desk edges, pick any free one), reachable ones first.
+        -- The middle spot (in front of the keyboard) first, then one of the
+        -- two side spots at random (user rule); reachable ones first. The
+        -- middle one is the spot nearest to both others.
         local roll = {}
         for _, t in ipairs(free) do roll[t] = math.random() end
+        if #all >= 3 then
+            local middle, bestSum
+            for _, t in ipairs(all) do
+                local sum = 0
+                for _, o in ipairs(all) do
+                    if o ~= t then sum = sum + Flat(o.Position - t.Position).Magnitude end
+                end
+                if not bestSum or sum < bestSum then middle, bestSum = t, sum end
+            end
+            if middle and roll[middle] then roll[middle] = -1 end
+        end
         table.sort(free, function(a, b)
             if reachable[a] ~= reachable[b] then return reachable[a] end
             return roll[a] < roll[b]
@@ -15559,6 +15610,12 @@ function AH.Eval()
         if not AH.HitAt or now - AH.HitAt > 2 then pcall(AH.LearnReach) end
         AH.HitAt = now
     end
+    -- Just freed from a pod: the Beast camping it often stands still (it
+    -- then read as idle/safe and we walked straight into its face). For 6 s
+    -- after release any Beast within 25 studs counts as a threat.
+    local captured = FH.True(LocalPlayer, FH.CAP)
+    if AH.WasCaptured and not captured then AH.FreedAt = now end
+    AH.WasCaptured = captured
     local map, round, rescue = GetCurrentMap(), FH.MatchOn(), AH.RescueContext()
     if AH.ThreatMap ~= map or AH.ThreatRound ~= round then
         AH.BeastMotion = {}
@@ -15605,6 +15662,9 @@ function AH.Eval()
                 -- Contact alarm: within 8 studs, facing us, and not behind a
                 -- wall (a door between us still counts).
                 local emergency = mr ~= nil and AH.ContactThreat(br, mr)
+                local freedThreat = mr ~= nil and AH.FreedAt ~= nil and now - AH.FreedAt < 6
+                    and (position - mr.Position).Magnitude <= 25
+                if freedThreat then emergency = true end
                 -- Seer active: it sees us anyway; move away from it.
                 if mr and not emergency and (position - mr.Position).Magnitude <= 120 and AH.SeerActive(p) then
                     emergency = true
@@ -15612,7 +15672,7 @@ function AH.Eval()
                 if mr then AH.NoteMeet(br, mr, now) end
                 local idleTime, afkTime = AH.IdleSafeTime or 15, AH.AfkTime or 40
                 local idleSafe = now - motion.idleAt >= idleTime
-                if now - motion.movedAt < afkTime and not idleSafe then
+                if freedThreat or now - motion.movedAt < afkTime and not idleSafe then
                     movingBeast = true
                     AH.AfkCheckAt = math.min(AH.AfkCheckAt, motion.movedAt + afkTime, motion.idleAt + idleTime)
                     if mr then
@@ -16018,7 +16078,8 @@ function AH.FrontPenalty(point, bp)
     if d < 0.5 or d > 30 then return 0 end
     local front = look.Unit:Dot(to.Unit)
     if front <= 0.3 then return 0 end
-    return (front - 0.3) * 18 * (1 - d / 30)
+    local weight = d < 15 and 40 or 18
+    return (front - 0.3) * weight * (1 - d / 30)
 end
 function AH.Steer(rp, bp, bvel, feetY, juke)
     local pred = bp

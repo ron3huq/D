@@ -1205,3 +1205,20 @@ from the Round 30b version, nothing else:
 - Workspace_3 door incidents were all E-holds (hacking/opening), not
   doorway pacing; doorway hesitation not pinned down in this data.
   Compile-checked only.
+
+## Round 47
+
+- Exit: Workspace_3 130333 3212-3278 - at the gate, crossing failed, then
+  65 s of step-stop as "escaping" at a gate believed open. After a failed
+  crossing the gate is now verified (solid panel of the exit between us and
+  its centre, or panels read shut): the open mark is revoked and the lever
+  is pulled instead. Back in the lobby also counts as escaped for the exit
+  routine.
+- Freed from a pod: for 6 s any Beast within 25 studs counts as a threat
+  even when it stands still (camping Beasts read idle/safe before). Front
+  of the Beast within 15 studs costs up to 40 in AutoHide steering.
+- AutoHelp corner grazes: a "wall" from the shoulder rays while knee,
+  waist and chest centre rays are clear no longer drops the lane.
+- Hack: middle spot (nearest to both others) first, then a random side
+  spot; standing inside a spot's box counts as in position.
+  Compile-checked only.
