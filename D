@@ -3249,7 +3249,9 @@ function FH.ReleaseMotion(token, stop)
     if m.token ~= token then return false end
     if stop and not Ctl.On() and not Fly.Active then
         local root = RootNow()
-        if m.hum and root and m.hum.Parent == LocalPlayer.Character then
+        -- Never brake in mid-air (a hand-over during a jump stopped it dead).
+        if m.hum and root and m.hum.Parent == LocalPlayer.Character
+            and m.hum.FloorMaterial ~= Enum.Material.Air then
             pcall(function() m.hum:MoveTo(root.Position) end)
         end
     end
@@ -4850,7 +4852,12 @@ function FH.JumpMoveStep(dt)
         return
     end
     local direction = Flat(motion.aim - root.Position)
-    if direction.Magnitude <= 0.5 then return end
+    if direction.Magnitude <= 0.5 then
+        -- Same in a scripted flight: keep the take-off heading, never zero.
+        local keep = flight.commitDir or motion.airDir
+        if keep then hum:Move(keep, false) end
+        return
+    end
     local unit = direction.Unit
     -- Vault/obstacle jump commit (not AutoHide): keep the takeoff heading
     -- through the air; an aim that swings back mid-jump (replan, breaker)
@@ -4903,9 +4910,30 @@ function FH.GroundMoveStep(dt)
     if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); return end
     local direction = Flat(motion.aim - root.Position)
     if direction.Magnitude <= 0.5 then
+        -- Airborne with a "hold here" aim (route still computing, aim at
+        -- ourselves): keep the last heading until we land. Zero input in the
+        -- air killed the jump's speed (Workspace_1: ~120 jumps stalled mid-air).
+        if hum.FloorMaterial == Enum.Material.Air and motion.airDir and os.clock() - (motion.airDirAt or 0) < 1.2 then
+            hum:Move(motion.airDir, false)
+            return
+        end
         hum:Move(Vector3.new(0, 0, 0), false)
         return
     end
+    -- Mid-air: hold the take-off heading against a sharp swing (> ~72 deg)
+    -- - recordings showed turns of 150-180 deg in the middle of jumps over
+    -- props/windows (sideways drift, turning back). Not for AutoHide.
+    local tok = motion.token
+    if hum.FloorMaterial == Enum.Material.Air and not (type(tok) == "table" and tok.owner == "evade") then
+        motion.airLock = motion.airLock or motion.airDir or direction.Unit
+        if direction.Unit:Dot(motion.airLock) < 0.3 then
+            hum:Move(motion.airLock, false)
+            return
+        end
+    else
+        motion.airLock = nil
+    end
+    motion.airDir, motion.airDirAt = direction.Unit, os.clock()
     -- Direct heading (the round-14 turn smoothing made turns sluggish and
     -- scrape walls - live report "turning lags").
     hum:Move(FH.FlipGuard(motion, root, direction), false)
@@ -15770,6 +15798,45 @@ function AH.Eval()
                             -- A door between us does not stop a Beast walking in.
                             vis = hit == nil or d <= 30 and FH.DoorOf(hit.Instance) ~= nil
                         end
+                        -- Read the Beast's own movement (recordings, Workspace_1:
+                        -- 151 samples calm while it walked straight at us, 132
+                        -- fleeing while it walked away, 24 fleeing from a Beast
+                        -- 45+ studs off and not coming).
+                        local bvel = Flat(motion.observedVelocity or br.AssemblyLinearVelocity)
+                        local toMeV = Flat(mr.Position - position)
+                        local toMeU = toMeV.Magnitude > 0.1 and toMeV.Unit or Vector3.zero
+                        local beastIn = bvel:Dot(toMeU)
+                        local lookU = Flat(br.CFrame.LookVector)
+                        local facingMe = lookU.Magnitude > 0.1 and lookU.Unit:Dot(toMeU) or 0
+                        local coming = beastIn > 5 and facingMe > 0.3
+                        local function seen()
+                            for _, h in ipairs({ 1.5, 4 }) do
+                                local o = position + Vector3.new(0, h, 0)
+                                local hit = Workspace:Raycast(o, (mr.Position + Vector3.new(0, 1, 0)) - o, rayParams)
+                                if hit == nil or FH.DoorOf(hit.Instance) ~= nil then return true end
+                            end
+                            return false
+                        end
+                        -- Coming straight at us within 24 studs: threat (seen over
+                        -- a prop too - two eye heights).
+                        if not vis and sameFloor and d <= 24 and coming and seen() then vis = true end
+                        -- We are walking into a Beast that faces us (96 samples:
+                        -- farm/rescue heading straight into it within 25 studs).
+                        local myIn = Flat(mr.AssemblyLinearVelocity):Dot(-toMeU)
+                        if not vis and sameFloor and d <= 16 and facingMe > 0.6 and myIn > 8 and seen() then vis = true end
+                        -- Just behind a prop/corner but still coming: keep the
+                        -- alarm 2.5 s (it switched off and we walked into it).
+                        if not vis and sameFloor and coming and d <= 30 and motion.seenAt and now - motion.seenAt < 2.5 then
+                            vis = true
+                        end
+                        -- Leaving us (walking away, not facing us) past 18 studs,
+                        -- or far (40+) and not coming: no alarm.
+                        if vis and not emergency and not freedThreat then
+                            if (d > 18 and beastIn < -3 and facingMe < 0.2) or (d > 40 and beastIn < 2) then
+                                vis = false
+                            end
+                        end
+                        if vis then motion.seenAt = now end
                         if vis then res.danger = true end
                     end
                 else
@@ -17904,6 +17971,17 @@ end
 -- Below 10% health a rescue is too likely to end in our own capture: leave
 -- the captives to the others and keep only AutoFarm + AutoHide.
 function AR.LowHealth()
+    -- Exception (user rule): with only two survivors left in the round (us
+    -- and one other), we still go and free them even under 10 % health.
+    local others = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p:FindFirstChild("TempPlayerStatsModule") and not FH.True(p, FH.BEASTN)
+            and not FH.True(p, FH.ESC) and FH.InMatchPlayer(p) then
+            local hp = FH.Stat(p, FH.HP)
+            if not (hp and type(hp.Value) == "number" and hp.Value <= 0) then others = others + 1 end
+        end
+    end
+    if others == 1 then return false end
     local hum = GetHumanoid()
     if hum and hum.MaxHealth > 0 and hum.Health < hum.MaxHealth * 0.1 then return true end
     -- The game's own Health stat: compare with the highest value seen, so

@@ -1273,3 +1273,25 @@ Rescue episodes: 90. Most reach the pod at ~16 studs/s with travel
   them. Now the victim's distance 0.1 s before the knock-down (min with the
   current one) and values over 12 studs are ignored (also for our own hits).
   Compile-checked only.
+
+## Round 52 (Workspace_1, 2026-11-16: 19 files, 61 MB)
+
+- AutoHide alarm from the Beast's own movement (beast velocity toward us,
+  facing): samples while D owned movement - 151 calm while the Beast walked
+  straight at us (<22 studs, > 6 studs/s), 96 farm/rescue walking into a
+  Beast facing us, 132 fleeing a Beast walking away (> 18 studs), 24 fleeing
+  one 45+ studs off and not coming. New rules in AH.Eval: coming (> 5
+  studs/s toward us, facing > 0.3) within 24 studs and seen from either of
+  two eye heights -> threat; just lost behind a prop/corner but still
+  coming -> threat kept 2.5 s; we walk at it (> 8 studs/s) within 16 studs
+  while it faces us -> threat; leaving (moving away, not facing us) past 18
+  studs or far (40+) and not coming -> no alarm (unless contact/freed).
+- Jumps: ~120 airborne segments lost all speed with zero input (aim at self
+  while a route was computing, or a brake at a hand-over). Ground move step
+  keeps the last heading in the air instead of zero; scripted flights keep
+  the take-off heading; ReleaseMotion never brakes in mid-air. Mid-air
+  swings > ~72 deg are held to the take-off heading (farm/help; recordings
+  had 150-180 deg turns mid-jump).
+- 10 % health rule: with only two survivors left (us and one other) the
+  rescue still runs.
+  Compile-checked only.
