@@ -1234,3 +1234,16 @@ from the Round 30b version, nothing else:
   partial routes replan as before.
 - Frame cost: rescue shortcut scan 3 candidates every 0.35 s (was 4 every
   0.25 s); AutoHelp idle poll 0.1 s (was 0.06). Compile-checked only.
+
+## Round 49
+
+- AutoHelp took the long open way round windows/props. Rescue walks now
+  accept a straight line to the pod with up to 6 hops (3 double-height)
+  both when planning and while following a route (checked every 0.4 s,
+  within 90 studs, when the route is > 1.25x + 4 the straight distance):
+  "rescue-hop-line"; the direct mode then hops each obstacle in stride.
+- Natural turning for farm/help (FH.FlipGuard): bends of more than ~15 deg
+  (not reversals) are eased over a few frames (55/45 blend per frame),
+  only on the ground, more than 3 studs from the aim, and only while the
+  eased heading is open 2.5 studs ahead. AutoHide unchanged.
+  Compile-checked only.
