@@ -4976,22 +4976,6 @@ function FH.FlipGuard(motion, root, direction)
         g.flipAt = now
     end
     if g.held and now >= g.holdUntil then g.held = false end
-    -- Natural turning (farm/help): a bend of more than ~15 deg is eased in
-    -- over a few frames (~0.1 s) like a player swinging the stick, instead
-    -- of snapping. Only on the ground, away from the aim, and only while the
-    -- eased heading is open (never into a wall or door frame).
-    local dot = d:Dot(g.dir)
-    local hum = motion.hum
-    if direction.Magnitude > 3 and dot < 0.97 and dot > -0.2 and hum and hum.FloorMaterial ~= Enum.Material.Air then
-        local eased = g.dir * 0.55 + d * 0.45
-        if eased.Magnitude > 0.1 then
-            eased = eased.Unit
-            if not Workspace:Raycast(root.Position, eased * 2.5, rayParams) then
-                g.dir = eased
-                return eased
-            end
-        end
-    end
     g.dir = d
     return d
 end
@@ -11652,18 +11636,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             and not FH.JumpFlight
         then
             shortcutAt = now + 0.4
-            local clear, jumps, big = FH.Line(rp, goal, feetY, Follow.GoalGround(goal, opts.approachModel).Y - 0.5, 1.5)
-            -- Rescue: a straight line to the pod over windows/props/rails
-            -- (hops) beats walking round on open floor (user: it kept taking
-            -- the long empty way). Only when the route is clearly longer.
-            local hopsOk = (jumps or 0) == 0
-            if not hopsOk and opts.rescueJuke and (jumps or 0) <= 6 and (big or 0) <= 3 and wps and wps[wpi] then
-                local remaining = (wps[wpi].Position - Vector3.new(rp.X, feetY, rp.Z)).Magnitude
-                for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
-                hopsOk = remaining > flatDist * 1.25 + 4
-            end
-            if clear and hopsOk and clearLane(rp, goal, feetY) then
-                if FH.Diag and (jumps or 0) > 0 then FH.Diag("walk", "rescue-hop-line") end
+            local clear, jumps = FH.Line(rp, goal, feetY, Follow.GoalGround(goal, opts.approachModel).Y - 0.5, 1.5)
+            if clear and (jumps or 0) == 0 and clearLane(rp, goal, feetY) then
                 clearPath()
                 mode, wps, wpFull, planAt, planGoal, chkAt = "direct", nil, true, now, goal, now
             end
@@ -11704,8 +11678,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 lineOk, jumps, big = FH.Line(rp, goal, feetY, Follow.GoalGround(goal, opts.approachModel).Y - 0.5, 1.5)
             end
             lineOk = lineOk and clearLane(rp, goal, feetY)
-            if lineOk and (jumps == 0 or evade or (windows and jumps <= (opts.rescueJuke and 6 or 3)
-                and big <= (opts.rescueJuke and 3 or 1))) then
+            if lineOk and (jumps == 0 or evade or (windows and jumps <= 3 and big <= 1)) then
                 clearPath()
                 mode, wps = "direct", nil
                 fails = 0
