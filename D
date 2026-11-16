@@ -3643,19 +3643,24 @@ function FH.ComputerContact(token, comp, trig, stopped)
         end
         return result
     end
+    local begun = false
     while os.clock() - started < Follow.HackMax do
         if stopped() then return finish("stopped") end
         if Ctl.Gate() then return finish("manual") end
         if FH.Done(comp) then return finish("done") end
-        if not FH.ComputerContactClear(token, comp, trig) then return finish("lost") end
+        -- Once our hack has started, a player brushing past (blocking the
+        -- approach lane or standing near the slot) is no reason to leave.
+        if not begun and not FH.ComputerContactClear(token, comp, trig) then return finish("lost") end
         local hum, root, now = GetHumanoid(), RootNow(), os.clock()
+        if not (hum and root) then return finish("lost") end
         local distance = Flat(root.Position - trig.Position).Magnitude
         if Flat(root.Position - anchor).Magnitude > 0.15 then
             anchor, progressAt = root.Position, now
         end
         local acknowledged = FH.InteractionAck(trig, meter)
         local progressing = meter.advancedAt ~= nil and now - meter.advancedAt < 1.2
-        if not progressing and FH.ComputerSlotTaken(comp, trig) then return finish("occupied") end
+        if progressing or (acknowledged and holding) then begun = true end
+        if not progressing and not begun and FH.ComputerSlotTaken(comp, trig) then return finish("occupied") end
         if progressing then
             -- HackMax bounds inactivity, never a legitimate unfinished hack.
             started, heldAt = now, now
@@ -10270,7 +10275,7 @@ function Follow.RescueShortcut(rp, feetY, wps, index, blockedAt, goal)
     end
     table.sort(candidates, function(a, b) return a.saved > b.saved end)
     -- Bound ray work even if a native path contains many small detour points.
-    for i = 1, math.min(4, #candidates) do
+    for i = 1, math.min(3, #candidates) do
         local candidate = candidates[i]
         local jumps = Follow.RescueJumpLane(rp, candidate.point, feetY)
         if jumps then return candidate.index end
@@ -11085,6 +11090,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     end
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     local stairHopAt = 0
+    local keptRoute = false
     local wallSeenAt
     while alive() do
         if abort and abort() then return finish("abort", false) end
@@ -11491,7 +11497,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             if remaining < math.huge then
                 for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
             end
-            if mode ~= "path" or preview.length < remaining - 0.05 then
+            -- Keep the route we are on unless the new one is clearly shorter
+            -- (live: the rescue switched routes mid-way for a stud or two
+            -- and wandered - "changes its way half-way").
+            if mode ~= "path" or preview.length < remaining - math.max(6, remaining * 0.15) then
                 acceptingPlanAt = job.at
                 setPath(preview.wps, true, nil)
             end
@@ -11512,7 +11521,25 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         and clearLane(from, goal, fromY)
                 end
             end
-            if j.gen == gen and fresh then
+            -- Rescue: a periodic replan only replaces the route we are
+            -- following when it is clearly shorter (no switching mid-way).
+            if j.gen == gen and fresh and opts.rescueJuke and mode == "path" and wps and wps[wpi]
+                and not blockedAt and j.res and j.res.mode == "path" and j.res.wps and #j.res.wps > 1 then
+                local remaining = (wps[wpi].Position - Vector3.new(rp.X, feetY, rp.Z)).Magnitude
+                for i = wpi + 1, #wps do remaining += (wps[i].Position - wps[i - 1].Position).Magnitude end
+                local nw = j.res.wps
+                local newLen = (nw[1].Position - Vector3.new(rp.X, feetY, rp.Z)).Magnitude
+                for i = 2, #nw do newLen += (nw[i].Position - nw[i - 1].Position).Magnitude end
+                if wpFull and newLen > remaining - math.max(6, remaining * 0.15) then
+                    if FH.Diag then FH.Diag("plan", "kept-current-route") end
+                    keptRoute = true
+                end
+            end
+            if keptRoute then
+                keptRoute = false
+                dispose(j.res)
+                planAt = now
+            elseif j.gen == gen and fresh then
                 acceptingPlanAt = j.at
                 local res = applyRes(j.res, rp, goal)
                 if not alive() then return finish("abort", false) end
@@ -11939,7 +11966,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 opts.rescueJuke
                 and (hum.FloorMaterial ~= Enum.Material.Air or opts.rescueJuke and Follow.RescueGrounded(hum, root))
                 and not FH.JumpFlight
-                and now - rescueShortcutAt >= 0.25
+                and now - rescueShortcutAt >= 0.35
             then
                 rescueShortcutAt = now
                 local shortcut = Follow.RescueShortcut(rp, feetY, wps, wpi, blockedAt, opts.rescueJuke)
@@ -18237,7 +18264,7 @@ function AR.Step(tok)
     if not AR.Pending() then
         if AR.BusyFlag then AR.Release(tok) end
         AR.SetBusy(false)
-        task.wait(0.06)
+        task.wait(0.1)
         return
     end
     local pod = AR.Nearest()

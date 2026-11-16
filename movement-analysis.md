@@ -1222,3 +1222,15 @@ from the Round 30b version, nothing else:
 - Hack: middle spot (nearest to both others) first, then a random side
   spot; standing inside a spot's box counts as in position.
   Compile-checked only.
+
+## Round 48
+
+- Hack: once our hack has begun (progress seen, or acknowledged while
+  holding) a player brushing past no longer makes us leave the slot
+  (contact-lane and slot-taken checks only before the start).
+- AutoHelp route commitment: a background preview or periodic replan only
+  replaces a complete route we are following when it is shorter by
+  max(6 studs, 15 %); otherwise "kept-current-route". Blocked routes and
+  partial routes replan as before.
+- Frame cost: rescue shortcut scan 3 candidates every 0.35 s (was 4 every
+  0.25 s); AutoHelp idle poll 0.1 s (was 0.06). Compile-checked only.
