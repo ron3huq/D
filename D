@@ -16016,11 +16016,7 @@ function AH.Eval()
                                 vis = hit == nil or FH.DoorOf(hit.Instance) ~= nil
                             end
                         end
-                        -- A Beast 45+ studs off is not a chase yet (user: AutoHide
-                        -- ran from far Beasts); 60 when it sprints at us.
-                        local bSpeed = Flat(motion.observedVelocity or br.AssemblyLinearVelocity).Magnitude
-                        local chaseRange = math.min(seeRange, AH.ThreatRange(bSpeed > 20 and 60 or 45))
-                        if not vis and sameFloor and pursuing and d <= chaseRange then
+                        if not vis and sameFloor and pursuing and d <= seeRange then
                             local o = position + Vector3.new(0, 1.5, 0)
                             local hit = Workspace:Raycast(o, (mr.Position + Vector3.new(0, 1, 0)) - o, rayParams)
                             -- A door between us does not stop a Beast walking in.
@@ -16066,17 +16062,6 @@ function AH.Eval()
                         end
                         if vis then motion.seenAt = now end
                         if vis then res.danger = true end
-                        if res.beastRoot == br then
-                            res.closing, res.facingMe = beastIn, facingMe
-                            res.speed = bvel.Magnitude
-                            -- Line of sight right now (two eye heights).
-                            if now - (motion.losAt or 0) > 0.2 then
-                                motion.losAt = now
-                                motion.los = seen()
-                                if motion.los then motion.losSeenAt = now end
-                            end
-                            res.lostFor = now - (motion.losSeenAt or now)
-                        end
                     end
                 else
                     afkBeast = true
@@ -16475,28 +16460,10 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
     -- unpredictably, but never frame to frame (no shake).
     local nowW = os.clock()
     local w = AH.Weave
-    local gap = Flat(rp - bp).Magnitude
-    local chased = gap < 32 and bvel ~= nil and Flat(bvel):Dot(away) > 4
     if not w or nowW >= w.untilAt then
-        -- Chased close: bend more often and harder (a dead straight line is
-        -- what lets a faster Beast catch up; Workspace 17/11: 4 of 4 close
-        -- chases caught after 2-6 s of straight running).
-        local span = chased and 70 or 55
-        local side = w and w.side and -w.side or (math.random() < 0.5 and -1 or 1)
-        local angle = side * math.rad(span * (0.45 + math.random() * 0.55))
-        w = { angle = angle, side = side,
-            untilAt = nowW + (chased and (0.8 + math.random() * 0.7) or (1.5 + math.random() * 1.5)) }
+        w = { angle = math.rad((math.random() * 2 - 1) * 55), untilAt = nowW + 1.5 + math.random() * 1.5 }
         AH.Weave = w
     end
-    -- Line-of-sight break: a point the Beast cannot see from its eyes is
-    -- worth far more than plain distance (corners, doorways, props).
-    local eye = bp + Vector3.new(0, 2, 0)
-    local function hidden(point)
-        local target = Vector3.new(point.X, point.Y + 1, point.Z)
-        local hit = Workspace:Raycast(eye, target - eye, rayParams)
-        return hit ~= nil and not FH.DoorOf(hit.Instance)
-    end
-    local losWeight = gap < 30 and 16 or gap < 50 and 9 or 0
     local weave = away * math.cos(w.angle) + Vector3.new(-away.Z, 0, away.X) * math.sin(w.angle)
     local headings, candidates = { forward }, {}
     -- Exact travel and threat bearings survive rotation of the map. Scan each
@@ -16544,19 +16511,7 @@ function AH.Steer(rp, bp, bvel, feetY, juke)
                     - AH.FrontPenalty(point, bp)
                     - ((AH.VaultCommit and os.clock() < AH.VaultCommit.untilAt
                         and dir:Dot(AH.VaultCommit.dir) < 0) and 20 or 0)
-                    + math.max(dir:Dot(weave), 0) * (chased and 9 or 5)
-                if losWeight > 0 then
-                    local mid = rp + step * 0.5
-                    if hidden(point) then
-                        score = score + losWeight
-                    elseif hidden(Vector3.new(mid.X, point.Y, mid.Z)) then
-                        score = score + losWeight * 0.5
-                    elseif chased and dir:Dot(away) > 0.94 and run >= full then
-                        -- Open, dead-straight run away in full view: the most
-                        -- predictable line there is.
-                        score = score - 7
-                    end
-                end
+                    + math.max(dir:Dot(weave), 0) * 5
                 candidates[#candidates + 1] = { point = point, run = run, dir = dir, score = score }
             end
         end
@@ -16927,13 +16882,7 @@ function AH.JukeAim(rp, bp, bvel, feetY, state, forward, danger)
     local best, bestScore, bestDir, bestSide
     -- Randomize the preferred angle once per burst, never once per frame.
     local first = math.random() < 0.5 and 45 or 60
-    local angles = { first, first == 45 and 60 or 45 }
-    -- Sprinting Beast (> 20 studs/s) or inside 12 studs: a sharp side cut
-    -- (75-90 deg) makes its run and swing overshoot; a 45 deg bend does not.
-    if velocity.Magnitude > 20 or distance < 12 then
-        angles = math.random() < 0.5 and { 80, 65, 50 } or { 65, 80, 50 }
-    end
-    for _, angle in ipairs(angles) do
+    for _, angle in ipairs({ first, first == 45 and 60 or 45 }) do
         for _, side in ipairs({ preferred, -preferred }) do
             local rad = math.rad(angle)
             local dir = forward * math.cos(rad) + across * (math.sin(rad) * side)
@@ -17273,19 +17222,6 @@ end
 -- Candidates are the open straight run (AH.PickFlee), the far side of nearby
 -- doors, and points ~28 studs away on the side away from the Beast even if
 -- a wall is in between (the planner then finds the stairs/door/window).
--- Chase over (Workspace 17/11: 18 s of flight with the Beast 60-160 studs
--- away and walking off): far (70+), or 32+ studs and not closing in, or out
--- of its sight for 2 s at 24+ studs while it is not running at us.
-function AH.CalmNow(e)
-    e = e or AH.Last
-    if not e or e.danger then return false end
-    local d = e.dist or math.huge
-    if d >= AH.ThreatRange(AH.LeaveRange) then return true end
-    local closing = e.closing or 0
-    if d >= AH.ThreatRange(32) and closing < 2 then return true end
-    if d >= AH.ThreatRange(24) and closing < 4 and (e.lostFor or 0) >= 2 then return true end
-    return false
-end
 function AH.PathEscape(tok)
     local e = AH.Last
     local root = RootNow()
@@ -17331,10 +17267,7 @@ function AH.PathEscape(tok)
         tok,
         function() return goal end,
         3.5,
-        function()
-            return not tok.ok() or os.clock() - t0 > 4 or AH.Down() or AH.PodsPending()
-                or os.clock() - t0 > 0.6 and AH.CalmNow(AH.Eval())
-        end,
+        function() return not tok.ok() or os.clock() - t0 > 4 or AH.Down() or AH.PodsPending() end,
         { noDoor = false, maxTime = 4, nearOk = 6, evade = true, windows = true }
     )
 end
@@ -17633,10 +17566,10 @@ function AH.Go(tok)
         local e = AH.Eval()
         local now = os.clock()
         if e.afk then break end
-        if not e.danger and AH.CalmNow(e) then
-            safeSince = safeSince or now
-        else
+        if e.danger or e.dist < AH.ThreatRange(AH.LeaveRange) then
             safeSince = nil
+        else
+            safeSince = safeSince or now
         end
         if safeSince and now - safeSince >= AH.SafeTime and not AH.ActiveDrop(tok, hum, root) then break end
         local rp = root.Position
