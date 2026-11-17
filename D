@@ -10589,7 +10589,9 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         rescueShortcutAt = -math.huge
         table.clear(lookaheadCheck)
     end
-    local function reset()
+    local function reset(why)
+        -- Which rule dropped the route (recordings could not tell, live).
+        if why and mode == "path" and FH.Diag then FH.Diag("drop", why) end
         gen = gen + 1
         if job and job.done then dispose(job.res) end
         job = nil
@@ -10601,7 +10603,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         pendingSteer.progressPos, pendingSteer.progressAt = nil, nil
     end
     local function finish(result, stop)
-        reset()
+        reset("L10606")
         if FH.VerticalRouteWait and FH.VerticalRouteWait.token == token then FH.VerticalRouteWait = nil end
         local crossing, drop = Follow.CrossingTraversal, Follow.DropTraversal
         if crossing and crossing.token == token then Follow.CrossingTraversal = nil end
@@ -10640,6 +10642,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     end
     local function setPath(w, full, path)
         local hum, root = GetHumanoid(), RootNow()
+        local nativeW = w
         local okPrune, pruned = pcall(pruneSpikes, w)
         if okPrune and pruned and #pruned >= 2 then w = pruned end
         local index = 2
@@ -10758,6 +10761,17 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         activePath, laIdx = path, nil
         if path then
             blockedConn = path.Blocked:Connect(function(blockedIndex)
+                -- The game numbers the native waypoints; ours may be pruned or
+                -- re-shaped: map the blocked point to our nearest waypoint.
+                local bp = nativeW and nativeW[blockedIndex]
+                if bp and wps and wps ~= nativeW then
+                    local best, bd
+                    for j = 1, #wps do
+                        local dd = (wps[j].Position - bp.Position).Magnitude
+                        if not bd or dd < bd then best, bd = j, dd end
+                    end
+                    if best then blockedIndex = best end
+                end
                 if blockedIndex >= wpi then
                     blockedAt = math.min(blockedAt or blockedIndex, blockedIndex)
                     planAt = -math.huge
@@ -11239,6 +11253,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     local stairHopAt = 0
     local lastRouteAim, lastRouteAimAt = nil, 0
+    local lastRouteW, lastRouteI
     local climbWatch
     local aboveWp
     local pushBanUntil = 0
@@ -11251,7 +11266,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         local manualAt = os.clock()
         if Ctl.Gate() then
             local paused = os.clock() - manualAt
-            reset()
+            reset("L11269")
             if opts.rescueJuke then
                 startT = startT + paused
                 pendingSteer.failedLanes, pendingSteer.trail, pendingSteer.trailAt = nil, {}, 0
@@ -11347,7 +11362,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     -- spot as a failing island so the next ticks step off its
                     -- nearest edge / use local steering instead.
                     FH.PlanFailSpot = { pos = rp, n = 3, at = now }
-                    reset()
+                    reset("L11365")
                     nextPlan = now + 0.8
                     task.wait(0.03)
                     continue
@@ -11388,7 +11403,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     pendingSteer.failedLanes[#pendingSteer.failedLanes + 1] =
                         { origin = rp, dir = attempt.dir, untilAt = now + 5 }
                     rescueControl.attempt = nil
-                    reset()
+                    reset("L11406")
                     progressPosition, progressAt, nextPlan = rp, now, 0
                 end
             end
@@ -11404,7 +11419,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 local blockedDirection = blocked and blocked.Magnitude > 0.1 and blocked.Unit
                 local point, landing, hop = Follow.RescueLocalLane(token, hum, root, goal, feetY, pendingSteer, true, blockedDirection)
                 if landing then
-                    reset()
+                    reset("L11422")
                     dropTraversal = Follow.StartDrop(token, hum, root, landing, hop)
                     pendingSteer.suspended = nil
                     if dropTraversal then
@@ -11549,7 +11564,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if FH.ForceUnstick then
             FH.ForceUnstick = false
             FH.Unstick(hum, root, token, goal, 0.6)
-            reset()
+            reset("L11567")
             continue
         end
         -- Orbit guard: circling inside 1.6x the stop radius for over a second
@@ -11636,7 +11651,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 return finish("nopath", true)
             end
             if mode == "direct" then pushBanUntil = now + 1.5 end
-            reset()
+            reset("L11654")
             nextPlan = 0
             progressPosition, progressAt = rp, now
         end
@@ -11669,7 +11684,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     if FH.Diag then FH.Diag("walk", "wedge-escape") end
                     local low = Workspace:Raycast(Vector3.new(rp.X, feetY + 0.8, rp.Z), best * 3, rayParams)
                     if low then pcall(function() hum.Jump = true end) end
-                    reset()
+                    reset("L11687")
                     nextPlan = now + 0.8
                     FH.Move(token, hum, wedge.aim)
                     task.wait(0.03)
@@ -11738,7 +11753,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 local res = applyRes(j.res, rp, goal)
                 if not alive() then return finish("abort", false) end
                 if res == "door" then
-                    reset()
+                    reset("L11756")
                     rescueDoorTried = false
                     stuck, fails = 0, 0
                     continue
@@ -11789,7 +11804,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                             local passed = Follow.PassDoor(token, bestG, abort, nil, opts.rescueJuke, pendingSteer)
                             if not alive() then return finish("abort", false) end
                             if passed then
-                                reset()
+                                reset("L11807")
                                 fails, nextPlan = 0, 0
                                 continue
                             end
@@ -12009,7 +12024,23 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             -- open, instead of letting local steering pick another heading
             -- for a few ticks - the to-and-fro at doors, windows and gaps
             -- (recordings: ~400 reversals right after a route -> none switch).
-            if job and not job.done and lastRouteAim and now - lastRouteAimAt < 0.6 and not flying
+            -- The old route's aim already reached (dropped right at a
+            -- waypoint): carry on along its next same-floor waypoints instead
+            -- of local steering straight at the goal - that was a 90-180 deg
+            -- turn and a turn back when the new route came (Workspace_1 17/11:
+            -- ~100 sharp turns at route -> none switches in 10 min of farm).
+            if not evade and job and not job.done and lastRouteW and lastRouteAim and now - lastRouteAimAt < 0.8 and not flying
+                and Flat(lastRouteAim - rp).Magnitude <= 1.5 then
+                for k = lastRouteI or 1, math.min(#lastRouteW, (lastRouteI or 1) + 4) do
+                    local q = lastRouteW[k]
+                    if q.Action == Enum.PathWaypointAction.Jump or math.abs(q.Position.Y - feetY) > 1.5 then break end
+                    if Flat(q.Position - rp).Magnitude > 1.5 then
+                        lastRouteAim, lastRouteI = q.Position, k
+                        break
+                    end
+                end
+            end
+            if job and not job.done and lastRouteAim and now - lastRouteAimAt < (evade and 0.6 or 0.8) and not flying
                 and Flat(lastRouteAim - rp).Magnitude > 1.5 then
                 local dirKeep = Flat(lastRouteAim - rp).Unit
                 local vNow = Flat(root.AssemblyLinearVelocity)
@@ -12143,7 +12174,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                                         table.insert(FH.DropTriedAt, { pos = rp, feet = feetY, at = now })
                                         if #FH.DropTriedAt > 12 then table.remove(FH.DropTriedAt, 1) end
                                         if FH.Diag then FH.Diag("walk", "drop-shortcut") end
-                                        reset()
+                                        reset("L12177")
                                         dropTraversal = drop
                                         FH.Move(token, hum, landing)
                                         dropped = true
@@ -12344,7 +12375,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                     wp = wps[wpi]
                 else
                     local point, landing, hop = Follow.RescueLocalLane(token, hum, root, nextPoint, feetY, pendingSteer)
-                    reset()
+                    reset("L12378")
                     if point then
                         local direction = Flat(point - rp)
                         pendingSteer.aim, pendingSteer.dir, pendingSteer.goal = point, direction.Unit, goal
@@ -12442,7 +12473,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                         -- This route lost its forward lane. Replan from here rather
                         -- than alternating between its old corner and lookahead.
                         banDirect = math.max(banDirect, now + 0.5)
-                        reset()
+                        reset("L12476")
                         nextPlan = 0
                         if
                             not Follow.PlanStep(
@@ -12503,6 +12534,47 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 end
                 if laIdx and laIdx > wpi and laIdx <= #wps and (not blockedAt or laIdx < blockedAt) then
                     aim = wps[laIdx].Position
+                end
+            end
+            -- Rounded corners (not AutoHide): within 4 studs of the aimed
+            -- waypoint, slide the aim along the next leg instead of
+            -- snapping 45-90 deg on arrival (Workspace_1 17/11: ~55 snap
+            -- turns at waypoints in 10 min of farm). Only over a clear,
+            -- floored, same-level lane for the body's width.
+            local kc = (laIdx and laIdx > wpi) and laIdx or wpi
+            if not evade and not flying and wp.Action ~= Enum.PathWaypointAction.Jump and not jumpTraversal
+                and wps[kc] and not wps[kc].RescueCorner and not (wps[kc + 1] and wps[kc + 1].RescueCorner) then
+                local k = kc
+                local cur, nxt = wps[k], wps[k + 1]
+                local toCur = Flat(cur.Position - rp)
+                if nxt and toCur.Magnitude < 4 and toCur.Magnitude > 0.3
+                    and (not blockedAt or k + 1 < blockedAt)
+                    and cur.Action ~= Enum.PathWaypointAction.Jump and nxt.Action ~= Enum.PathWaypointAction.Jump
+                    and math.abs(nxt.Position.Y - cur.Position.Y) <= 1.2 and math.abs(cur.Position.Y - feetY) <= 1.5 then
+                    local leg = Flat(nxt.Position - cur.Position)
+                    if leg.Magnitude > 0.5 then
+                        local carrot = cur.Position + leg.Unit * math.min(4 - toCur.Magnitude, leg.Magnitude)
+                        local v = Flat(carrot - rp)
+                        local clear = v.Magnitude > 0.5
+                        if clear then
+                            local vd = v.Unit
+                            local perp = Vector3.new(-vd.Z, 0, vd.X)
+                            for _, off in ipairs({ 0, 1.2, -1.2 }) do
+                                local o1 = Vector3.new(rp.X, feetY + 1.3, rp.Z) + perp * off
+                                local o2 = Vector3.new(rp.X, feetY + 3, rp.Z) + perp * off
+                                if Workspace:Raycast(o1, v, rayParams) or Workspace:Raycast(o2, v, rayParams) then
+                                    clear = false
+                                    break
+                                end
+                            end
+                        end
+                        if clear then
+                            local mid = rp + v * 0.5
+                            local g = Workspace:Raycast(Vector3.new(mid.X, feetY + 3, mid.Z), Vector3.new(0, -10, 0), rayParams)
+                            clear = g ~= nil and math.abs(g.Position.Y - feetY) <= 1.5
+                        end
+                        if clear and clearLane(rp, carrot, feetY) then aim = carrot end
+                    end
                 end
             end
         end
@@ -12577,7 +12649,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 if DoorFail[pdoor] and now < DoorFail[pdoor] then
                     banDirect = math.max(banDirect, now + 1.2)
                     FH.Move(token, hum, rp, false, goal)
-                    reset()
+                    reset("L12611")
                     task.wait(0.03)
                     continue
                 elseif doorTries < 10 and now - doorAt > 1.0 then
@@ -12591,7 +12663,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                             banDirect = math.max(banDirect, os.clock() + 2)
                             if stableFollow then FH.RejectLane(token, hum, g.FarPos) end
                         end
-                        reset()
+                        reset("L12625")
                         stuck = 0
                         task.wait()
                         continue
@@ -12602,7 +12674,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             elseif (kind == "wall" or kind == "door") and mode == "direct" then
                 if routeProgress and not flying then FH.RejectLane(token, hum, aim) end
                 banDirect = now + 4
-                reset()
+                reset("L12636")
                 continue
             end
         end
@@ -12623,7 +12695,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             -- Native paths can become blocked without a Path.Blocked signal.
             -- Reject the collision aim now and keep walking a verified local lane.
             banDirect = math.max(banDirect, now + 1)
-            reset()
+            reset("L12657")
             nextPlan = 0
             if
                 not Follow.PlanStep(token, hum, root, goal, feetY, pendingSteer, opts.rescueJuke, opts.approachModel)
@@ -12648,7 +12720,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if mode == "path" and wps and wpi >= #wps and not flying and Flat(aim - rp).Magnitude < 0.6
             and flatDist > stopDist + 1.5 then
             if FH.Diag then FH.Diag("walk", "partial-route-end") end
-            reset()
+            reset("L12682")
             nextPlan = 0
             aim = goal
         end
@@ -12666,7 +12738,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = Follow.CenterAim(rp, aim, feetY)
         end
         FH.Move(token, hum, aim, false, nil, preciseCorner)
-        if mode == "path" or mode == "direct" then lastRouteAim, lastRouteAimAt = aim, now end
+        if mode == "path" or mode == "direct" then
+            lastRouteAim, lastRouteAimAt = aim, now
+            if mode == "path" and wps then lastRouteW, lastRouteI = wps, wpi else lastRouteW = nil end
+        end
         -- AutoHelp on stairs: hop up/down them like a player (faster), but
         -- only running straight along the flight (never at an angle into the
         -- side edge), with the next legs in line, away from the goal.

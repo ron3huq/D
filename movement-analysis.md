@@ -1374,3 +1374,21 @@ New (user rule): under 50 % health, AutoFarm teams up - a computer a teammate is
 hacking (with a free slot) comes first, otherwise computers near teammates. The
 current target is only dropped for a computer a teammate is hacking (checked every
 2 s, never while we are hacking).
+
+## Round 58 (Workspace_1 17/11 re-read for sway / sharp turns)
+
+Heading change between 0.1 s samples while running (>8 studs/s, on the ground, in a
+match), farm 8.5 min + rescue 2.7 min. Causes of >= 45 deg turns:
+- route dropped -> local steering (path -> none): 81 (47 of them > 90 deg)
+- arrival at a waypoint (snap to the next leg): farm 52, rescue 23
+- aim moved with the same waypoint (lookahead/side aims): 47
+- landing after a jump: 33; farm goal changed: 26
+
+Changes:
+- Corner rounding (farm + rescue, not AutoHide, not rescue precision corners): within
+  4 studs of the aimed waypoint the aim slides along the next leg over a clear,
+  floored, same-level lane.
+- Route dropped right at a waypoint while the new plan computes: keep walking the old
+  route's next same-floor waypoints (up to 0.8 s) instead of steering at the goal.
+- Path.Blocked index mapped onto our (pruned/reshaped) waypoint list.
+- Every route drop now logs `drop` with the code line, for the next recordings.
