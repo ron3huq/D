@@ -1361,3 +1361,16 @@ Changes:
 - Rescue: on top of a prop over the current waypoint for 0.6 s -> next waypoint
   ("over-waypoint-advanced").
 - Push detection 0.6 s in direct mode, and no direct line for 1.5 s afterwards.
+
+## Round 57 (Workspace_1 17/11, 9 recordings, after Round 56)
+
+- Wrong-way runs after jumps: 46 (Round 56 data) -> 2. Post-jump far-aim reversals
+  3.2/min -> 2.0/min of farm walking. Rescue reversals 17.2 -> 9.2 per minute.
+- Total farm/rescue standing (>= 0.4 s, real stalls) 174 s in 2.5 h -> 72.5 s in ~1.2 h.
+- Left: farm ~1 s pauses when the goal is on another floor and the planner fails;
+  one 5 s stand after leaving a computer (aim 3 studs away blocked, no walk running).
+
+New (user rule): under 50 % health, AutoFarm teams up - a computer a teammate is
+hacking (with a free slot) comes first, otherwise computers near teammates. The
+current target is only dropped for a computer a teammate is hacking (checked every
+2 s, never while we are hacking).

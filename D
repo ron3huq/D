@@ -14906,6 +14906,50 @@ function Follow.Main(token, player)
             farmComputer = nil
             return nil
         end
+        -- Under 50 % health (user rule): team up. Prefer a computer a teammate
+        -- is hacking (join them on a free slot), otherwise computers near the
+        -- teammates; the nearest of those to us.
+        local low = FH.MatchOn() and FH.HealthFraction() < 0.5
+        local mates = low and FH.Teammates() or {}
+        local function mateInfo(comp)
+            local cp = comp:GetPivot().Position
+            local trigs = FH.CompTriggers(comp)
+            local hacking, nearest = false, nil
+            for _, m in ipairs(mates) do
+                local d = Flat(m.root.Position - cp).Magnitude
+                if not nearest or d < nearest then nearest = d end
+                if math.abs(m.root.Position.Y - cp.Y) < 6 then
+                    for _, t in ipairs(trigs) do
+                        if m.target == t or m.target and m.target.Parent == t then hacking = true break end
+                    end
+                    if not hacking and d < 7 then hacking = true end
+                end
+            end
+            local free = 0
+            for _, t in ipairs(trigs) do
+                if t.Parent and not FH.ComputerSlotTaken(comp, t) then free = free + 1 end
+            end
+            return hacking and free > 0, nearest
+        end
+        if not soft and farmComputer and #mates > 0 then
+            -- Re-pick (at most every 2 s) when the current one has nobody of
+            -- ours near it - but never while we are hacking it.
+            local mine = FH.Stat(LocalPlayer, FH.HACK_EVENT)
+            if not (mine and mine.Value) and now >= (FH.TeamPickAt or 0) and farmComputer.Parent then
+                FH.TeamPickAt = now + 2
+                -- Switch only to a computer a teammate is actually hacking:
+                -- re-ranking by moving teammates would turn us round on the way.
+                if not mateInfo(farmComputer) then
+                    for _, comp in ipairs(Computers) do
+                        if comp ~= farmComputer and comp.Parent and IsRealComputer(comp, map) and not compDone(comp)
+                            and not isTimedOut(comp) and not AH.Unsafe(comp:GetPivot().Position) and mateInfo(comp) then
+                            farmComputer = nil
+                            break
+                        end
+                    end
+                end
+            end
+        end
         if not soft and farmComputer then
             if
                 farmComputer.Parent
@@ -14925,6 +14969,14 @@ function Follow.Main(token, player)
                 local p = comp:GetPivot().Position
                 if not AH.Unsafe(p) then
                     local s = Flat(p - mr.Position).Magnitude + math.abs(p.Y - mr.Position.Y) * 1.5
+                    if #mates > 0 then
+                        local joined, mateDist = mateInfo(comp)
+                        if joined then
+                            s = s - 1000
+                        elseif mateDist then
+                            s = s + mateDist * 0.8
+                        end
+                    end
                     if not bs or s < bs then
                         best, bs = comp, s
                     end
@@ -18139,6 +18191,37 @@ function AR.BeastCampsPodNow(trig)
         end
     end
     return false
+end
+-- Our health as a fraction (Humanoid and the game's Health stat, the lower).
+function FH.HealthFraction()
+    local f
+    local hum = GetHumanoid()
+    if hum and hum.MaxHealth > 0 then f = hum.Health / hum.MaxHealth end
+    local hp = FH.Stat(LocalPlayer, FH.HP)
+    if hp and type(hp.Value) == "number" and hp.Value > 0 then
+        AR.HpMax = math.max(AR.HpMax or 0, hp.Value)
+        local g = hp.Value / AR.HpMax
+        f = f and math.min(f, g) or g
+    end
+    return f or 1
+end
+-- Other survivors still free in the round (not the Beast, not caught, not
+-- knocked down, not escaped), with the computer each one is hacking (if any).
+function FH.Teammates()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p:FindFirstChild("TempPlayerStatsModule") and not FH.True(p, FH.BEASTN)
+            and not FH.True(p, FH.ESC) and not FH.True(p, FH.CAP) and not FH.True(p, FH.RAG)
+            and FH.InMatchPlayer(p) then
+            local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            local hp = FH.Stat(p, FH.HP)
+            if r and not (hp and type(hp.Value) == "number" and hp.Value <= 0) then
+                local action = FH.Stat(p, FH.HACK_EVENT)
+                list[#list + 1] = { player = p, root = r, target = action and action.Value or nil }
+            end
+        end
+    end
+    return list
 end
 -- Below 10% health a rescue is too likely to end in our own capture: leave
 -- the captives to the others and keep only AutoFarm + AutoHide.
