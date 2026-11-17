@@ -4846,16 +4846,24 @@ function FH.JumpMoveStep(dt)
         end
         return
     end
-    if motion.precision then
-        FH.PreciseMove(hum, root, motion.aim, dt)
-        motion.sentAt = os.clock()
-        return
-    end
     local direction = Flat(motion.aim - root.Position)
     if direction.Magnitude <= 0.5 then
         -- Same in a scripted flight: keep the take-off heading, never zero.
+        -- Also for AutoHelp's precise steering: its aim-at-self mid-jump gave
+        -- zero input and the avatar hopped straight up and down on stairs
+        -- (Workspace 17/11: 14 rescue jumps with no input).
         local keep = flight.commitDir or motion.airDir
+        if not keep then
+            local v = Flat(root.AssemblyLinearVelocity)
+            if v.Magnitude > 2 then keep = v.Unit end
+        end
         if keep then hum:Move(keep, false) end
+        return
+    end
+    if motion.precision then
+        FH.PreciseMove(hum, root, motion.aim, dt)
+        motion.airDir, motion.airDirAt = direction.Unit, os.clock()
+        motion.sentAt = os.clock()
         return
     end
     local unit = direction.Unit
@@ -4867,9 +4875,14 @@ function FH.JumpMoveStep(dt)
         if not flight.commitDir then
             local v = Flat(root.AssemblyLinearVelocity)
             flight.commitDir = v.Magnitude > 4 and v.Unit:Dot(unit) > 0 and v.Unit or unit
+            flight.from = root.Position
         end
-        if unit:Dot(flight.commitDir) < 0.3 then unit = flight.commitDir end
-        FH.LandCommit = { token = tok, dir = flight.commitDir, untilAt = os.clock() + 0.45 }
+        -- Only a swing BACK (> ~100 deg) is held. A sideways aim is the route
+        -- turning at the waypoint we jumped at: holding the take-off heading
+        -- there carried us 8-12 studs past the turn and then back (Workspace
+        -- 17/11: ~45 wrong-way runs of 0.4-1.1 s after jumps).
+        if unit:Dot(flight.commitDir) < -0.2 then unit = flight.commitDir end
+        FH.LandCommit = { token = tok, dir = flight.commitDir, untilAt = os.clock() + 0.45, from = flight.from }
     end
     hum:Move(unit, false)
     motion.sentAt = os.clock()
@@ -4907,7 +4920,45 @@ function FH.GroundMoveStep(dt)
     then
         return
     end
-    if motion.precision then FH.PreciseMove(hum, root, motion.aim, dt); return end
+    -- Hanging on a ladder/truss with no input (stuck onto it while fleeing,
+    -- then no route from up there): Workspace 17/11 showed 30 s clinging
+    -- 10 studs up while the Beast walked past. After 0.8 s still, let go:
+    -- jump off backwards and let the route start again from the floor.
+    if hum:GetState() == Enum.HumanoidStateType.Climbing then
+        local now = os.clock()
+        local hang = FH.ClimbHang
+        if root.AssemblyLinearVelocity.Magnitude < 1.5 then
+            if not hang or hang.hum ~= hum then
+                hang = { hum = hum, at = now }
+                FH.ClimbHang = hang
+            elseif now - hang.at > 0.8 then
+                local back = Flat(-root.CFrame.LookVector)
+                hang.at = now + 0.6
+                hum.Jump = true
+                if back.Magnitude > 0.1 then hum:Move(back.Unit, false) end
+                if FH.Diag then FH.Diag("walk", "ladder-let-go") end
+                return
+            end
+        else
+            FH.ClimbHang = nil
+        end
+    elseif FH.ClimbHang then
+        FH.ClimbHang = nil
+    end
+    if motion.precision then
+        local dirP = Flat(motion.aim - root.Position)
+        if dirP.Magnitude > 0.5 then
+            motion.airDir, motion.airDirAt = dirP.Unit, os.clock()
+        elseif hum.FloorMaterial == Enum.Material.Air and motion.airDir
+            and os.clock() - (motion.airDirAt or 0) < 1.2 then
+            -- AutoHelp: aim at ourselves mid-air (replan) must not zero the
+            -- jump; keep the last heading until we land.
+            hum:Move(motion.airDir, false)
+            return
+        end
+        FH.PreciseMove(hum, root, motion.aim, dt)
+        return
+    end
     local direction = Flat(motion.aim - root.Position)
     if direction.Magnitude <= 0.5 then
         -- Airborne with a "hold here" aim (route still computing, aim at
@@ -4926,7 +4977,9 @@ function FH.GroundMoveStep(dt)
     local tok = motion.token
     if hum.FloorMaterial == Enum.Material.Air and not (type(tok) == "table" and tok.owner == "evade") then
         motion.airLock = motion.airLock or motion.airDir or direction.Unit
-        if direction.Unit:Dot(motion.airLock) < 0.3 then
+        -- Hold only against a swing back (> ~100 deg); a sideways aim is a
+        -- route turn and must be followed (overshoot then turn back, live).
+        if direction.Unit:Dot(motion.airLock) < -0.2 then
             hum:Move(motion.airLock, false)
             return
         end
@@ -4957,9 +5010,23 @@ function FH.FlipGuard(motion, root, direction)
     -- turning back on the far side (no hesitation), while that way is open.
     local land = FH.LandCommit
     if land and land.token == tok and now < land.untilAt and direction.Magnitude > 2
-        and d:Dot(land.dir) < 0 then
-        local hit = Workspace:Raycast(root.Position, land.dir * 3, rayParams)
-        if not hit then return land.dir end
+        and d:Dot(land.dir) < -0.2 then
+        -- Only after jumping OVER something (sill, rail, prop): something low
+        -- now lies between us and the take-off spot. A plain overshoot on open
+        -- ground turns straight back to the route (it ran on 0.45 s more and
+        -- then came back, live).
+        if land.crossed == nil then
+            land.crossed = false
+            local back = land.from and Flat(land.from - root.Position)
+            if back and back.Magnitude > 0.5 then
+                local low = Vector3.new(root.Position.X, root.Position.Y - 1.6, root.Position.Z)
+                land.crossed = Workspace:Raycast(low, back.Unit * math.min(back.Magnitude, 8), rayParams) ~= nil
+            end
+        end
+        if land.crossed then
+            local hit = Workspace:Raycast(root.Position, land.dir * 3, rayParams)
+            if not hit then return land.dir end
+        end
         FH.LandCommit = nil
     end
     if not g or g.token ~= motion.token then
@@ -11173,6 +11240,8 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local stairHopAt = 0
     local lastRouteAim, lastRouteAimAt = nil, 0
     local climbWatch
+    local aboveWp
+    local pushBanUntil = 0
     local keptRoute = false
     local wallSeenAt
     while alive() do
@@ -11520,7 +11589,11 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
         if job and not job.done and now - progressAt > 8 then return finish("timeout", true) end
         -- Pushing into something for 0.9 s (any owner: farm, flee, exit,
         -- rescue) rejects that lane and replans instead of pressing on.
-        if mode and not flying and now - progressAt > 0.9
+        -- Straight-line walks into something the line test cannot see (thin
+        -- rail, invisible collider): react after 0.6 s, not 0.9 s, and do not
+        -- pick the same straight line again at once (Workspace 17/11: two
+        -- 0.9 s pushes in a row, ~1.7 s standing at a wall).
+        if mode and not flying and now - progressAt > (mode == "direct" and 0.6 or 0.9)
             and not FH.IsWorking(token) and not Follow.KeyDown and not AR.KeyDown
             and not Follow.Held and not AR.Held and not Follow.ActiveEscape(token, hum, root) then
             local attempted = FH.Motion.token == token and FH.Motion.aim
@@ -11562,6 +11635,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 FH.NoProgressSpot = nil
                 return finish("nopath", true)
             end
+            if mode == "direct" then pushBanUntil = now + 1.5 end
             reset()
             nextPlan = 0
             progressPosition, progressAt = rp, now
@@ -11792,6 +11866,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             local lineOk, jumps, big = false, 0, 0
             if
                 (now > banDirect and now > FH.BanDirect or flatDist < 18)
+                and now > pushBanUntil
                 and flatDist < 70
                 and (not stableFollow or dyg < Follow.MaxDY)
             then
@@ -12242,6 +12317,21 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
                 continue
             end
             local wp = wps[wpi]
+            -- Already standing on top of the prop/rail this waypoint jumps
+            -- onto (its point is under our feet): the lane search below kept
+            -- us dithering on top for 8 s (Workspace 17/11). After 0.6 s there,
+            -- go on to the next waypoint.
+            if opts.rescueJuke and not flying and wps[wpi + 1] and Flat(wp.Position - rp).Magnitude <= 1.5
+                and wp.Position.Y < feetY - 1.5 then
+                if not aboveWp or aboveWp.wps ~= wps or aboveWp.i ~= wpi then
+                    aboveWp = { wps = wps, i = wpi, at = now }
+                elseif now - aboveWp.at > 0.6 then
+                    aboveWp = nil
+                    wpi, laIdx = wpi + 1, nil
+                    wp = wps[wpi]
+                    if FH.Diag then FH.Diag("walk", "over-waypoint-advanced") end
+                end
+            end
             if opts.rescueJuke and not flying and Flat(wp.Position - rp).Magnitude <= 1.2
                 and math.abs(wp.Position.Y - feetY) > 1.5 then
                 local nextPoint = wps[wpi + 1] and wps[wpi + 1].Position or goal

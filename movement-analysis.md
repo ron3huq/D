@@ -1339,3 +1339,25 @@ Rescue episodes: 90. Most reach the pod at ~16 studs/s with travel
   10 studs, back round a pillar). setPath prunes such spike waypoints
   (> ~120 deg turn) when the next waypoint is straight reachable on the
   same floor with no hop. Compile-checked only.
+
+## Round 56 (Workspace 17/11, 22 recordings, ~2.5 h)
+
+Measured (farm+rescue, ground, same goal for 1.5 s):
+- ~470 real reversals; ~300 of them within 0.8 s after a jump (overshoot then turn back).
+- Jump take-off heading held mid-air for any swing > 72 deg and 0.45 s more after
+  landing: ~45 wrong-way runs of 0.4-1.1 s (8-12 studs past the route turn).
+- AutoHelp precise steering bypassed the mid-air heading hold: aim-at-self in a jump
+  gave zero input (14 rescue jumps, hopping on the spot on spiral stairs).
+- One 30 s hang on a ladder/truss (Climbing state, no input) after AutoHide ran into it.
+- AutoHelp stood 8 s on top of a prop right above its jump waypoint, dithering.
+- Direct-line walks into a wall: two 0.9 s pushes in a row (~1.7 s standing).
+
+Changes:
+- JumpMoveStep / GroundMoveStep air lock: hold the take-off heading only against a
+  swing back (dot < -0.2); sideways route turns are followed.
+- LandCommit only after jumping over something (low ray back to the take-off spot hits).
+- Precise (rescue) steering: aim-at-self mid-air keeps the last heading (or velocity).
+- Climbing with < 1.5 speed for 0.8 s: jump off backwards ("ladder-let-go").
+- Rescue: on top of a prop over the current waypoint for 0.6 s -> next waypoint
+  ("over-waypoint-advanced").
+- Push detection 0.6 s in direct mode, and no direct line for 1.5 s afterwards.
