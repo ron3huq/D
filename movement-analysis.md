@@ -1392,3 +1392,19 @@ Changes:
   route's next same-floor waypoints (up to 0.8 s) instead of steering at the goal.
 - Path.Blocked index mapped onto our (pruned/reshaped) waypoint list.
 - Every route drop now logs `drop` with the code line, for the next recordings.
+
+## Round 59 (AutoHide, recording 17/11 17:33)
+
+Seen: flight kept 18 s with the Beast 60-164 studs away walking off (release needed
+70+ studs, and PathEscape walks blocked the check up to 4 s); alarms at 70 studs;
+4 of 4 close chases caught after 2-6 s of straight running (Beast 17 studs/s, sprint
+26, we run 16.5 - a straight line always loses).
+
+Changes:
+- Pursuit alarm only within 45 studs (60 if the Beast sprints > 20 studs/s).
+- AH.CalmNow: release at 70+, or 32+ and not closing (< 2 studs/s), or 24+ and out of
+  sight 2 s and not running at us; PathEscape aborts when calm (after 0.6 s).
+- AH.Steer: line-of-sight break bonus (+16 under 30 studs, +9 under 50; half for a
+  hidden midpoint), -7 for an open dead-straight run away in full view while chased,
+  weave alternates sides every 0.8-1.5 s with up to 70 deg when chased.
+- JukeAim: 65-80 deg side cuts when the Beast sprints or is within 12 studs.
