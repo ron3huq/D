@@ -14553,6 +14553,28 @@ function FH.ExitRoute(token, state, abort)
     end
     local door, center = state.door, state.center
     if not center then return "retry" end
+    -- Far from the chosen gate (back from a rescue at the end of the round):
+    -- an open gate clearly nearer wins - go there instead of walking all the
+    -- way back to the old one (user rule).
+    if not state.opening and (center - root.Position).Magnitude > 60 and now >= (state.nearCheckAt or 0)
+        and now - (state.nearSwitchAt or -math.huge) > 10 then
+        state.nearCheckAt = now + 1
+        local mine = (center - root.Position).Magnitude
+        for _, other in ipairs(ExitDoors) do
+            if other ~= door and IsInWorld(other) and other:IsDescendantOf(map) then
+                local c = FH.ExitArea(other)
+                local trigs = c and other:IsA("Model") and FH.Triggers(other) or {}
+                if c and #trigs > 0 and (c - root.Position).Magnitude < mine * 0.7
+                    and FH.ExitDoorOpen(other, c, trigs) and not FH.BeastOnTheWay(root.Position, c) then
+                    if FH.Diag then FH.Diag("exit", "nearer-open-gate") end
+                    state.nearSwitchAt = now
+                    state.door, state.center, state.triggers = nil, nil, nil
+                    state.stand, state.waitPos, state.escaping, state.waiting = nil, nil, nil, nil
+                    return "retry"
+                end
+            end
+        end
+    end
     if not state.stand then
         local nearest
         for _, trigger in ipairs(state.triggers) do
@@ -14636,6 +14658,26 @@ function FH.ExitRoute(token, state, abort)
             state.fail[door], state.door = os.clock() + 3, nil
             return "retry"
         end
+    end
+    -- A teammate is holding this gate's lever: wait for them (up to 40 s),
+    -- do not count it as a failed gate and run to the other exit (user
+    -- report: left before the teammate finished opening it).
+    if not open and state.stand and FH.ExitTeamSignal(door, center, state.triggers) == "opening" then
+        state.teamOpeningSince = state.teamOpeningSince or os.clock()
+        if os.clock() - state.teamOpeningSince < 40 then
+            Follow.Release(token)
+            local r, h = RootNow(), GetHumanoid()
+            if r and h then FH.Move(token, h, r.Position, true) end
+            if FH.Diag and not state.teamWaitNoted then
+                state.teamWaitNoted = true
+                FH.Diag("exit", "wait-teammate-opening")
+            end
+            task.wait(0.1)
+            if stopped() then return interrupted() end
+            return "waiting"
+        end
+    else
+        state.teamOpeningSince, state.teamWaitNoted = nil, nil
     end
     if not open and state.stand then
         local started, hold = os.clock(), { on = false }
@@ -18468,7 +18510,20 @@ end
 -- first unless the captive is close by. Workspace_4 18/11: 1 s into the
 -- hold a pod ~140 studs away pulled us off the lever; we ran there and back
 -- and the round ended before we escaped.
+-- End of round, an exit already open and the Beast chasing us: escape
+-- through it (user rule), no rescue run back into the Beast. The rescue
+-- resumes once the chase is over.
+function AR.ChasedWithOpenExit()
+    if not (AH.Active and FH.ExitOpen() and FH.AnyExitOpen and FH.AnyExitOpen()) then return false end
+    local e = AH.Eval()
+    local now = os.clock()
+    if e.danger == true and not e.panic then AR.ChaseExitAt = now end
+    -- Keep heading for the exit 8 s after the last alarm: an alarm blinking
+    -- off for a moment must not send us back to the pod and into the Beast.
+    return AR.ChaseExitAt ~= nil and now - AR.ChaseExitAt < 8
+end
 function AR.ExitOpeningBlocks(trig)
+    if AR.ChasedWithOpenExit() then return true end
     local holding = FH.ExitHolding and os.clock() - FH.ExitHolding.at < 0.6
     local opening = holding
         or (AH.ExitState and AH.ExitState.opening)

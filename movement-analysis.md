@@ -1489,3 +1489,15 @@ so the existing hold guard did not apply) a pod ~140 studs away took over, we ra
 there, rescued, ran ~140 studs back, and the round ended before we escaped.
 AR.ExitOpeningBlocks: while we hold / are opening a gate, a rescue starts only for a
 pod within 35 studs.
+
+## Round 68 (exit only, user rules)
+
+- Teammate holding our gate's lever (ExitTeamSignal "opening"): wait up to 40 s instead
+  of holding uselessly, timing out after ~4 s without progress and failing the gate
+  (which sent us to the other exit).
+- Exit open + the Beast chasing us: AR.Pending is false while chased and 8 s after
+  (AR.ChasedWithOpenExit), so AutoHide's exit run crosses the open gate instead of
+  rescue <-> flee loops (064110 704-715 s).
+- More than 60 studs from the chosen gate (back from a rescue): an open gate < 70 % as
+  far (and no Beast on the way) is taken instead (at most once per 10 s). The walk back
+  itself was fixed in Round 66 (maxTime by distance).
