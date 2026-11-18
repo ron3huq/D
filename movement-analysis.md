@@ -1459,3 +1459,15 @@ a clear 10-stud lane; not during door/window/drop crossings.
   so just past it the aim turned back to it (0 -> 174 -> -6 -> 174 deg in 0.3 s).
   Now it also applies when the waypoint is already behind us (within 3 studs).
 - Rescue <-> AutoHide swaps now <= 4 per file (was up to 19); rescue-flank fired 11x.
+
+## Round 65 (Workspace_3 18/11: lag + back-and-forth)
+
+- Lag: rounds fell to ~40-46 fps (lobby stayed 60) once the new autohop was loaded:
+  autohop computed map:GetBoundingBox() (walks every map part) every 0.5 s per player
+  while in a round. Now cached per map (60 s). The recorder's map bounds were cached already.
+- Back-and-forth: route detouring away from a goal ~200 studs off (route 80-105 deg,
+  goal -146 deg); each replan dropped the route at a waypoint and local steering turned
+  180 deg to the goal, then back. Re-added only Round 58's "carry on along the old
+  route's next waypoints while the new plan computes" (not the corner rounding).
+- UI: recorder Stop button removed; autohop "Pause" button in its place (green on,
+  grey paused).

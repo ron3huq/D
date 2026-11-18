@@ -3,7 +3,7 @@
 -- fires remotes. Records why/where the avatar stands still, paces back and
 -- forth, or jitters, for long AFK sessions over many rounds.
 --
--- AutoHop is a separate script (autohop.luau). The Stop button ends recording.
+-- AutoHop is a separate script (autohop.luau). DStallRecorder.Stop() ends recording.
 --
 -- Output (executor Workspace root, no subfolder):
 --   D_stall_<date>_<time>_p<part>.txt  — JSON Lines (one JSON object per line)
@@ -749,25 +749,9 @@ gui.Name = "DStallRecorder"
 gui.ResetOnSpawn = false
 pcall(function() gui.Parent = guiParent end)
 if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
--- Compact: just one small "Stop" button (drag to move).
-local button = Instance.new("TextButton")
-button.Size = UDim2.new(0, 56, 0, 26)
-button.Position = UDim2.new(0, 8, 1, -120)
-button.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-button.BackgroundTransparency = 0.15
-button.TextColor3 = Color3.new(1, 1, 1)
-button.Text = "Stop"
-button.Font = Enum.Font.GothamBold
-button.TextSize = 13
-button.Active = true
-button.Draggable = true
-button.Parent = gui
-pcall(function()
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 6)
-    corner.Parent = button
-end)
-
+-- No on-screen button (user: the recorder needs no Stop button; the
+-- AutoHop Pause button sits in its place). getgenv().DStallRecorder.Stop()
+-- still ends recording.
 function R.Stop()
     if not R.running then return end
     R.running = false
@@ -783,10 +767,6 @@ function R.Stop()
     for _, c in ipairs(R.connections) do pcall(function() c:Disconnect() end) end
     pcall(function() gui:Destroy() end)
 end
-button.MouseButton1Click:Connect(function()
-    R.Stop()
-    gui:Destroy()
-end)
 
 -- Header: written in front of the first round we really play.
 R.headerObj = ({

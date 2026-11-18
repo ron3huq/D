@@ -9,7 +9,7 @@
 3. Script **tự khởi động và tự lưu**, không cần bấm gì. Một khung nhỏ ở góc dưới trái (kéo đi được) hiển thị:
    - số lần đứng yên (stall), đi tới đi lui (pace), giật (jitter);
    - tên file, dung lượng đã ghi, và `luu: OK` hoặc `LOI: <lý do>`.
-4. Khung chỉ còn một nút nhỏ **Stop** (kéo để di chuyển): bấm là dừng ghi, lưu lần cuối và đóng nút.
+4. Recorder không còn nút trên màn hình (chỗ đó giờ là nút **Pause** của AutoHop). Muốn dừng ghi: chạy `getgenv().DStallRecorder.Stop()` (lưu lần cuối rồi dừng).
 5. **AutoHop** giờ là script riêng `autohop.luau` (không còn trong recorder, phím 9 trong D vẫn để trống): chạy là tự bật, 10 giây sau mới hoạt động. Đổi server (server công khai ngẫu nhiên còn chỗ, nếu không được thì vào lại game) khi: trận đang chạy mà mình ở sảnh (vào giữa trận / bị bắt thua trong khi đồng đội còn chơi), hoặc mình là Beast. Đã thoát thì không đổi. Muốn tự chạy lại ở server mới, đặt D, recorder và autohop vào thư mục autoexec của executor.
 
 Để treo máy nhiều trận thì cứ để chạy. Nếu bị đổi server, executor phải tự chạy lại script; với Delta, đặt file vào thư mục `autoexec`.
@@ -55,7 +55,7 @@ File có tọa độ map, nên chỉ gửi trực tiếp để phân tích, khô
   if you were in the map from the start of that round (not joined mid-round)
   and spent at least 30 s inside it. AFK server hops, half-finished rounds and
   lobby-only time are dropped; if nothing qualifies, no file is created.
-  Pressing Stop mid-round saves that round only if it already qualifies.
+  Calling DStallRecorder.Stop() mid-round saves that round only if it already qualifies.
 - New lines in the file:
   - `s` — the full movement trail every 0.1 s (position, speed, vertical
     speed, state, floor material, input direction, facing, walk speed,

@@ -41,6 +41,7 @@ end
 local Hop = { active = true, paused = false, armedAt = os.clock() + 10, since = nil, nextTry = 0 }
 local function lobbyBounds()
     local now = os.clock()
+    if Hop.lobby and Hop.lobby.lo and now - Hop.lobby.at < 60 then return Hop.lobby end
     if Hop.lobby and now - Hop.lobby.at < 5 then return Hop.lobby end
     local objects = World:FindFirstChild("LobbyInteractiveObjects")
     local lo, hi
@@ -67,8 +68,17 @@ end
 local function inRound(target, map)
     local root = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
     if not root or inLobby(root.Position) then return false end
-    local ok, cf, size = pcall(function() return map:GetBoundingBox() end)
-    if not ok or not cf then return true end
+    -- The map's bounding box walks every part of the map: computing it every
+    -- 0.5 s for each player dropped the game to ~40 fps in rounds (user
+    -- report "lag"). Once per map (refreshed every 60 s) is enough.
+    local box = Hop.box
+    if not box or box.map ~= map or os.clock() - box.at > 60 then
+        local ok, cf, size = pcall(function() return map:GetBoundingBox() end)
+        box = { map = map, at = os.clock(), cf = ok and cf or nil, size = ok and size or nil }
+        Hop.box = box
+    end
+    local cf, size = box.cf, box.size
+    if not cf then return true end
     local d = root.Position - cf.Position
     local h = size / 2 + Vector3.new(40, 60, 40)
     return math.abs(d.X) <= h.X and math.abs(d.Y) <= h.Y and math.abs(d.Z) <= h.Z
@@ -189,27 +199,24 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 50
 local button = Instance.new("TextButton")
 button.Name = "Pause"
-button.Size = UDim2.fromOffset(150, 34)
-button.Position = UDim2.new(1, -170, 0, 120)
+-- Just under D's panel, where the recorder's Stop button used to be.
+button.Size = UDim2.fromOffset(64, 26)
+button.Position = UDim2.new(0, 8, 1, -120)
 button.AutoButtonColor = true
 button.BorderSizePixel = 0
 button.Font = Enum.Font.GothamBold
-button.TextSize = 14
+button.TextSize = 13
 button.TextColor3 = Color3.new(1, 1, 1)
 button.Active = true
 button.Draggable = true
 button.Parent = gui
 local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 8)
+corner.CornerRadius = UDim.new(0, 6)
 corner.Parent = button
 local function refresh()
-    if Hop.paused then
-        button.Text = "AutoHop: PAUSE"
-        button.BackgroundColor3 = Color3.fromRGB(110, 110, 110)
-    else
-        button.Text = "AutoHop: ON"
-        button.BackgroundColor3 = Color3.fromRGB(40, 150, 70)
-    end
+    -- Always just "Pause": green = AutoHop running, grey = paused.
+    button.Text = "Pause"
+    button.BackgroundColor3 = Hop.paused and Color3.fromRGB(110, 110, 110) or Color3.fromRGB(40, 150, 70)
 end
 function Hop.SetPaused(value)
     Hop.paused = value and true or false

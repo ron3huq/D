@@ -11239,6 +11239,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
     local wedge = { pos = nil, at = 0, untilAt = 0, aim = nil }
     local stairHopAt = 0
     local lastRouteAim, lastRouteAimAt = nil, 0
+    local lastRouteW, lastRouteI
     local climbWatch
     local aboveWp
     local pushBanUntil = 0
@@ -12021,7 +12022,23 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             -- open, instead of letting local steering pick another heading
             -- for a few ticks - the to-and-fro at doors, windows and gaps
             -- (recordings: ~400 reversals right after a route -> none switch).
-            if job and not job.done and lastRouteAim and now - lastRouteAimAt < 0.6 and not flying
+            -- Route dropped right at a waypoint while the new plan computes:
+            -- carry on along the old route's next same-floor waypoints instead
+            -- of steering straight at the goal - when the route detours away
+            -- from the goal that was a 180-degree turn and back each replan
+            -- (Workspace_3 18/11: route heading 80-105 deg, goal at -146 deg).
+            if not evade and job and not job.done and lastRouteW and lastRouteAim and now - lastRouteAimAt < 0.8
+                and not flying and Flat(lastRouteAim - rp).Magnitude <= 1.5 then
+                for k = lastRouteI or 1, math.min(#lastRouteW, (lastRouteI or 1) + 4) do
+                    local q = lastRouteW[k]
+                    if q.Action == Enum.PathWaypointAction.Jump or math.abs(q.Position.Y - feetY) > 1.5 then break end
+                    if Flat(q.Position - rp).Magnitude > 1.5 then
+                        lastRouteAim, lastRouteI = q.Position, k
+                        break
+                    end
+                end
+            end
+            if job and not job.done and lastRouteAim and now - lastRouteAimAt < (evade and 0.6 or 0.8) and not flying
                 and Flat(lastRouteAim - rp).Magnitude > 1.5 then
                 local dirKeep = Flat(lastRouteAim - rp).Unit
                 local vNow = Flat(root.AssemblyLinearVelocity)
@@ -12687,7 +12704,10 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = Follow.CenterAim(rp, aim, feetY)
         end
         FH.Move(token, hum, aim, false, nil, preciseCorner)
-        if mode == "path" or mode == "direct" then lastRouteAim, lastRouteAimAt = aim, now end
+        if mode == "path" or mode == "direct" then
+            lastRouteAim, lastRouteAimAt = aim, now
+            if mode == "path" and wps then lastRouteW, lastRouteI = wps, wpi else lastRouteW = nil end
+        end
         -- AutoHelp on stairs: hop up/down them like a player (faster), but
         -- only running straight along the flight (never at an angle into the
         -- side edge), with the next legs in line, away from the goal.
