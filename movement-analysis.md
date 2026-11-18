@@ -1447,3 +1447,15 @@ rescue, a moving Beast ahead of us within 40 studs and within 16 studs of our li
 to the pod (and nearer than the pod) -> aim at a flank point 18 studs to its side
 (+4 toward the pod), the side away from the Beast first, committed 2.5 s; only over
 a clear 10-stud lane; not during door/window/drop crossings.
+
+## Round 64 (Workspace_2 18/11: exit + shaking)
+
+- Exit: the lever was let go (< 70 %) as the Beast came (right), but the "threat"
+  redirect re-picked the other closed gate and walked straight through the Beast
+  (060202 3140-3142: heading toward it, hit 1 s later). Now a threat redirect returns
+  "evade" (gate failed 4 s) and AH.ExitGo ends with outcome evade -> normal flight;
+  closed gates with a moving Beast on the way (within 40, ahead, nearer) are skipped.
+- Shaking on stairs: the "under a raised waypoint" rule only applied within 1 stud,
+  so just past it the aim turned back to it (0 -> 174 -> -6 -> 174 deg in 0.3 s).
+  Now it also applies when the waypoint is already behind us (within 3 studs).
+- Rescue <-> AutoHide swaps now <= 4 per file (was up to 19); rescue-flank fired 11x.

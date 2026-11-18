@@ -12372,7 +12372,15 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = wp.Position
             if not flying and wpi < #wps and wp.Action ~= Enum.PathWaypointAction.Jump then
                 local raised = wp.Position.Y - feetY
-                if Flat(wp.Position - rp).Magnitude <= 1 and raised > 1.2 and raised <= 4.5 then
+                -- Also once we have stepped past it on the stairs (it is behind
+                -- us on the way to the next point): turning back to it made the
+                -- avatar flip 180 deg every tick on staircases (Workspace_2
+                -- 18/11: 0 -> 174 -> -6 -> 174 deg within 0.3 s).
+                local flatWp = Flat(wp.Position - rp)
+                local onwardWp = Flat(wps[wpi + 1].Position - rp)
+                local passedWp = flatWp.Magnitude <= 3 and onwardWp.Magnitude > 0.5 and flatWp.Magnitude > 0.1
+                    and flatWp.Unit:Dot(onwardWp.Unit) < 0
+                if (flatWp.Magnitude <= 1 or passedWp) and raised > 1.2 and raised <= 4.5 then
                     -- Standing right under a raised waypoint (step/ledge/escalator
                     -- surface): its flat distance gives no input, so the avatar
                     -- stood for 5-94 s in live data. Keep heading along the
@@ -14143,6 +14151,16 @@ function FH.ExitPriority()
     end
     return false
 end
+-- A moving Beast within 40 studs that stands on our way to a point (in front
+-- of us toward it, nearer than it): walking there means walking at the Beast.
+function FH.BeastOnTheWay(from, point)
+    local e = AH.Active and AH.Eval() or nil
+    local bp = e and e.pos
+    if not (bp and from and point) or math.abs(bp.Y - from.Y) > Follow.MaxDY then return false end
+    local toBeast, toPoint = Flat(bp - from), Flat(point - from)
+    if toBeast.Magnitude > 40 or toPoint.Magnitude < 1 or toBeast.Magnitude < 0.5 then return false end
+    return toBeast.Magnitude < toPoint.Magnitude and toBeast.Unit:Dot(toPoint.Unit) > 0.5
+end
 function FH.ExitDanger()
     local root = RootNow()
     if not root then return false end
@@ -14429,7 +14447,13 @@ function FH.ExitRoute(token, state, abort)
                 return "redirect"
             end
             if state.redirect == "closed" and state.door then state.fail[state.door] = os.clock() + 3 end
+            -- Let go of a half-opened gate because the Beast came: RUN (normal
+            -- AutoHide flight), do not walk off to another gate - its route
+            -- went straight through the Beast (Workspace_2 18/11, user report).
+            local threat = state.redirect == "threat"
+            if threat and state.door then state.fail[state.door] = os.clock() + 4 end
             state.door, state.opening, state.escaping, state.redirect = nil, nil, nil, nil
+            if threat then return "evade" end
             return "redirect"
         end
         return nil
@@ -14489,7 +14513,8 @@ function FH.ExitRoute(token, state, abort)
                     local rank = distance + (open and 0 or signal == "opening" and 300 or signal == "waiting" and 600
                         or 10000) - FH.ExitTeamPull(center, stand, root.Position)
                     local danger = stand and (FH.ExitThreat(center, stand, root.Position, door)
-                        or not open and FH.BeastNearPoint(center, 35, 14))
+                        or not open and FH.BeastNearPoint(center, 35, 14)
+                        or not open and FH.BeastOnTheWay(root.Position, center))
                     threatened = threatened or danger
                     if stand and (open or not danger) and (not score or rank < score) then
                         best, score, chosenCenter, chosenTriggers, chosenSize, chosenArea =
@@ -17913,6 +17938,11 @@ function AH.ExitGo(tok)
         local danger = AH.Eval().danger
         AH.SetState(danger and "flee" or "idle")
         local result = FH.ExitRoute(tok, AH.ExitState, function() return not FH.ExitOpen() or AH.PodsPending() end)
+        if result == "evade" and not AH.Eval().danger then
+            -- Gate abandoned to the Beast but no alarm yet: still leave it.
+            AH.ExitRetryAt, outcome = os.clock() + 1.5, "evade"
+            break
+        end
         if AH.Eval().danger and (result == "evade" or result == "retry") then
             -- An open exit right here is the escape: keep at it (3 tries)
             -- instead of running off to some other door.
