@@ -4782,12 +4782,18 @@ end
 -- Tight transit corners need their actual waypoint, not the ordinary
 -- half-stud stop radius. Analog native input limits the final frame to the
 -- remaining distance; neither speed nor velocity properties are changed.
+-- Every movement order of the per-frame steps goes through here, so the same
+-- order can be re-asserted just before physics (see FH.MoveReassert).
+function FH.SetMove(hum, v, rel)
+    FH.LastMove = { hum = hum, v = v, frame = FH.MoveFrame or 0 }
+    hum:Move(v, rel)
+end
 function FH.PreciseMove(hum, root, point, dt)
     local direction = Flat(point - root.Position)
-    if direction.Magnitude <= 0.001 then hum:Move(Vector3.zero, false); return end
+    if direction.Magnitude <= 0.001 then FH.SetMove(hum, Vector3.zero, false); return end
     local frame = math.clamp(tonumber(dt) or 1 / 60, 1 / 240, 0.25)
     local scale = math.min(1, direction.Magnitude / (math.max(hum.WalkSpeed, 1) * frame))
-    hum:Move(direction.Unit * scale, false)
+    FH.SetMove(hum, direction.Unit * scale, false)
 end
 -- Reassert the owned direction after Roblox input processing during takeoff
 -- and flight without restarting the Humanoid's MoveTo operation each frame.
@@ -4857,7 +4863,7 @@ function FH.JumpMoveStep(dt)
             local v = Flat(root.AssemblyLinearVelocity)
             if v.Magnitude > 2 then keep = v.Unit end
         end
-        if keep then hum:Move(keep, false) end
+        if keep then FH.SetMove(hum, keep, false) end
         return
     end
     if motion.precision then
@@ -4884,7 +4890,7 @@ function FH.JumpMoveStep(dt)
         if unit:Dot(flight.commitDir) < -0.2 then unit = flight.commitDir end
         FH.LandCommit = { token = tok, dir = flight.commitDir, untilAt = os.clock() + 0.45, from = flight.from }
     end
-    hum:Move(unit, false)
+    FH.SetMove(hum, unit, false)
     motion.sentAt = os.clock()
 end
 -- Roblox's ordinary input controller also writes Move(0) when no movement key
@@ -4935,7 +4941,7 @@ function FH.GroundMoveStep(dt)
                 local back = Flat(-root.CFrame.LookVector)
                 hang.at = now + 0.6
                 hum.Jump = true
-                if back.Magnitude > 0.1 then hum:Move(back.Unit, false) end
+                if back.Magnitude > 0.1 then FH.SetMove(hum, back.Unit, false) end
                 if FH.Diag then FH.Diag("walk", "ladder-let-go") end
                 return
             end
@@ -4953,7 +4959,7 @@ function FH.GroundMoveStep(dt)
             and os.clock() - (motion.airDirAt or 0) < 1.2 then
             -- AutoHelp: aim at ourselves mid-air (replan) must not zero the
             -- jump; keep the last heading until we land.
-            hum:Move(motion.airDir, false)
+            FH.SetMove(hum, motion.airDir, false)
             return
         end
         FH.PreciseMove(hum, root, motion.aim, dt)
@@ -4965,10 +4971,10 @@ function FH.GroundMoveStep(dt)
         -- ourselves): keep the last heading until we land. Zero input in the
         -- air killed the jump's speed (Workspace_1: ~120 jumps stalled mid-air).
         if hum.FloorMaterial == Enum.Material.Air and motion.airDir and os.clock() - (motion.airDirAt or 0) < 1.2 then
-            hum:Move(motion.airDir, false)
+            FH.SetMove(hum, motion.airDir, false)
             return
         end
-        hum:Move(Vector3.new(0, 0, 0), false)
+        FH.SetMove(hum, Vector3.new(0, 0, 0), false)
         return
     end
     -- Mid-air: hold the take-off heading against a sharp swing (> ~72 deg)
@@ -4980,7 +4986,7 @@ function FH.GroundMoveStep(dt)
         -- Hold only against a swing back (> ~100 deg); a sideways aim is a
         -- route turn and must be followed (overshoot then turn back, live).
         if direction.Unit:Dot(motion.airLock) < -0.2 then
-            hum:Move(motion.airLock, false)
+            FH.SetMove(hum, motion.airLock, false)
             return
         end
     else
@@ -4989,7 +4995,7 @@ function FH.GroundMoveStep(dt)
     motion.airDir, motion.airDirAt = direction.Unit, os.clock()
     -- Direct heading (the round-14 turn smoothing made turns sluggish and
     -- scrape walls - live report "turning lags").
-    hum:Move(FH.FlipGuard(motion, root, direction), false)
+    FH.SetMove(hum, FH.FlipGuard(motion, root, direction), false)
 end
 -- Anti ping-pong: normal turns pass straight through. Only a second full
 -- reversal within 0.6 s of the previous one (back-and-forth jitter, the
@@ -5524,6 +5530,7 @@ function FH.MotionGuardedStep(name, dt)
     return ok
 end
 function FH.MotionStep(dt)
+    FH.MoveFrame = (FH.MoveFrame or 0) + 1
     FH.MotionGuardedStep("JumpTickStep", dt)
     FH.MotionGuardedStep("NoteNormalTakeoff", dt)
     FH.MotionGuardedStep("StairJumpStep", dt)
@@ -5533,6 +5540,20 @@ function FH.MotionStep(dt)
     FH.MotionGuardedStep("JumpMoveStep", dt)
     FH.GroundMoveStep(dt)
 end
+-- Recordings: ~12 % of running samples had zero move input although D had
+-- just ordered a heading (something later in the frame wrote Move(0); some
+-- of them lost speed - the small "khựng"). Re-assert this frame's own order
+-- right before physics. Only an order made THIS frame, only when the input
+-- was zeroed, never under manual control.
+RunService.Stepped:Connect(function()
+    local last = FH.LastMove
+    if not last or last.frame ~= FH.MoveFrame or unloaded then return end
+    local hum = last.hum
+    if not hum or hum ~= GetHumanoid() or hum.Health <= 0 or Ctl.On() then return end
+    if last.v.Magnitude < 0.1 or hum.MoveDirection.Magnitude > 0.1 then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    pcall(function() hum:Move(last.v, false) end)
+end)
 RunService:BindToRenderStep("NovaJumpMove", Enum.RenderPriority.Input.Value + 1, function(dt)
     local ok = pcall(FH.MotionStep, dt)
     if not ok then
@@ -16370,14 +16391,13 @@ function AH.OrbitAim(rp, e, feetY, state)
     end
     if not state.phase then
         if now < (state.cooldown or 0) then return nil end
-        -- Start only for a Beast closing in on us, facing us, 5-11 studs off.
+        -- User rule: the Beast comes within 6-7 studs (about our own body
+        -- height) facing us -> circle round it. The learned "reach" was
+        -- inflated by knock-back/latency (10-12 studs) and switched the orbit
+        -- off for the whole round (recording 17/11: never fired).
         local closing = e.vel and Flat(e.vel):Dot(-rel.Unit) or 0
-        -- Keep outside the hammer: radius = its reach + 3 studs. A hammer
-        -- reaching past 9 studs is too wide to circle: just run.
-        local reach = AH.BeastReach(e.beastRoot)
-        if reach > 9 then return nil end
-        local radius = math.max(math.clamp(dist, 6, 9), reach + 3)
-        if dist > math.max(12, radius + 4) or dist < reach + 1 or look:Dot(-rel.Unit) < 0.4 or closing < 2 then
+        local radius = 7
+        if dist > 7.5 or dist < 2.5 or look:Dot(-rel.Unit) < 0.4 or closing < 1 then
             return nil
         end
         local first = math.random() < 0.5 and 1 or -1
@@ -16398,13 +16418,14 @@ function AH.OrbitAim(rp, e, feetY, state)
     state.turned = state.turned + math.abs(delta)
     local function finish()
         state.phase = nil
-        state.cooldown = now + 4 + math.random() * 2
+        -- Ready again soon: every time it closes to 6-7 studs, circle again.
+        state.cooldown = now + 1 + math.random() * 0.5
         -- Break off behind the Beast (where it came from), then normal flight.
         AH.Dir = -look
         AH.KeepDir = { dir = -look, at = now }
         return nil
     end
-    if dist < math.max(3, AH.BeastReach(e.beastRoot) + 0.5) or dist > 16 + state.radius - 6 then return finish() end
+    if dist < 2.5 or dist > state.radius + 9 then return finish() end
     if state.phase == 1 and (state.turned >= state.swingTarget or now - state.phaseAt > 1.4) then
         -- Swing back the other way (shorter), unless that side is shut.
         state.phase, state.side, state.turned, state.phaseAt = 2, -state.side, 0, now

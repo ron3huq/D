@@ -1408,3 +1408,12 @@ Changes:
   hidden midpoint), -7 for an open dead-straight run away in full view while chased,
   weave alternates sides every 0.8-1.5 s with up to 70 deg when chased.
 - JukeAim: 65-80 deg side cuts when the Beast sprints or is within 12 studs.
+
+## Round 60 (user rule: orbit at 6-7 studs; stutter)
+
+- Orbit juke starts when a facing Beast closes to <= 7.5 studs (radius 7, ~1.3x body
+  height), no longer gated by the learned hammer reach (inflated to 10-12 studs by
+  knock-back/latency, which disabled the orbit for whole rounds). Cooldown 1-1.5 s.
+- ~12 % of running samples had zero move input while D held an aim (p10 speed 11 vs
+  16): the frame's own Move order is re-asserted on Stepped (before physics) when the
+  input was zeroed later in the frame. Only this frame's order, never manual control.
