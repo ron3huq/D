@@ -1426,3 +1426,16 @@ Changes:
 - Re-added: under-50 % teammate computer logic (Round 57); orbit at 6-7 studs
   (Round 60); alarm range 45/60 and AH.CalmNow release (Round 59, release part only).
 - Measured: ~45 flee episodes; many start at 50-75 studs and last until 100+ studs.
+
+## Round 62 (Workspace_1 18/11, AutoHelp "shaking")
+
+The shaking was ownership ping-pong, not steering: rescue <-> AutoHide swapped up to
+19 times in 36 s (043039 162-198 s). The hand-over latch released 2.5 s after the
+last contact-range alarm, and in rescue context AutoHide's safe distances are /3
+(23 studs), so the rescue turned straight back at a Beast still hunting 20-35 studs
+away - a 180-degree turn every 2-3 s.
+
+Change: AR.ThreatPreempts keeps the hand-over (12 s cap) while the Beast is within 40
+studs and closing with sight, or within 26 studs with sight, or between us and the pod;
+AH.CalmNow is false while that hand-over holds, so AutoHide keeps running instead of
+handing back.
