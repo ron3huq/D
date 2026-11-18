@@ -18422,6 +18422,7 @@ function AR.Pending()
         if info and info.occupant == cached.occupant then
             local root = RootNow()
             if AR.BeastCampsPod(info.trig) then return false end
+            if AR.ExitOpeningBlocks(info.trig) then return false end
             return not (root and (info.trig.Position - root.Position).Magnitude > 450)
         end
         -- Release/recapture is live, even inside the discovery cache window.
@@ -18460,7 +18461,22 @@ function AR.Pending()
     local root = RootNow()
     if AR.PendingPick and root and (AR.PendingPick.trig.Position - root.Position).Magnitude > 450 then return false end
     if AR.PendingPick and AR.BeastCampsPod(AR.PendingPick.trig) then return false end
+    if AR.PendingPick and AR.ExitOpeningBlocks(AR.PendingPick.trig) then return false end
     return AR.PendingPick ~= nil
+end
+-- We are opening an exit gate (holding its lever, any progress): finish it
+-- first unless the captive is close by. Workspace_4 18/11: 1 s into the
+-- hold a pod ~140 studs away pulled us off the lever; we ran there and back
+-- and the round ended before we escaped.
+function AR.ExitOpeningBlocks(trig)
+    local holding = FH.ExitHolding and os.clock() - FH.ExitHolding.at < 0.6
+    local opening = holding
+        or (AH.ExitState and AH.ExitState.opening)
+        or (Follow.ExitState and Follow.ExitState.opening)
+    if not opening then return false end
+    local root = RootNow()
+    if not (root and trig) then return true end
+    return (trig.Position - root.Position).Magnitude > 35
 end
 function AR.Nearest()
     local mr, hum = RootNow(), GetHumanoid()

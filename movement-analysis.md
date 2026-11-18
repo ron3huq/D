@@ -1481,3 +1481,11 @@ a clear 10-stud lane; not during door/window/drop crossings.
   load, not a periodic spike) and it stays the same while D owns nothing (in a pod /
   spectating): a render-side load, not D/autohop logic (autohop runs every 0.5 s).
   Recordings up to 06:12 were 60 fps with the same D logic.
+
+## Round 67 (Workspace_4 18/11: back and forth, no escape)
+
+071738 817-855 s: reached the lever and started holding; 1 s later (progress < 50 %,
+so the existing hold guard did not apply) a pod ~140 studs away took over, we ran
+there, rescued, ran ~140 studs back, and the round ended before we escaped.
+AR.ExitOpeningBlocks: while we hold / are opening a gate, a rescue starts only for a
+pod within 35 studs.
