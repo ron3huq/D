@@ -1471,3 +1471,13 @@ a clear 10-stud lane; not during door/window/drop crossings.
   route's next waypoints while the new plan computes" (not the corner rounding).
 - UI: recorder Stop button removed; autohop "Pause" button in its place (green on,
   grey paused).
+
+## Round 66 (recording 18/11 06:41: exit wait after a rescue; lag)
+
+- Exit open, we waited, went to rescue, then "one step, one stop" 90 studs from the
+  gate: the wait branch walked back with maxTime = 3 s, mostly spent planning the
+  long route. maxTime now scales with distance (3-40 s), doors/windows allowed.
+- Lag: rounds ~46 fps, lobby 60. Every 0.1 s sample has a ~25 ms worst frame (uniform
+  load, not a periodic spike) and it stays the same while D owns nothing (in a pod /
+  spectating): a render-side load, not D/autohop logic (autohop runs every 0.5 s).
+  Recordings up to 06:12 were 60 fps with the same D logic.

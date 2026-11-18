@@ -14813,13 +14813,18 @@ function FH.ExitRoute(token, state, abort)
     end
     root, hum = RootNow(), GetHumanoid()
     if root and hum then
+        local away = (root.Position - state.waitPos).Magnitude
         if Flat(root.Position - state.waitPos).Magnitude > 4 then
+            -- Back from a rescue far from the gate: a fixed 3 s walk spent most
+            -- of it planning the long route and stopped after a few steps,
+            -- every time (Workspace 18/11: "one step, one stop" 90 studs from
+            -- the open exit). Give the walk time for the distance.
             Follow.WalkTo(
                 token,
                 function() return state.waitPos end,
                 2,
                 function() return stopped() or FH.ExitDanger() or FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position) end,
-                { maxTime = 3, nearOk = 3 }
+                { maxTime = math.clamp(away / math.max(hum.WalkSpeed or 16, 4) * 2 + 3, 3, 40), nearOk = 3, noDoor = false, windows = true }
             )
         else
             -- Waiting at a gate believed open: verify it about once a second.
