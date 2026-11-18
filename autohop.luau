@@ -7,7 +7,9 @@
 -- After we escape, it waits while teammates are still in the round; it hops
 -- only if every survivor left has stood still for over a minute.
 -- Escaped players are not "out". Running it again restarts it;
--- getgenv().DAutoHop.Stop() stops it.
+-- getgenv().DAutoHop.Stop() stops it. A small on-screen button pauses /
+-- resumes it (drag it anywhere); getgenv().DAutoHop.SetPaused(true/false)
+-- does the same from code.
 
 local Players = game:GetService("Players")
 local World = game:GetService("Workspace")
@@ -36,7 +38,7 @@ local function currentMap()
     return holder and holder:IsA("ObjectValue") and holder.Value or nil
 end
 
-local Hop = { active = true, armedAt = os.clock() + 10, since = nil, nextTry = 0 }
+local Hop = { active = true, paused = false, armedAt = os.clock() + 10, since = nil, nextTry = 0 }
 local function lobbyBounds()
     local now = os.clock()
     if Hop.lobby and now - Hop.lobby.at < 5 then return Hop.lobby end
@@ -151,7 +153,7 @@ task.spawn(function()
     while Hop.active do
         local now = os.clock()
         local ok, reason = pcall(hopReason)
-        reason = ok and now >= Hop.armedAt and reason or nil
+        reason = ok and now >= Hop.armedAt and not Hop.paused and reason or nil
         if reason then
             Hop.since = Hop.since or now
             -- Held a moment so round start/end transitions do not trigger it.
@@ -166,6 +168,65 @@ task.spawn(function()
     end
 end)
 
-function Hop.Stop() Hop.active = false end
+-- Pause button: one small draggable button, green = running, grey = paused.
+local function guiParent()
+    if type(gethui) == "function" then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    local ok, core = pcall(function() return game:GetService("CoreGui") end)
+    if ok and core then
+        local test = Instance.new("Folder")
+        if pcall(function() test.Parent = core end) then test:Destroy() return core end
+        test:Destroy()
+    end
+    return player:WaitForChild("PlayerGui")
+end
+local gui = Instance.new("ScreenGui")
+gui.Name = "DAutoHopGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 50
+local button = Instance.new("TextButton")
+button.Name = "Pause"
+button.Size = UDim2.fromOffset(150, 34)
+button.Position = UDim2.new(1, -170, 0, 120)
+button.AutoButtonColor = true
+button.BorderSizePixel = 0
+button.Font = Enum.Font.GothamBold
+button.TextSize = 14
+button.TextColor3 = Color3.new(1, 1, 1)
+button.Active = true
+button.Draggable = true
+button.Parent = gui
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = button
+local function refresh()
+    if Hop.paused then
+        button.Text = "AutoHop: PAUSE"
+        button.BackgroundColor3 = Color3.fromRGB(110, 110, 110)
+    else
+        button.Text = "AutoHop: ON"
+        button.BackgroundColor3 = Color3.fromRGB(40, 150, 70)
+    end
+end
+function Hop.SetPaused(value)
+    Hop.paused = value and true or false
+    Hop.since = nil
+    -- Resuming never hops at once: re-arm the short start delay.
+    if not Hop.paused then Hop.armedAt = math.max(Hop.armedAt, os.clock() + 3) end
+    refresh()
+    print("[AutoHop] " .. (Hop.paused and "tam dung" or "chay lai"))
+end
+button.MouseButton1Click:Connect(function() Hop.SetPaused(not Hop.paused) end)
+refresh()
+pcall(function() gui.Parent = guiParent() end)
+Hop.Gui = gui
+
+function Hop.Stop()
+    Hop.active = false
+    pcall(function() gui:Destroy() end)
+end
 env.DAutoHop = Hop
 print("[AutoHop] bat (hoat dong sau 10 giay)")
