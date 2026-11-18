@@ -11587,6 +11587,18 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             progressPosition, progressAt = rp, now
         end
         if job and not job.done and now - progressAt > 8 then return finish("timeout", true) end
+        -- Rescue stuck right beside its pod face (a rail/glass/the capsule
+        -- shell keeps us ~1 stud off it): that face cannot be reached. Mark
+        -- it and take another face at once (Workspace 18/11: 11 s trying two
+        -- blocked faces on one side before going round to the open one).
+        if opts.rescueJuke and mode and not flying and flatDist < 3 and now - progressAt > 0.6
+            and not FH.IsBad(goal.X, goal.Z, 1) then
+            FH.AddBad(goal, 8)
+            if FH.Diag then FH.Diag("walk", "pod-face-blocked") end
+            reset()
+            nextPlan = 0
+            progressPosition, progressAt = rp, now
+        end
         -- Pushing into something for 0.9 s (any owner: farm, flee, exit,
         -- rescue) rejects that lane and replans instead of pressing on.
         -- Straight-line walks into something the line test cannot see (thin
@@ -12764,7 +12776,8 @@ function FH.PodRouteGoal(trig, position)
     -- stood in front of the wall right next to the pod (user report).
     local eye = ground and Vector3.new(ground.X, ground.Y + 2, ground.Z)
     if floor and floor.Normal.Y > 0.6 and math.abs(ground.Y - trig.Position.Y) <= 4.5
-        and not Workspace:Raycast(eye, trig.Position - eye, params) then
+        and not Workspace:Raycast(eye, trig.Position - eye, params)
+        and not FH.IsBad(ground.X, ground.Z, 1.5) then
         return ground
     end
     -- A nearest face can overhang a lower floor. Choose a supported face at
@@ -14906,6 +14919,50 @@ function Follow.Main(token, player)
             farmComputer = nil
             return nil
         end
+        -- Under 50 % health (user rule): team up. Prefer a computer a teammate
+        -- is hacking (join them on a free slot), otherwise computers near the
+        -- teammates; the nearest of those to us.
+        local low = FH.MatchOn() and FH.HealthFraction() < 0.5
+        local mates = low and FH.Teammates() or {}
+        local function mateInfo(comp)
+            local cp = comp:GetPivot().Position
+            local trigs = FH.CompTriggers(comp)
+            local hacking, nearest = false, nil
+            for _, m in ipairs(mates) do
+                local d = Flat(m.root.Position - cp).Magnitude
+                if not nearest or d < nearest then nearest = d end
+                if math.abs(m.root.Position.Y - cp.Y) < 6 then
+                    for _, t in ipairs(trigs) do
+                        if m.target == t or m.target and m.target.Parent == t then hacking = true break end
+                    end
+                    if not hacking and d < 7 then hacking = true end
+                end
+            end
+            local free = 0
+            for _, t in ipairs(trigs) do
+                if t.Parent and not FH.ComputerSlotTaken(comp, t) then free = free + 1 end
+            end
+            return hacking and free > 0, nearest
+        end
+        if not soft and farmComputer and #mates > 0 then
+            -- Re-pick (at most every 2 s) when the current one has nobody of
+            -- ours near it - but never while we are hacking it.
+            local mine = FH.Stat(LocalPlayer, FH.HACK_EVENT)
+            if not (mine and mine.Value) and now >= (FH.TeamPickAt or 0) and farmComputer.Parent then
+                FH.TeamPickAt = now + 2
+                -- Switch only to a computer a teammate is actually hacking:
+                -- re-ranking by moving teammates would turn us round on the way.
+                if not mateInfo(farmComputer) then
+                    for _, comp in ipairs(Computers) do
+                        if comp ~= farmComputer and comp.Parent and IsRealComputer(comp, map) and not compDone(comp)
+                            and not isTimedOut(comp) and not AH.Unsafe(comp:GetPivot().Position) and mateInfo(comp) then
+                            farmComputer = nil
+                            break
+                        end
+                    end
+                end
+            end
+        end
         if not soft and farmComputer then
             if
                 farmComputer.Parent
@@ -14925,6 +14982,14 @@ function Follow.Main(token, player)
                 local p = comp:GetPivot().Position
                 if not AH.Unsafe(p) then
                     local s = Flat(p - mr.Position).Magnitude + math.abs(p.Y - mr.Position.Y) * 1.5
+                    if #mates > 0 then
+                        local joined, mateDist = mateInfo(comp)
+                        if joined then
+                            s = s - 1000
+                        elseif mateDist then
+                            s = s + mateDist * 0.8
+                        end
+                    end
                     if not bs or s < bs then
                         best, bs = comp, s
                     end
@@ -15964,7 +16029,11 @@ function AH.Eval()
                                 vis = hit == nil or FH.DoorOf(hit.Instance) ~= nil
                             end
                         end
-                        if not vis and sameFloor and pursuing and d <= seeRange then
+                        -- A Beast 45+ studs off is not a chase yet (user: AutoHide
+                        -- ran from far Beasts); 60 when it sprints at us.
+                        local bSpeed = Flat(motion.observedVelocity or br.AssemblyLinearVelocity).Magnitude
+                        local chaseRange = math.min(seeRange, AH.ThreatRange(bSpeed > 20 and 60 or 45))
+                        if not vis and sameFloor and pursuing and d <= chaseRange then
                             local o = position + Vector3.new(0, 1.5, 0)
                             local hit = Workspace:Raycast(o, (mr.Position + Vector3.new(0, 1, 0)) - o, rayParams)
                             -- A door between us does not stop a Beast walking in.
@@ -16010,6 +16079,14 @@ function AH.Eval()
                         end
                         if vis then motion.seenAt = now end
                         if vis then res.danger = true end
+                        if res.beastRoot == br then
+                            res.closing = beastIn
+                            if now - (motion.losAt or 0) > 0.2 then
+                                motion.losAt = now
+                                if seen() then motion.losSeenAt = now end
+                            end
+                            res.lostFor = now - (motion.losSeenAt or now)
+                        end
                     end
                 else
                     afkBeast = true
@@ -16318,14 +16395,13 @@ function AH.OrbitAim(rp, e, feetY, state)
     end
     if not state.phase then
         if now < (state.cooldown or 0) then return nil end
-        -- Start only for a Beast closing in on us, facing us, 5-11 studs off.
+        -- User rule: the Beast comes within 6-7 studs (a little more than
+        -- our body height, ~5.2) facing us -> circle round it. The learned
+        -- reach (10-12 studs, inflated by knock-back/latency) used to switch
+        -- the orbit off for whole rounds.
         local closing = e.vel and Flat(e.vel):Dot(-rel.Unit) or 0
-        -- Keep outside the hammer: radius = its reach + 3 studs. A hammer
-        -- reaching past 9 studs is too wide to circle: just run.
-        local reach = AH.BeastReach(e.beastRoot)
-        if reach > 9 then return nil end
-        local radius = math.max(math.clamp(dist, 6, 9), reach + 3)
-        if dist > math.max(12, radius + 4) or dist < reach + 1 or look:Dot(-rel.Unit) < 0.4 or closing < 2 then
+        local radius = 7
+        if dist > 7.5 or dist < 2.5 or look:Dot(-rel.Unit) < 0.4 or closing < 1 then
             return nil
         end
         local first = math.random() < 0.5 and 1 or -1
@@ -16346,13 +16422,14 @@ function AH.OrbitAim(rp, e, feetY, state)
     state.turned = state.turned + math.abs(delta)
     local function finish()
         state.phase = nil
-        state.cooldown = now + 4 + math.random() * 2
+        -- Ready again soon: every time it closes to 6-7 studs, circle again.
+        state.cooldown = now + 1 + math.random() * 0.5
         -- Break off behind the Beast (where it came from), then normal flight.
         AH.Dir = -look
         AH.KeepDir = { dir = -look, at = now }
         return nil
     end
-    if dist < math.max(3, AH.BeastReach(e.beastRoot) + 0.5) or dist > 16 + state.radius - 6 then return finish() end
+    if dist < 2.5 or dist > state.radius + 9 then return finish() end
     if state.phase == 1 and (state.turned >= state.swingTarget or now - state.phaseAt > 1.4) then
         -- Swing back the other way (shorter), unless that side is shut.
         state.phase, state.side, state.turned, state.phaseAt = 2, -state.side, 0, now
@@ -17170,6 +17247,19 @@ end
 -- Candidates are the open straight run (AH.PickFlee), the far side of nearby
 -- doors, and points ~28 studs away on the side away from the Beast even if
 -- a wall is in between (the planner then finds the stairs/door/window).
+-- Chase over: far (70+), or 32+ studs and not closing in, or out of its
+-- sight 2 s at 24+ studs while it is not running at us (recordings: flights
+-- of 10-30 s with the Beast 50-140 studs off and walking away).
+function AH.CalmNow(e)
+    e = e or AH.Last
+    if not e or e.danger then return false end
+    local d = e.dist or math.huge
+    if d >= AH.ThreatRange(AH.LeaveRange) then return true end
+    local closing = e.closing or 0
+    if d >= AH.ThreatRange(32) and closing < 2 then return true end
+    if d >= AH.ThreatRange(24) and closing < 4 and (e.lostFor or 0) >= 2 then return true end
+    return false
+end
 function AH.PathEscape(tok)
     local e = AH.Last
     local root = RootNow()
@@ -17215,7 +17305,10 @@ function AH.PathEscape(tok)
         tok,
         function() return goal end,
         3.5,
-        function() return not tok.ok() or os.clock() - t0 > 4 or AH.Down() or AH.PodsPending() end,
+        function()
+            return not tok.ok() or os.clock() - t0 > 4 or AH.Down() or AH.PodsPending()
+                or os.clock() - t0 > 0.6 and AH.CalmNow(AH.Eval())
+        end,
         { noDoor = false, maxTime = 4, nearOk = 6, evade = true, windows = true }
     )
 end
@@ -17514,10 +17607,10 @@ function AH.Go(tok)
         local e = AH.Eval()
         local now = os.clock()
         if e.afk then break end
-        if e.danger or e.dist < AH.ThreatRange(AH.LeaveRange) then
-            safeSince = nil
-        else
+        if not e.danger and AH.CalmNow(e) then
             safeSince = safeSince or now
+        else
+            safeSince = nil
         end
         if safeSince and now - safeSince >= AH.SafeTime and not AH.ActiveDrop(tok, hum, root) then break end
         local rp = root.Position
@@ -18139,6 +18232,37 @@ function AR.BeastCampsPodNow(trig)
         end
     end
     return false
+end
+-- Our health as a fraction (Humanoid and the game's Health stat, the lower).
+function FH.HealthFraction()
+    local f
+    local hum = GetHumanoid()
+    if hum and hum.MaxHealth > 0 then f = hum.Health / hum.MaxHealth end
+    local hp = FH.Stat(LocalPlayer, FH.HP)
+    if hp and type(hp.Value) == "number" and hp.Value > 0 then
+        AR.HpMax = math.max(AR.HpMax or 0, hp.Value)
+        local g = hp.Value / AR.HpMax
+        f = f and math.min(f, g) or g
+    end
+    return f or 1
+end
+-- Other survivors still free in the round (not the Beast, not caught, not
+-- knocked down, not escaped), with the computer each one is hacking (if any).
+function FH.Teammates()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p:FindFirstChild("TempPlayerStatsModule") and not FH.True(p, FH.BEASTN)
+            and not FH.True(p, FH.ESC) and not FH.True(p, FH.CAP) and not FH.True(p, FH.RAG)
+            and FH.InMatchPlayer(p) then
+            local r = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+            local hp = FH.Stat(p, FH.HP)
+            if r and not (hp and type(hp.Value) == "number" and hp.Value <= 0) then
+                local action = FH.Stat(p, FH.HACK_EVENT)
+                list[#list + 1] = { player = p, root = r, target = action and action.Value or nil }
+            end
+        end
+    end
+    return list
 end
 -- Below 10% health a rescue is too likely to end in our own capture: leave
 -- the captives to the others and keep only AutoFarm + AutoHide.

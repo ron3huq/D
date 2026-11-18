@@ -1417,3 +1417,12 @@ Changes:
 - ~12 % of running samples had zero move input while D held an aim (p10 speed 11 vs
   16): the frame's own Move order is re-asserted on Stepped (before physics) when the
   input was zeroed later in the frame. Only this frame's order, never manual control.
+
+## Round 61 (Workspace 18/11, 10 recordings, on the user's chosen base = Round 56 D)
+
+- AutoHelp: rescue goals on a blocked pod face (rail/shell ~1 stud short): stood
+  1-1.3 s per try, two faces on the same side, 11 s before going round. Now 0.6 s
+  stuck within 3 studs of the face marks it bad (8 s) and PodRouteGoal skips bad faces.
+- Re-added: under-50 % teammate computer logic (Round 57); orbit at 6-7 studs
+  (Round 60); alarm range 45/60 and AH.CalmNow release (Round 59, release part only).
+- Measured: ~45 flee episodes; many start at 50-75 studs and last until 100+ studs.
