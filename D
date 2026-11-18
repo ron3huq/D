@@ -12665,6 +12665,7 @@ function Follow.WalkTo(token, getGoal, stopDist, abort, opts)
             aim = goal
         end
         if opts.rescueJuke then
+            aim = FH.RescueFlank(token, root, aim, opts.rescueJuke, feetY) or aim
             aim = FH.RescueJuke(token, root, aim, opts.rescueJuke, feetY)
         elseif not (type(token) == "table" and token.owner == "evade") and not flying
             and FH.MatchOn() and not FH.AmBeast() then
@@ -12857,6 +12858,59 @@ function FH.RescueBeastAhead(tok, root, aim, podGoal)
         end
     end
     return nil
+end
+-- AutoHelp flank (user rule: go round the Beast left or right instead of
+-- walking at it). Workspace_1 18/11: rescue -> AutoHide -> rescue swapped up
+-- to 19 times in 36 s because each hand-back walked straight at a Beast still
+-- hunting 20-35 studs away between us and the pod. When the Beast stands near
+-- our line to the pod (ahead of us, within 40 studs), arc round it on one side
+-- at ~18 studs, committed to that side, then carry on to the pod.
+function FH.RescueFlank(tok, root, aim, podGoal, feetY)
+    local now = os.clock()
+    local e = AH.Active and AH.Eval() or nil
+    local state = AR.Flank
+    local function stop() AR.Flank = nil return nil end
+    if not (e and e.pos and podGoal and not e.free) then return stop() end
+    local hum = GetHumanoid()
+    if Follow.ActiveCrossing(tok, hum, root) or Follow.ActiveDrop(tok, hum, root)
+        or (Follow.ActiveDoor and Follow.ActiveDoor(tok, hum, root)) then return stop() end
+    local rp, bp = root.Position, e.pos
+    if math.abs(bp.Y - rp.Y) > 5 then return stop() end
+    local toPod, toBeast = Flat(podGoal - rp), Flat(bp - rp)
+    local podDist, gap = toPod.Magnitude, toBeast.Magnitude
+    if podDist < 10 or gap > 40 or gap < 2 then return stop() end
+    local podDir = toPod.Unit
+    local ahead = toBeast:Dot(podDir)
+    local lateral = (toBeast - podDir * ahead).Magnitude
+    -- Beast behind us or well off our line, or the pod nearer than it: no arc.
+    if ahead < 0 or lateral > 16 or gap > podDist + 6 then return stop() end
+    local across = Vector3.new(-podDir.Z, 0, podDir.X)
+    local function flankPoint(side)
+        local p = bp + across * (side * 18) + podDir * 4
+        return Vector3.new(p.X, rp.Y, p.Z)
+    end
+    local function clear(point)
+        local d = Flat(point - rp)
+        if d.Magnitude < 1 then return false end
+        local probe = rp + d.Unit * math.min(d.Magnitude, 10)
+        return AH.LaneClear(rp, Vector3.new(probe.X, rp.Y, probe.Z), feetY)
+    end
+    if state and state.tok == tok and now < state.untilAt then
+        local p = flankPoint(state.side)
+        if Flat(p - rp).Magnitude > 3 and clear(p) then return p end
+    end
+    -- Pick the side that the Beast is NOT on (it stands left of our line ->
+    -- go right) when both are open; otherwise whichever side is open.
+    local beastSide = toBeast:Dot(across) >= 0 and 1 or -1
+    for _, side in ipairs({ -beastSide, beastSide }) do
+        local p = flankPoint(side)
+        if Flat(p - rp).Magnitude > 3 and clear(p) then
+            if not (state and state.side == side) and FH.Diag then FH.Diag("walk", "rescue-flank") end
+            AR.Flank = { tok = tok, side = side, untilAt = now + 2.5 }
+            return p
+        end
+    end
+    return stop()
 end
 function FH.RescueJuke(tok, root, aim, podGoal, feetY)
     if Follow.ActiveCrossing(tok, GetHumanoid(), root) or Follow.ActiveDrop(tok, GetHumanoid(), root) then
@@ -17253,10 +17307,6 @@ end
 function AH.CalmNow(e)
     e = e or AH.Last
     if not e or e.danger then return false end
-    -- Rescue hand-over still held (the Beast keeps hunting us / blocks the
-    -- pod): keep running - stopping here handed control straight back to
-    -- the rescue and it turned round into the Beast.
-    if AH.RescueContext() and AR.PreemptLatch and AR.ThreatPreempts() then return false end
     local d = e.dist or math.huge
     if d >= AH.ThreatRange(AH.LeaveRange) then return true end
     local closing = e.closing or 0
@@ -18552,26 +18602,16 @@ function AR.ThreatPreempts()
     local threat = AH.Eval()
     local near = threat.danger and threat.pos and root and Flat(threat.pos - root.Position).Magnitude <= 18
     if now - latch.last < 2.5 or near and now - latch.since < 5 then return true end
-    -- Hand back only once the Beast has really let go (Workspace_1 18/11:
-    -- rescue <-> AutoHide swapped 19 times in 36 s - each hand-back walked us
-    -- straight back at a Beast still hunting 20-35 studs away, a 180-degree
-    -- turn every 2-3 s: the "shaking"). Keep AutoHide while, within 40
-    -- studs, the Beast still comes at us, or stands between us and the pod,
-    -- or has sight of us within 26 studs. 12 s cap from the first alarm.
-    if threat.pos and root and now - latch.since < 12 then
+    -- The Beast still stands between us and the pod (live: rescue -> flee
+    -- -> rescue every ~3 s, each hand-back turning us straight back at the
+    -- Beast's front). While AutoHide is still running from it, wait (12 s cap).
+    if threat.danger and threat.pos and root and info and info.trig and info.trig.Parent
+        and now - latch.since < 12 then
         local toBeast = Flat(threat.pos - root.Position)
-        local gap = toBeast.Magnitude
-        if gap <= 40 then
-            local closing = threat.closing or 0
-            local seen = (threat.lostFor or 0) < 1.5
-            if closing > 2 and seen then return true end
-            if gap <= 26 and seen then return true end
-            if info and info.trig and info.trig.Parent and gap > 0.5 then
-                local toPod = Flat(info.trig.Position - root.Position)
-                if toPod.Magnitude > 0.5 and gap < toPod.Magnitude + 6 and toBeast.Unit:Dot(toPod.Unit) > 0.4 then
-                    return true
-                end
-            end
+        local toPod = Flat(info.trig.Position - root.Position)
+        if toBeast.Magnitude <= 30 and toPod.Magnitude > 0.5 and toBeast.Magnitude > 0.5
+            and toBeast.Magnitude < toPod.Magnitude + 6 and toBeast.Unit:Dot(toPod.Unit) > 0.4 then
+            return true
         end
     end
     AR.PreemptLatch = nil

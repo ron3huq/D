@@ -1439,3 +1439,11 @@ Change: AR.ThreatPreempts keeps the hand-over (12 s cap) while the Beast is with
 studs and closing with sight, or within 26 studs with sight, or between us and the pod;
 AH.CalmNow is false while that hand-over holds, so AutoHide keeps running instead of
 handing back.
+
+## Round 63 (user: AutoHide stays as it is; AutoHelp goes round the Beast)
+
+Round 62's hand-over/AutoHide change reverted. Instead FH.RescueFlank: during a
+rescue, a moving Beast ahead of us within 40 studs and within 16 studs of our line
+to the pod (and nearer than the pod) -> aim at a flank point 18 studs to its side
+(+4 toward the pod), the side away from the Beast first, committed 2.5 s; only over
+a clear 10-stud lane; not during door/window/drop crossings.
