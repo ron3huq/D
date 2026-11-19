@@ -4241,7 +4241,15 @@ function FH.GameInfo()
     FH.Info.computersLeft = remaining
     return FH.Info
 end
+FH.DoorSigCache = setmetatable({}, { __mode = "k" })
 function FH.DoorSig(door)
+    local cached, now = FH.DoorSigCache[door], os.clock()
+    if cached and now - cached.at < 0.2 then return cached.n, cached.sum, cached.tc end
+    local n, sum, tc = FH.DoorSigScan(door)
+    FH.DoorSigCache[door] = { at = now, n = n, sum = sum, tc = tc }
+    return n, sum, tc
+end
+function FH.DoorSigScan(door)
     local n, c, sum, tcount = 0, 0, Vector3.zero, 0
     for _, d in ipairs(door:GetDescendants()) do
         if d:IsA("BasePart") then
@@ -4282,7 +4290,30 @@ function FH.ExitScreensDone()
     end
     return total > 0
 end
+-- FH.ExitOpenRaw probes each gate with FH.ExitDoorOpen, which itself asks
+-- FH.ExitOpen: with a confirmed unlock and a stale "computers left" label
+-- (no gate marked open yet) the two called each other without end - every
+-- level re-scanning the gate models - until Lua's stack overflowed. Each
+-- attempt froze the game for 1-6 s and the error stopped AutoHide's exit,
+-- the rescue and the farm at the end of the round (Workspace 19/11 14:22).
+-- Re-entry now answers from the confirmed state, and the result is reused
+-- for 0.1 s (it is read many times per frame).
 function FH.ExitOpen()
+    local map = GetCurrentMap()
+    if FH.ExitOpenBusy then
+        local E = FH.Endgame
+        return E.on == true and E.map == map
+    end
+    local cache, now = FH.ExitOpenCache, os.clock()
+    if cache and cache.map == map and now - cache.at < 0.1 then return cache.value end
+    FH.ExitOpenBusy = true
+    local ok, value = pcall(FH.ExitOpenRaw)
+    FH.ExitOpenBusy = nil
+    if not ok then error(value, 0) end
+    FH.ExitOpenCache = { map = map, at = now, value = value }
+    return value
+end
+function FH.ExitOpenRaw()
     if not FH.MatchOn() then
         FH.Endgame = { on = false }
         return false
@@ -4326,8 +4357,22 @@ function FH.ExitOpen()
     FH.Endgame = { on = false }
     return false
 end
+FH.ExitAreaCache = setmetatable({}, { __mode = "k" })
 function FH.ExitArea(model)
     if model:IsA("BasePart") then return model.Position end
+    -- Gate models are large and this is read many times per frame: scan
+    -- the model at most every 2 s (the area part's live position is used).
+    local cached, now = FH.ExitAreaCache[model], os.clock()
+    if cached and now - cached.at < 2 then
+        local part = cached.part
+        if part and part.Parent then return part.Position, part.Size, part end
+        if not part then return cached.center end
+    end
+    local center, size, part = FH.ExitAreaScan(model)
+    FH.ExitAreaCache[model] = { at = now, part = part, center = center }
+    return center, size, part
+end
+function FH.ExitAreaScan(model)
     local best
     for _, x in ipairs(model:GetDescendants()) do
         if x:IsA("BasePart") then
@@ -6182,11 +6227,18 @@ function FH.Len(w)
     end
     return l
 end
+FH.TriggerCache = setmetatable({}, { __mode = "k" })
 function FH.Triggers(model)
+    -- Cached 2 s per model (a full descendant scan each call was a large
+    -- part of the end-of-round frame time). Callers check trigger.Parent.
+    local cached, now = FH.TriggerCache[model], os.clock()
+    -- A copy: some callers sort the list they get.
+    if cached and now - cached.at < 2 then return table.clone(cached.list) end
     local list = {}
     for _, x in ipairs(model:GetDescendants()) do
         if x:IsA("BasePart") and string.find(string.lower(x.Name), "trigger", 1, true) then list[#list + 1] = x end
     end
+    FH.TriggerCache[model] = { at = now, list = table.clone(list) }
     return list
 end
 function FH.DoorBounds(d)
