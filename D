@@ -16474,6 +16474,15 @@ function AH.SeerActive(player)
     return seer and active
 end
 function AH.Eval()
+    -- Re-entry (from something AH.Eval itself asks) answers the last result.
+    if AH.EvalBusy then return AH.Last or { danger = false, dist = math.huge } end
+    AH.EvalBusy = true
+    local ok, value = pcall(AH.EvalRaw)
+    AH.EvalBusy = nil
+    if not ok then error(value, 0) end
+    return value
+end
+function AH.EvalRaw()
     local now = os.clock()
     if FH.True(LocalPlayer, FH.RAG) then
         if not AH.HitAt or now - AH.HitAt > 2 then pcall(AH.LearnReach) end
@@ -18841,7 +18850,18 @@ function AR.LowHealth()
     AR.HpMax = math.max(AR.HpMax or 0, hp.Value)
     return hp.Value < AR.HpMax * 0.1
 end
+-- Re-entry guard: anything AR.Pending reads must never be able to call it
+-- again without end (that overflowed the stack and froze the game).
 function AR.Pending()
+    if AR.PendingBusy then return AR.PendingLast == true end
+    AR.PendingBusy = true
+    local ok, value = pcall(AR.PendingRaw)
+    AR.PendingBusy = nil
+    if not ok then error(value, 0) end
+    AR.PendingLast = value
+    return value
+end
+function AR.PendingRaw()
     if
         not AR.Active
         or AR.Request ~= nil
@@ -18918,7 +18938,11 @@ end
 -- resumes once the chase is over.
 function AR.ChasedWithOpenExit()
     if not (AH.Active and FH.ExitOpen() and FH.AnyExitOpen and FH.AnyExitOpen()) then return false end
-    local e = AH.Eval()
+    -- AH.Last, never AH.Eval(): AH.Eval asks AR.Pending (rescue context),
+    -- which asks this function - the endless loop froze the game every
+    -- ~0.9 s at the end of the round once someone was caught (Workspace
+    -- 19/11 15:44) and broke AutoHide's exit, so we never went through.
+    local e = AH.Last or {}
     local now = os.clock()
     if e.danger == true and not e.panic then AR.ChaseExitAt = now end
     -- Keep heading for the exit 8 s after the last alarm: an alarm blinking
