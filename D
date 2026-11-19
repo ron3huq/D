@@ -159,6 +159,7 @@ local TR = {
     FrontDistance = 2.4,
     FrontOnlyDistance = 2.4,
     FrontLift = 1.5, -- no-door front mode: stand this much higher (user request)
+    FrontSide = 1.5, -- no-door front mode: this far toward the target's right hand (the Beast's hammer hand)
     CollisionParts = {},
     CollisionChar = nil,
     CollisionAt = 0,
@@ -14279,31 +14280,112 @@ function FH.ExitTeamSignal(door, center, triggers)
     end
     return signal
 end
-function FH.ExitTeamPull(center, gate, mine)
-    local others, toward, nearMe = 0, 0, false
-    local point = gate or center
+-- Which exit each teammate is going to use, like a player reading the team:
+-- the gate they stand at (15 studs), else the gate they are running toward,
+-- else the gate nearest to them (where they will most likely go). Returns
+-- { [door] = { count, at } } and the number of teammates. Cached 0.5 s.
+function FH.ExitTeamAssign()
+    local map, now = GetCurrentMap(), os.clock()
+    local cache = FH.ExitTeamCache
+    if cache and cache.map == map and now - cache.at < 0.5 then return cache.by, cache.others end
+    local gates = {}
+    for _, door in ipairs(ExitDoors) do
+        if map and IsInWorld(door) and door:IsDescendantOf(map) then
+            local center = FH.ExitArea(door)
+            if center then
+                local points = { center }
+                for _, t in ipairs(door:IsA("Model") and FH.Triggers(door) or {}) do
+                    if t.Parent then points[#points + 1] = t.Position end
+                end
+                gates[#gates + 1] = { door = door, center = center, points = points }
+            end
+        end
+    end
+    local by, others = {}, 0
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and FH.ActiveSurvivor(player) and not FH.True(player, FH.CAP) then
             local r = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
             if r then
                 others = others + 1
-                local delta = Flat(point - r.Position)
-                local velocity = Flat(r.AssemblyLinearVelocity)
-                local heading = delta.Magnitude <= Follow.ExitTeamRange
-                    or delta.Magnitude < 90
-                        and velocity.Magnitude > 6
-                        and velocity.Unit:Dot(delta.Unit) > 0.7
-                if heading then
-                    toward = toward + 1
-                    if Flat(r.Position - mine).Magnitude <= 25 then nearMe = true end
+                local pos, velocity = r.Position, Flat(r.AssemblyLinearVelocity)
+                local atGate, headGate, headDot, nearGate, nearD
+                for _, g in ipairs(gates) do
+                    local d = math.huge
+                    for _, p in ipairs(g.points) do
+                        local dd = Flat(p - pos).Magnitude + math.abs(p.Y - pos.Y) * 1.5
+                        if dd < d then d = dd end
+                    end
+                    if d <= Follow.ExitTeamRange then atGate = g end
+                    local delta = Flat(g.center - pos)
+                    if delta.Magnitude < 120 and velocity.Magnitude > 6 and delta.Magnitude > 0.5 then
+                        local dot = velocity.Unit:Dot(delta.Unit)
+                        if dot > 0.7 and (not headDot or dot > headDot) then headGate, headDot = g, dot end
+                    end
+                    if not nearD or d < nearD then nearGate, nearD = g, d end
+                end
+                local g = atGate or headGate or nearGate
+                if g then
+                    local entry = by[g.door] or { count = 0, at = 0 }
+                    entry.count = entry.count + 1
+                    if atGate then entry.at = entry.at + 1 end
+                    by[g.door] = entry
                 end
             end
         end
     end
+    FH.ExitTeamCache = { map = map, at = now, by = by, others = others }
+    return by, others
+end
+-- How strongly the team pulls us to this gate (subtracted from its rank in
+-- studs). Most teammates going there: 160 - worth a somewhat longer walk to
+-- open / escape together instead of opening another gate alone (user
+-- report: the team opened one gate, the bot walked off to the other).
+function FH.ExitTeamPull(center, gate, mine, door)
+    local entry, others = nil, 0
+    if door then
+        local by
+        by, others = FH.ExitTeamAssign()
+        entry = by[door]
+    end
     local pull = 0
-    if others > 0 and toward * 2 >= others then pull = 150 end
-    if nearMe then pull = math.max(pull, 80) end
+    if entry and others > 0 then
+        if entry.count * 2 >= others then
+            pull = 160
+        else
+            pull = math.min(70 * entry.count, 140)
+        end
+    end
+    -- A teammate right next to us going to this gate: go along with them.
+    local point = gate or center
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and FH.ActiveSurvivor(player) and not FH.True(player, FH.CAP) then
+            local r = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if r and mine and Flat(r.Position - mine).Magnitude <= 25 then
+                local delta = Flat(point - r.Position)
+                local velocity = Flat(r.AssemblyLinearVelocity)
+                if delta.Magnitude <= Follow.ExitTeamRange
+                    or delta.Magnitude < 90 and velocity.Magnitude > 6 and velocity.Unit:Dot(delta.Unit) > 0.7 then
+                    pull = math.max(pull, 80)
+                end
+            end
+        end
+    end
     return pull
+end
+-- Most of the team is already at another exit (they escape there): waiting
+-- at ours for them to come is pointless - escape.
+function FH.ExitTeamElsewhere(door)
+    local by, others = FH.ExitTeamAssign()
+    if others == 0 then return false end
+    local mine = by[door]
+    if mine and mine.at > 0 then return false end
+    local elsewhere = 0
+    for d, entry in pairs(by) do
+        -- Only an open gate: teammates still opening a shut one will
+        -- likely come over to ours, so keep waiting for them.
+        if d ~= door and entry.at > 0 and FH.ExitDoorOpen(d) then elsewhere = elsewhere + entry.at end
+    end
+    return elsewhere * 2 >= others
 end
 -- Flat distance from a position to the trigger volume (0 inside it), with
 -- the same vertical tolerance as before; math.huge on another floor.
@@ -14444,7 +14526,7 @@ function FH.ExitRoute(token, state, abort)
         if state.redirect then return true end
         if state.waiting and state.door and FH.ExitDoorOpen(state.door, state.center, state.triggers)
             and (FH.ExitPolicy(state.center, state.waitPos, state.stand and state.stand.Position) or FH.ExitDanger()
-                or FH.ExitWaitExpired(state)
+                or FH.ExitWaitExpired(state) or FH.ExitTeamElsewhere(state.door)
                 or AH.Active and AH.Eval().danger and not AH.Eval().panic
                 or FH.ExitBeastClosing(30)) then
             state.redirect = "escape"
@@ -14509,6 +14591,16 @@ function FH.ExitRoute(token, state, abort)
                         if c and not proofShut then
                             local better = FH.ExitDoorOpen(other, c, trigs)
                                 or (mine == nil and not state.opening and FH.ExitTeamSignal(other, c, trigs) == "opening")
+                            -- Most teammates are going to the other gate and
+                            -- nobody to ours: go with the team (not much farther).
+                            if not better and mine == nil and root and state.center then
+                                local by, others = FH.ExitTeamAssign()
+                                local there, here = by[other], by[state.door]
+                                better = others > 0 and there ~= nil and there.count * 2 >= others
+                                    and (here == nil or here.count == 0)
+                                    and (c - root.Position).Magnitude <= (state.center - root.Position).Magnitude + 160
+                                if better and FH.Diag then FH.Diag("exit", "join-team-gate") end
+                            end
                             if better and not FH.BeastNearPoint(c, 35, 14) then
                                 if FH.Diag then FH.Diag("exit", "switch-to-open-gate") end
                                 state.switchedAt = os.clock()
@@ -14614,7 +14706,7 @@ function FH.ExitRoute(token, state, abort)
                     -- other exit while the team waited at an open one).
                     local signal = not open and FH.ExitTeamSignal(door, center, triggers) or nil
                     local rank = distance + (open and 0 or signal == "opening" and 300 or signal == "waiting" and 600
-                        or 10000) - FH.ExitTeamPull(center, stand, root.Position)
+                        or 10000) - FH.ExitTeamPull(center, stand, root.Position, door)
                     local danger = stand and (FH.ExitThreat(center, stand, root.Position, door)
                         or not open and FH.BeastNearPoint(center, 35, 14)
                         or not open and FH.BeastOnTheWay(root.Position, center))
@@ -14688,7 +14780,7 @@ function FH.ExitRoute(token, state, abort)
         )
     local open = FH.ExitDoorOpen(door, center, state.triggers)
     local ready = FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position)
-        or FH.ExitWaitExpired(state)
+        or FH.ExitWaitExpired(state) or FH.ExitTeamElsewhere(door)
     local chased = AH.Active and AH.Eval().danger and not AH.Eval().panic or FH.ExitBeastClosing(30)
     local directEscape = open and (ready or FH.ExitDanger() or chased)
     state.escaping = directEscape or nil
@@ -14909,6 +15001,7 @@ function FH.ExitRoute(token, state, abort)
     end
     state.repickAt = nil
     ready = FH.ExitPolicy(center, state.waitPos, state.stand and state.stand.Position) or FH.ExitWaitExpired(state)
+        or FH.ExitTeamElsewhere(door)
     -- Being chased is a reason to cross now (it already chose the escape
     -- goal above but then fell back to waiting at the gate).
     if ready or FH.ExitDanger() or chased then
@@ -19387,7 +19480,11 @@ function TR.TargetLoop(token)
         end
         local distance = TR.Mode == "front" and TR.FrontOnlyDistance or TR.FrontDistance
         local pos = targetRoot.Position + forward * distance
-        if TR.Mode == "front" then pos = pos + Vector3.new(0, TR.FrontLift or 1.5, 0) end
+        if TR.Mode == "front" then
+            pos = pos + Vector3.new(0, TR.FrontLift or 1.5, 0)
+            local right = Vector3.new(targetRoot.CFrame.RightVector.X, 0, targetRoot.CFrame.RightVector.Z)
+            if right.Magnitude > 0.01 then pos = pos + right.Unit * (TR.FrontSide or 1.5) end
+        end
         if not TR.ReturnRoot then
             TR.ReturnRoot, TR.ReturnFrame = root, root.CFrame
         end
